@@ -116,11 +116,11 @@ mirrored here phase by phase via `cp -a`. See NanoTracker's `CLAUDE.md`
 | 4a | `analysis/`: recolor + debug-color | **done** |
 | 5 | CLI: `pull`, `export-engine`, `setup_orin.sh`, systemd | **done** |
 | 4b | `analysis/alpr/` wholesale port | **done** |
-| 3 | `device/`: live runtime, snapshotter, dashboard, IR | in progress (`device/snap_planner.py` landed with road-polygon + axis-trigger gate + asymmetric direction-aware triggers, mirroring NanoTracker's deployed copy; live runtime loop pending) |
+| 3 | `device/`: live runtime, snapshotter, dashboard, IR | **in progress** — see [Phase 3 progress](#phase-3-progress) below |
 | 6 | (opt) original Nano archive role | not started |
 | 7 | cutover: archive both old repos | not started |
 
-Tests at HEAD: **205 passing, ruff clean.**
+Tests at HEAD: **248 passing, ruff clean.**
 
 Verify locally:
 
@@ -152,6 +152,126 @@ POSIX-looking arguments (`/home/...`) into Windows paths before Python
 sees them, mangling `--remote-parent` and `--key`. Either run from
 PowerShell / cmd, or prefix the invocation with `MSYS_NO_PATHCONV=1`
 and pass `--key` as a Windows-style path.
+
+## Phase 3 progress
+
+Phase 3 (`device/`: live runtime, snapshotter, dashboard, IR) is
+broken into 6 PRs plus a cutover step. The plan was scoped after the
+Orin deploy hardening landed (see `git log` for the scoping
+conversation in PR #6's predecessor session). Architectural decisions
+are locked in — re-deciding them mid-stream causes churn:
+
+### Decisions locked in
+
+- **Asyncio throughout.** Entry is `asyncio.run(run_session(config))`.
+  Blocking sources (`cv2.VideoCapture.read()`) go to a background
+  thread that pushes into an `asyncio.Queue`. Blocking inference goes
+  to `loop.run_in_executor`. HTTP is `aiohttp`. The systemd unit
+  passes `--no-sync` so a transient `uv` resolver flap can't reinstall
+  PyPI torch on top of the Jetson wheel.
+- **Frozen dataclasses + strict JSON loader.** `common/config.py`
+  rejects unknown keys with a JSON-path error. `from __future__ import
+  annotations` + `typing.get_type_hints()` resolves string annotations
+  at load time; that pattern is required because dataclasses store
+  `f.type` as a string under PEP 563.
+- **Graceful shutdown via `loop.add_signal_handler(SIGTERM, ...)`.**
+  Bounded by a 30s timeout (configurable) so systemd won't SIGKILL
+  mid-write. Stop the source first, drain active tracks through
+  finalize, write summary HTML + data.json + meta.json + hourly.json,
+  then `loop.stop()`.
+- **Heavy unit tests + manual Orin smoke for the runtime loop.** No
+  recorded-frames integration test in CI (would balloon the repo and
+  CI deliberately skips torch / ultralytics). End-to-end validation
+  happens by ssh'ing into the Orin against the live Reolink after
+  PR 3e merges.
+
+### PR breakdown + status
+
+| PR | What | Status |
+|---|---|---|
+| 3a | `common/config.py` (frozen dataclasses, strict JSON loader) + aiohttp dep + tests against `configs/camera.example.json` | **done** ([#7](https://github.com/nicholasaross/StreetTracker/pull/7)) |
+| 3b | `device/snapshotter.py` (aiohttp Reolink client, semaphore, retries, keep_days cleanup task) | **done** ([#8](https://github.com/nicholasaross/StreetTracker/pull/8)) |
+| 3c | `device/ir_detector.py` (sync frame analysis — R/G/B channel-diff + hysteresis → emits `IRPeriod`) | **next** |
+| 3d | `device/dashboard.py` (aiohttp.web static server, lifecycle helpers) | pending |
+| 3e | `device/runtime.py` + `cli/run.py` (asyncio loop integrating sources / inference / planner / snapshotter / finalize / EventLog / signal handlers / RTSP reconnect / idle HTML regen) | pending |
+| 3f | `cli/batch.py` (file-source variant of runtime, no snapshotter/dashboard) | pending |
+| — | Cutover: CLAUDE.md migration-table update + README + enable systemd on Orin + manual cutover from Nano | pending |
+
+### Resuming PR 3c (IR detector)
+
+Branch off main: `git checkout -b claude/phase-3c-ir-detector`.
+NanoTracker's IR detection is the source-of-truth port reference:
+
+- `nano_tracker.py:295-314` — `is_ir_frame()` plus the constants
+  (`_IR_CHANNEL_DIFF_THR=8`, `_IR_SAMPLE_STRIDE=16`,
+  `_IR_HYSTERESIS_FRAMES=30`). The check is sub-millisecond at 1080p
+  via stride-sampling: max |R-G| and max |G-B| across the strided
+  pixels; if both are below the threshold the frame is monochrome.
+- `nano_tracker.py:1419-1444` — the hysteresis state machine.
+  Maintain a rolling list of the last N readings. Flip to IR mode
+  when **all** N say IR and we're not in IR yet; flip back when
+  **none** say IR and we are. On both transitions emit (or close)
+  an `IRPeriod` record. On entering IR, flush active tracks so the
+  day/night boundary is a clean cut.
+
+`common/schema.IRPeriod` already exists (start/end ISO strings +
+`duration_s`). The detector should return `IRPeriod` instances as
+side outputs of `update(frame, wall_time)` rather than mutate
+shared state — the runtime loop (PR 3e) owns the period list.
+
+API sketch:
+
+```python
+class IRDetector:
+    def __init__(self, *,
+                 channel_diff_threshold: int = 8,
+                 sample_stride: int = 16,
+                 hysteresis_frames: int = 30): ...
+
+    @property
+    def in_ir_mode(self) -> bool: ...
+
+    def update(self, frame: np.ndarray, wall_time: float
+              ) -> IRPeriod | None:
+        """Returns a closed IRPeriod on day-resume, None otherwise."""
+```
+
+Tests: synthetic frames (uniform grayscale = IR; saturated colour =
+day), hysteresis flapping protection (29 IR + 1 day stays in day
+mode), period emission on day→IR→day, fresh detector starts in day
+mode.
+
+### Resuming PRs 3d–3f
+
+When 3c is in, the next branch order is:
+- `claude/phase-3d-dashboard` — independent of 3c, can be parallel
+- `claude/phase-3e-runtime` — integrates 3a + 3b + 3c + 3d (bottleneck)
+- `claude/phase-3f-batch` — derivative of 3e, file source
+
+### Reference points in NanoTracker
+
+The full module map is in PR #6's scoping conversation; the most
+useful line ranges to keep open while porting 3e:
+
+- `nano_tracker.py:537-660` — `ReolinkSnapshotter` (already ported in
+  3b; cross-check semantics)
+- `nano_tracker.py:989-1037` — `start_http_server()` (PR 3d source)
+- `nano_tracker.py:1250-1392` — config unpacking, mutable state,
+  `finalize()` nested closure (PR 3e)
+- `nano_tracker.py:1394-1578` — `process_frame()` body, the actual
+  per-frame work (PR 3e)
+- `nano_tracker.py:1580-1673` — outer reconnect loop + shutdown
+  `finally:` (PR 3e — adapt for asyncio)
+
+### Hard rule once 3e lands
+
+The Orin systemd unit's `ExecStart` is already
+`uv run --no-sync streettracker run --config configs/camera.json` —
+flipping the migration to live is one command:
+`sudo systemctl enable --now streettracker.service`. Do NOT enable
+the unit before 3e merges; the stub `streettracker run` exits with
+status 2, and `Restart=on-failure` will flap it. The cutover step
+explicitly belongs after 3e.
 
 ## Snap gate (road polygon + axis triggers)
 
