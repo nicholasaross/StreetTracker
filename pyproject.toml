@@ -21,6 +21,18 @@ dependencies = [
     "Pillow>=10",
     "jinja2>=3.1",
     "requests>=2.32",
+    # Required by `streettracker export-engine`: Ultralytics' .pt -> .onnx -> .engine
+    # pipeline imports `onnx` (graph build) and `onnxslim` (graph simplify); the
+    # in-tree exporter also validates the .onnx via onnxruntime CPU.
+    "onnx>=1.16",
+    "onnxslim>=0.1",
+    # Upper-bound at <1.24: onnxruntime 1.24+ dropped cp310 wheels (cp311+ only),
+    # and the Jetson aarch64 venv is locked to cp310 for the torch wheel.
+    "onnxruntime>=1.18,<1.24",
+    # Required at runtime by the community Jetson aarch64 torch wheel (cp310,
+    # sm_87). Not needed on x86_64 where the PyPI cu126 wheel doesn't link
+    # against cuDSS.
+    'nvidia-cudss-cu12>=0.7; sys_platform == "linux" and platform_machine == "aarch64"',
 ]
 
 [project.optional-dependencies]
@@ -45,9 +57,27 @@ name = "pytorch-cu126"
 url = "https://download.pytorch.org/whl/cu126"
 explicit = true
 
+# Community-built Jetson aarch64 wheels (cp310, sm_87) for JetPack 6.x +
+# CUDA 12.6. PyPI's pytorch-cu126 only ships sm_80 / sm_90, which
+# explicitly excludes the Orin's sm_87 — confirmed live as
+# `cudaErrorNoKernelImageForDevice` on a kernel launch.
+[[tool.uv.index]]
+name = "jetson-ai-lab-jp6-cu126"
+url = "https://pypi.jetson-ai-lab.io/jp6/cu126/+simple/"
+explicit = true
+
 [tool.uv.sources]
-torch = [{ index = "pytorch-cu126", marker = "sys_platform != 'darwin'" }]
-torchvision = [{ index = "pytorch-cu126", marker = "sys_platform != 'darwin'" }]
+# Linux x86_64 (dev box / CI): PyTorch's official cu126 wheels.
+# Linux aarch64 (Jetson Orin): community wheels with sm_87 SASS.
+# macOS / Windows: PyPI fallback (no GPU torch).
+torch = [
+    { index = "pytorch-cu126", marker = "sys_platform == 'linux' and platform_machine != 'aarch64'" },
+    { index = "jetson-ai-lab-jp6-cu126", marker = "sys_platform == 'linux' and platform_machine == 'aarch64'" },
+]
+torchvision = [
+    { index = "pytorch-cu126", marker = "sys_platform == 'linux' and platform_machine != 'aarch64'" },
+    { index = "jetson-ai-lab-jp6-cu126", marker = "sys_platform == 'linux' and platform_machine == 'aarch64'" },
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/streettracker"]
