@@ -120,7 +120,7 @@ mirrored here phase by phase via `cp -a`. See NanoTracker's `CLAUDE.md`
 | 6 | (opt) original Nano archive role | not started |
 | 7 | cutover: archive both old repos | not started |
 
-Tests at HEAD: **110 passing, ruff clean.**
+Tests at HEAD: **118 passing, ruff clean.**
 
 Verify locally:
 
@@ -164,9 +164,9 @@ camera physically moves.
 | `.claude/sketch_me.png` | 1200×668 downscale of the live frame, given to the operator to sketch on. |
 | `.claude/sketch_me_done.png` | Operator's returned sketch — magenta (`#FF00FF`) outline of the visible road tarmac. |
 | `.claude/road_polygon_user.json` | Polygon vertices extracted from the magenta sketch (`{source_size, vertices_frac}`). Fractional coords, resolution-independent. |
-| `.claude/triggers_proposal.json` | Full trigger spec: polygon vertices, principal axis, centroid, raw t-range, **`t_usable_orig`** (the band of the polygon to actually use — trims the distant tip and Z2/near zone), **`triggers_tprime`** (list of t' values in `[0, 1]` over the usable band where snaps fire). |
-| `.claude/triggers_proposal.jpg` | Visual overlay of the proposal on the live frame — yellow road outline, dimmed excluded regions, coloured trigger lines + circles. **Reference this image when discussing zone adjustments with the operator.** |
-| `.claude/snap_gate.json` | Subset of `triggers_proposal.json` shipped to `~/NanoTracker/camera_config.json` on the Nano under `snapshot.snap_gate`. Format: `{polygon_frac, trigger_t_prime, t_usable_frac}`. |
+| `.claude/triggers_proposal.json` | Full trigger spec: polygon vertices, principal axis, centroid, raw t-range, **`t_usable_orig`** (the band of the polygon to actually use — trims the distant tip and Z2/near zone), **`triggers_tprime`** (list of t' values in `[0, 1]` over the usable band where snaps fire), and optionally **`trigger_directions`** (parallel list of `"forward"` / `"reverse"` / `"both"`; omitted = all `"both"`). |
+| `.claude/triggers_proposal.jpg` | Visual overlay of the proposal on the live frame — yellow road outline, dimmed excluded regions, coloured trigger lines + circles. **Reference this image when discussing zone adjustments with the operator.** Re-render via `uv run python .claude/_render_triggers_overlay.py`. |
+| `.claude/snap_gate.json` | Subset of `triggers_proposal.json` shipped to `~/NanoTracker/camera_config.json` on the Nano under `snapshot.snap_gate`. Format: `{polygon_frac, trigger_t_prime, t_usable_frac, trigger_directions?}` (the last field is optional and defaults to all `"both"`). |
 
 ### Adjusting triggers without re-sketching
 
@@ -178,12 +178,11 @@ values to change.
    `.claude/triggers_proposal.json`. Values are in `[0, 1]` along the
    usable band — t'=0 is the distant edge, t'=1 is the near edge.
 2. Re-render `.claude/triggers_proposal.jpg` from the updated JSON so
-   the visual stays in sync (the script that produced it lives in the
-   session transcript; it loads the JSON, computes axis points, draws
-   trigger lines + circles, writes the JPG).
+   the visual stays in sync:
+   `uv run python .claude/_render_triggers_overlay.py`.
 3. Regenerate `.claude/snap_gate.json` from the JSON
    (`polygon_frac=vertices_frac`, `trigger_t_prime=triggers_tprime`,
-   `t_usable_frac=t_usable_orig`).
+   `t_usable_frac=t_usable_orig`, and `trigger_directions` if used).
 4. `scp .claude/snap_gate.json claude@nano:~/NanoTracker/`, then merge
    into `camera_config.json` under `snapshot.snap_gate` and restart
    the tracker process. Keep the prior config as a timestamped backup.
@@ -211,7 +210,7 @@ values to change.
 |---|---|---|
 | `None`, `right_half_only=True` | Right-half zone-thirds | Pre-polygon fallback. Not used on the live Nano. |
 | `None`, `right_half_only=False` | Legacy peak/decay | Benchmark only. |
-| `RoadGateConfig(...)` | Road polygon + axis triggers | **Live deployment mode.** Crossing semantics: each frame compares the bbox-centre's t' with the previous frame's; a not-yet-fired trigger between them fires. After a fire, `prev_t_prime` is advanced to the trigger's t' (not to `cur_tp`) so subsequent triggers in the same forward motion remain detectable one-per-frame. |
+| `RoadGateConfig(...)` | Road polygon + axis triggers | **Live deployment mode.** Crossing semantics: each frame compares the bbox-centre's t' with the previous frame's; a not-yet-fired trigger between them fires *if its direction tag matches the motion sign* (`"forward"` = t' increasing = camera-approach side, `"reverse"` = t' decreasing = departure side, `"both"` = default). After a fire, `prev_t_prime` is advanced to the trigger's t' (not to `cur_tp`) so subsequent triggers in the same forward motion remain detectable one-per-frame. Asymmetric triggers let R→L (front plate) and L→R (rear plate) tracks each have their own early-capture trigger without one direction consuming the other's. |
 
 Until cutover (phase 7), VehicleTracker + NanoTracker remain
 authoritative for their current targets.

@@ -17,15 +17,24 @@ operator-validated mode. Configuration carries:
 
 * a polygon traced over the visible road surface (fractional coords);
 * a list of trigger positions along the road's principal axis, each
-  expressed as ``t'`` in ``[0, 1]`` over the usable t-range.
+  expressed as ``t'`` in ``[0, 1]`` over the usable t-range;
+* optionally, a parallel list of per-trigger direction filters --
+  ``"forward"``, ``"reverse"``, or ``"both"`` (default). A forward
+  trigger only fires when ``t'`` is *increasing* through it (approach
+  side, front-plate visible); a reverse trigger only when ``t'`` is
+  *decreasing* (departure side, rear-plate visible). This lets the
+  operator place asymmetric triggers -- e.g. an early-approach
+  forward trigger and an early-departure reverse trigger -- without
+  one direction's snaps consuming the other direction's budget.
 
 On every frame the bbox centre is tested against the polygon; if
 inside, its projection along the polygon's PCA axis is compared with
 the last frame's projection. If any not-yet-fired trigger lies between
-the two values the trigger fires (and is marked fired so a return
+the two values *and the per-trigger direction filter allows the
+motion sign*, the trigger fires (and is marked fired so a return
 crossing later in the track cannot retrigger it). This produces N
-spatially distinct snaps per vehicle independent of speed or
-direction.
+spatially distinct snaps per vehicle independent of speed; with
+asymmetric triggers, snap counts can also differ per direction.
 
 **Right-half spatial gate (`right_half_only=True`).** Legacy gate
 used before the polygon mode landed. Splits the right half of the
@@ -74,6 +83,19 @@ SnapReason = Literal[
 ]
 
 
+# Per-trigger direction filter for road-gate mode.
+#
+# "forward"  -- fires only when t' is INCREASING through the trigger
+#               (i.e., motion in the direction of the principal axis;
+#               in our camera setup this is the camera-approach direction
+#               and is the side where the front plate is visible).
+# "reverse"  -- fires only when t' is DECREASING through the trigger
+#               (motion away from the camera; rear-plate side).
+# "both"     -- default; fires on either direction of motion.
+TriggerDirection = Literal["forward", "reverse", "both"]
+_VALID_DIRECTIONS = ("forward", "reverse", "both")
+
+
 # ----------------------------------------------------------------------
 # Config + decision value objects.
 
@@ -89,11 +111,22 @@ class RoadGateConfig:
     ``t_usable_frac[1]`` of the raw t-range. Anything outside that
     band is treated as "off-road" and cannot fire even if technically
     inside the polygon.
+
+    ``trigger_directions`` is an optional parallel array of per-trigger
+    direction filters (see ``TriggerDirection``). When omitted, every
+    trigger defaults to ``"both"`` -- backwards-compatible with configs
+    written before the asymmetric-trigger feature. With asymmetric
+    triggers you can place a forward-only trigger at a small t' value
+    (fires only on R-to-L approach, catches the front plate early) and
+    a separate reverse-only trigger at a large t' value (fires only on
+    L-to-R departure, catches the rear plate early), without one
+    direction's snaps consuming the other direction's budget.
     """
 
     polygon_frac: list[tuple[float, float]]
     trigger_t_prime: list[float]
     t_usable_frac: tuple[float, float] = (0.0, 1.0)
+    trigger_directions: list[TriggerDirection] | None = None
 
 
 @dataclass(slots=True)
@@ -306,6 +339,7 @@ class RoadGate:
     t_usable_lo: float
     t_usable_hi: float
     triggers_t_prime: tuple[float, ...]
+    trigger_directions: tuple[TriggerDirection, ...]
 
     @classmethod
     def from_config(cls, cfg: RoadGateConfig, frame_w: int, frame_h: int) -> RoadGate:
@@ -313,6 +347,23 @@ class RoadGate:
             raise ValueError("road polygon needs at least 3 vertices")
         if not cfg.trigger_t_prime:
             raise ValueError("road gate has no triggers")
+        if cfg.trigger_directions is None:
+            directions: tuple[TriggerDirection, ...] = tuple(
+                "both" for _ in cfg.trigger_t_prime
+            )
+        else:
+            if len(cfg.trigger_directions) != len(cfg.trigger_t_prime):
+                raise ValueError(
+                    "trigger_directions length must match trigger_t_prime length "
+                    f"({len(cfg.trigger_directions)} vs {len(cfg.trigger_t_prime)})"
+                )
+            for d in cfg.trigger_directions:
+                if d not in _VALID_DIRECTIONS:
+                    raise ValueError(
+                        f"invalid trigger direction {d!r}; "
+                        f"expected one of {_VALID_DIRECTIONS}"
+                    )
+            directions = tuple(cfg.trigger_directions)
         # Polygon in pixel coords for the active frame size.
         poly_px = [(fx * frame_w, fy * frame_h) for fx, fy in cfg.polygon_frac]
         # Centroid + PCA principal axis on pixel coords.
@@ -369,6 +420,7 @@ class RoadGate:
             t_usable_lo=t_usable_lo,
             t_usable_hi=t_usable_hi,
             triggers_t_prime=tuple(cfg.trigger_t_prime),
+            trigger_directions=directions,
         )
 
     def contains(self, px: float, py: float) -> bool:
@@ -393,15 +445,31 @@ class RoadGate:
         self, prev_tp: float | None, cur_tp: float, already_fired: set[int]
     ) -> list[int]:
         """Return trigger indices whose t' value lies strictly between
-        ``prev_tp`` and ``cur_tp`` (in either direction), excluding any
-        already in ``already_fired``. Order is the trigger crossing
-        order along the trajectory (closest-to-prev first)."""
+        ``prev_tp`` and ``cur_tp``, filtered by each trigger's direction
+        tag and excluding any already in ``already_fired``. Order is the
+        trigger crossing order along the trajectory (closest-to-prev
+        first).
+
+        A ``"forward"`` trigger only fires when ``cur_tp > prev_tp``;
+        a ``"reverse"`` trigger only when ``cur_tp < prev_tp``;
+        ``"both"`` fires regardless. Stationary frames
+        (``cur_tp == prev_tp``) never fire any trigger."""
         if prev_tp is None:
             return []
-        lo, hi = (prev_tp, cur_tp) if prev_tp <= cur_tp else (cur_tp, prev_tp)
+        if cur_tp > prev_tp:
+            motion: TriggerDirection = "forward"
+            lo, hi = prev_tp, cur_tp
+        elif cur_tp < prev_tp:
+            motion = "reverse"
+            lo, hi = cur_tp, prev_tp
+        else:
+            return []
         hits: list[tuple[float, int]] = []
         for idx, t in enumerate(self.triggers_t_prime):
             if idx in already_fired:
+                continue
+            direction = self.trigger_directions[idx]
+            if direction != "both" and direction != motion:
                 continue
             if lo < t <= hi:
                 # Distance from the previous sample, so ordering matches
