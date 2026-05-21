@@ -1,0 +1,65 @@
+; StreetTracker live runtime — Orin Nano 8GB Super.
+;
+; Install (after `scripts/setup_orin.sh` has run and a TRT engine has
+; been built on the device):
+;
+;   sudo cp scripts/systemd/streettracker.service /etc/systemd/system/
+;   sudo systemctl daemon-reload
+;   sudo systemctl enable --now streettracker.service
+;   journalctl -u streettracker -f
+;
+; If your install path or user differ from the defaults below, edit the
+; copied file in /etc/systemd/system/ rather than the repo copy.
+;
+; The defaults assume:
+;   - repo cloned at /home/streettracker/streettracker
+;   - service user `streettracker` (matches scripts/pull_session defaults)
+;   - camera config at $WORKDIR/configs/camera.json
+;   - uv installed at ~/.local/bin/uv (setup_orin.sh does this)
+
+[Unit]
+Description=StreetTracker live RTSP tracker (Orin)
+Documentation=https://github.com/nicholasaross/StreetTracker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=streettracker
+Group=streettracker
+WorkingDirectory=/home/streettracker/streettracker
+
+; uv handles the venv; PATH must include ~/.local/bin (where uv lives)
+; and /usr/local/cuda/bin (for libnvinfer at runtime).
+Environment=PATH=/home/streettracker/.local/bin:/usr/local/cuda/bin:/usr/bin:/bin
+Environment=HOME=/home/streettracker
+
+; Reolink RTSP requires the FFmpeg backend in TCP mode — both NanoTracker
+; and StreetTracker confirmed GStreamer-backed cv2 stalls on Reolink
+; keyframes. See CLAUDE.md "Device runtime notes".
+Environment=OPENCV_FFMPEG_CAPTURE_OPTIONS=rtsp_transport;tcp
+
+ExecStart=/home/streettracker/.local/bin/uv run streettracker run \
+    --config configs/camera.json
+
+; Crash recovery: restart on any unclean exit, but back off so a broken
+; engine file doesn't burn CPU in a tight loop.
+Restart=on-failure
+RestartSec=10s
+
+; Logging: journald owns stdout/stderr; structured session JSON is still
+; written to output/ on disk.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=streettracker
+
+; The runtime writes session crops + JSON under ./output; make sure that
+; directory is writable by the service user before enabling.
+ReadWritePaths=/home/streettracker/streettracker/output
+
+; Resource hygiene — stops one runaway process from OOM'ing the device.
+; Orin Nano Super has 8 GB RAM; leave headroom for the kernel + dashboard.
+MemoryMax=6G
+
+[Install]
+WantedBy=multi-user.target

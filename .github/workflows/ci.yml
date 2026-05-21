@@ -24,8 +24,12 @@ jobs:
         # CI runs only common-layer tests, which don't need torch or
         # ultralytics. Skip the heavy ML stack to keep CI fast and avoid
         # pulling 2GB+ of wheels. Device tests are gated by `-m device`.
+        # Use an explicit venv: GitHub runner images now ship a PEP 668
+        # "externally managed" system Python that refuses --system pip
+        # installs.
         run: |
-          uv pip install --system \
+          uv venv
+          uv pip install \
             "numpy>=1.26,<3.0" \
             "Pillow>=10" \
             "jinja2>=3.1" \
@@ -34,7 +38,9 @@ jobs:
             "ruff>=0.6"
 
       - name: Lint
-        run: ruff check src/ tests/
+        run: uv run --no-sync ruff check src/ tests/
 
       - name: Test (common layer)
-        run: PYTHONPATH=src pytest -m "not device" -v tests/
+        run: uv run --no-sync pytest -m "not device" -v tests/
+        env:
+          PYTHONPATH: src
