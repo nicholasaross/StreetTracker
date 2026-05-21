@@ -7,7 +7,7 @@ name = "streettracker"
 version = "0.1.0"
 description = "Detect, track, and summarize vehicles and persons from video and live RTSP"
 readme = "README.md"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.10,<3.13"
 license = { text = "MIT" }
 authors = [{ name = "Nicholas Aross" }]
 
@@ -53,7 +53,7 @@ torchvision = [{ index = "pytorch-cu126", marker = "sys_platform != 'darwin'" }]
 packages = ["src/streettracker"]
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py310"
 line-length = 100
 src = ["src", "tests"]
 
