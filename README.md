@@ -36,8 +36,12 @@ uv run streettracker run --config camera_config.json
 
 - `streettracker run` — live RTSP capture (Orin-only)
 - `streettracker batch <video>` — file input
-- `streettracker pull` — rsync session from device
+- `streettracker pull` — scp session from device
 - `streettracker recolor <session>` — rerun color heuristic on a closed session
 - `streettracker export-engine` — `.pt` → `.engine` via Ultralytics
+- `streettracker alpr-run <session>` — run ALPR pipelines on session snaps
+- `streettracker alpr-score <session>` — score ALPR pipelines against labels
+- `streettracker alpr-label <session>` — interactive plate labeling
+- `streettracker alpr-report <session>` — render the comparison HTML
 
 See `CLAUDE.md` for architecture and operational notes.

@@ -114,13 +114,13 @@ mirrored here phase by phase via `cp -a`. See NanoTracker's `CLAUDE.md`
 | 1 | `common/`: schema, color, output, hourly, summary | **done** |
 | 2 | `inference/` (Ultralytics runner) + `sources/` (RTSP, file) | **done** |
 | 4a | `analysis/`: recolor + debug-color | **done** |
-| 4b | `analysis/alpr/` wholesale port | pending |
-| 5 | CLI: `pull`, `export-engine`, `setup_orin.sh`, systemd | pending |
-| 3 | `device/`: live runtime, snapshotter, dashboard, IR | in progress (`device/snap_planner.py` landed with road-polygon + axis-trigger gate, mirroring NanoTracker's deployed copy) |
+| 5 | CLI: `pull`, `export-engine`, `setup_orin.sh`, systemd | **done** |
+| 4b | `analysis/alpr/` wholesale port | **done** |
+| 3 | `device/`: live runtime, snapshotter, dashboard, IR | in progress (`device/snap_planner.py` landed with road-polygon + axis-trigger gate + asymmetric direction-aware triggers, mirroring NanoTracker's deployed copy; live runtime loop pending) |
 | 6 | (opt) original Nano archive role | not started |
 | 7 | cutover: archive both old repos | not started |
 
-Tests at HEAD: **118 passing, ruff clean.**
+Tests at HEAD: **205 passing, ruff clean.**
 
 Verify locally:
 
@@ -139,8 +139,19 @@ uv run streettracker recolor --help
 uv run streettracker debug-color --help
 ```
 
-`run` / `batch` / `pull` / `export-engine` print
-"not yet implemented" until their phases land.
+`run` / `batch` still print "not yet implemented" pending phase 3 / 5b.
+`pull` and `export-engine` are wired; `scripts/setup_orin.sh` and
+`scripts/systemd/streettracker.service` are in place for device install.
+`alpr-run` / `alpr-score` / `alpr-label` / `alpr-report` are available
+under the `alpr` extra (`uv sync --extra alpr`); place the bespoke
+detector at `src/streettracker/analysis/alpr/models/license_plate_detector.pt`
+(gitignored).
+
+**Windows + Git Bash gotcha for `streettracker pull`**: MSYS rewrites
+POSIX-looking arguments (`/home/...`) into Windows paths before Python
+sees them, mangling `--remote-parent` and `--key`. Either run from
+PowerShell / cmd, or prefix the invocation with `MSYS_NO_PATHCONV=1`
+and pass `--key` as a Windows-style path.
 
 ## Snap gate (road polygon + axis triggers)
 
