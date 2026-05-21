@@ -65,6 +65,9 @@ select = ["E", "F", "I", "B", "UP", "SIM", "C4"]
 # strings are inherent to the inline-template approach. Migration to
 # Jinja2 is on the roadmap; until then, suppress line-length only here.
 "src/streettracker/common/summary.py" = ["E501"]
+# alpr/report.py embeds a Jinja2 HTML template (CSS + script) as a string
+# literal — same inline-template trade-off as summary.py above.
+"src/streettracker/analysis/alpr/report.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
