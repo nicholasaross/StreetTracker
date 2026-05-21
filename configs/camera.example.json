@@ -1,44 +1,113 @@
 {
     "_comment": [
-        "Reolink camera config for StreetTracker live RTSP mode.",
-        "Copy to camera_config.json (gitignored) and fill in the password.",
-        "Modes differ by Reolink model: many RLC-1224A units serve H.265",
-        "at /h264Preview_01_main (path does not reflect codec). Test both",
-        "streams once with ffprobe before committing to one."
+        "StreetTracker live RTSP config. Copy to configs/camera.json",
+        "(gitignored) and fill in the password before running the tracker.",
+        "Schema mirrors NanoTracker's camera_config.json so an existing",
+        "Nano deploy can be migrated by scp alone."
     ],
+
     "camera": {
-        "ip": "192.168.1.72",
-        "rtsp_port": 554,
-        "http_port": 80,
-        "user": "admin",
+        "model": "Reolink RLC-1224A",
+        "ip": "192.168.1.XXX",
+        "username": "admin",
         "password": "REPLACE_ME"
     },
+
+    "ports": {
+        "http": 80,
+        "rtsp": 554
+    },
+
     "streams": [
         {
             "name": "sub",
-            "path": "/h264Preview_01_sub",
+            "quality": "sub",
             "codec": "h264",
-            "width": 896,
-            "height": 512
+            "path": "/h264Preview_01_sub"
         },
         {
             "name": "main",
-            "path": "/h264Preview_01_main",
+            "quality": "main",
             "codec": "h265",
-            "width": 4096,
-            "height": 2784
+            "path": "/h264Preview_01_main"
         }
     ],
-    "use_stream": "sub",
-    "snapshot": {
-        "enabled": true,
-        "max_snaps_per_track": 3,
-        "min_bbox_area_frac": 0.05,
-        "growth_factor": 1.5,
-        "cleanup_older_than_days": 30
+
+    "_nano_compat_comment": [
+        "Legacy NanoTracker decoder hints. preferred_stream selects which",
+        "stream entry feeds inference (sub keeps GPU + RAM low on Jetson)."
+    ],
+    "nano": {
+        "preferred_stream": "sub",
+        "rtsp_transport": "tcp",
+        "latency_ms": 200,
+        "decoder": "nvv4l2decoder"
     },
-    "dashboard": {
+
+    "inference": {
+        "_engine_path_comment": "Built on-device via `streettracker export-engine`. NOT portable across GPU archs.",
+        "engine_path": "yolov8m.engine",
+        "input_size": 640,
+        "conf_threshold": 0.30,
+        "iou_threshold": 0.45,
+        "_vehicle_classes_comment": "COCO IDs: 2=car, 3=motorcycle, 5=bus, 7=truck. Default cars-only.",
+        "vehicle_classes": [2]
+    },
+
+    "tracking": {
+        "_comment": "iou_match_threshold + max_misses kept for parity; BotSORT reads its own yaml.",
+        "iou_match_threshold": 0.30,
+        "max_misses": 15,
+        "min_track_duration_s": 1.0,
+        "parked_displacement_px": 50.0,
+        "by_class": {}
+    },
+
+    "output": {
+        "dir": "output",
+        "save_thumbnails": true,
+        "session_label_prefix": "session",
+        "_html_idle_seconds_comment": "Regenerate HTML when no tracks active for this many seconds.",
+        "html_idle_seconds": 10.0,
+        "html_refresh_seconds": 15
+    },
+
+    "http": {
+        "_comment": "Built-in dashboard. http://<orin-ip>:8080/ for live LAN access.",
+        "enabled": true,
         "host": "0.0.0.0",
         "port": 8080
+    },
+
+    "snapshot": {
+        "_comment": [
+            "Reolink 4K HTTP snapshot fetcher. Fires on snap_planner crossings;",
+            "saves to vehicle_<id>_main_<N>.jpg for downstream ALPR."
+        ],
+        "enabled": true,
+        "area_threshold_frac": 0.05,
+        "max_snaps_per_track": 3,
+        "min_sharpness": 0.0,
+        "post_fire_cooldown_frames": 30,
+        "max_concurrent": 2,
+        "timeout_s": 5.0,
+        "keep_days": 7,
+        "cleanup_interval_s": 3600.0,
+
+        "_snap_gate_comment": [
+            "Operator-traced road polygon + asymmetric direction-tagged",
+            "triggers. Forward (R->L approach, front plate) fires on small",
+            "t' values; reverse (L->R depart, rear plate) fires on large.",
+            "See CLAUDE.md `Snap gate` section for the artifact pipeline."
+        ],
+        "snap_gate": {
+            "polygon_frac": [[0.10, 0.50], [0.90, 0.50], [0.90, 0.55], [0.10, 0.55]],
+            "trigger_t_prime": [0.05, 0.20, 0.35, 0.65, 0.80, 0.95],
+            "t_usable_frac": [0.10, 0.67],
+            "trigger_directions": [
+                "forward", "forward", "forward",
+                "reverse", "reverse", "reverse"
+            ]
+        }
     }
 }

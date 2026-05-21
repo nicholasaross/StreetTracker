@@ -1,0 +1,385 @@
+"""Coverage for ``streettracker.common.config``.
+
+The loader is the single point of contact between operator-written JSON
+and every downstream subsystem (snap planner, snapshotter, runtime
+loop). A regression here -- silent default for a typoed key, accepted
+string where an int was expected -- would manifest as a hard-to-debug
+runtime divergence days later, so the tests exercise every error path
+explicitly.
+
+Where possible, tests use the *real* ``configs/camera.example.json``
+checked into the repo as the happy-path fixture. That keeps the schema
+in the loader and the schema in the example file from drifting apart.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from streettracker.common.config import (
+    CameraConfig,
+    ConfigError,
+    StreamConfig,
+    StreetTrackerConfig,
+)
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+EXAMPLE_PATH = REPO_ROOT / "configs" / "camera.example.json"
+
+
+# ----------------------------------------------------------------------
+# Happy path: the example file in the repo loads.
+
+
+def test_example_config_loads_cleanly() -> None:
+    """The checked-in ``configs/camera.example.json`` must always parse.
+
+    If a new field is added to the dataclass schema without updating
+    the example, this test fails -- which is the desired guard."""
+    cfg = StreetTrackerConfig.from_json_file(EXAMPLE_PATH)
+    assert isinstance(cfg, StreetTrackerConfig)
+    assert cfg.camera.model == "Reolink RLC-1224A"
+    assert cfg.camera.username == "admin"
+    assert cfg.ports.http == 80
+    assert cfg.ports.rtsp == 554
+    assert len(cfg.streams) == 2
+    assert cfg.inference.input_size == 640
+    assert cfg.inference.vehicle_classes == (2,)
+    assert cfg.snapshot.enabled is True
+    assert cfg.snapshot.snap_gate is not None
+    assert len(cfg.snapshot.snap_gate.trigger_t_prime) == 6
+    assert cfg.snapshot.snap_gate.trigger_directions == (
+        "forward", "forward", "forward",
+        "reverse", "reverse", "reverse",
+    )
+
+
+def test_stream_by_name_helper() -> None:
+    cfg = StreetTrackerConfig.from_json_file(EXAMPLE_PATH)
+    sub = cfg.stream_by_name("sub")
+    assert isinstance(sub, StreamConfig)
+    assert sub.codec == "h264"
+    assert sub.path == "/h264Preview_01_sub"
+
+
+def test_stream_by_name_unknown_raises_config_error_not_keyerror() -> None:
+    cfg = StreetTrackerConfig.from_json_file(EXAMPLE_PATH)
+    with pytest.raises(ConfigError, match="stream 'nonexistent' not declared"):
+        cfg.stream_by_name("nonexistent")
+
+
+# ----------------------------------------------------------------------
+# Comment-stripping.
+
+
+def test_underscore_prefixed_keys_are_stripped_silently() -> None:
+    """Operators document JSON inline via ``_comment`` keys. The loader
+    must accept any number of these in any block without complaint."""
+    data = _full_minimal()
+    data["_comment"] = "top-level note"
+    data["_another_comment"] = ["multi", "line", "list"]
+    data["camera"]["_doc"] = {"nested": "dict is fine too"}
+    data["snapshot"]["_doc"] = "comments inside any block"
+    result = StreetTrackerConfig.from_dict(data)
+    assert result.camera.ip == "192.168.1.72"  # config still loads
+
+
+# ----------------------------------------------------------------------
+# Unknown-key strictness.
+
+
+def test_unknown_top_level_key_raises() -> None:
+    data = _full_minimal()
+    data["snapsho"] = {}  # typo of "snapshot"
+    with pytest.raises(ConfigError, match=r"unknown key.*snapsho"):
+        StreetTrackerConfig.from_dict(data)
+
+
+def test_unknown_nested_key_raises_with_json_path() -> None:
+    data = _full_minimal()
+    data["snapshot"]["min_sharpnss"] = 100.0  # typo of min_sharpness
+    with pytest.raises(ConfigError) as excinfo:
+        StreetTrackerConfig.from_dict(data)
+    msg = str(excinfo.value)
+    assert "$.snapshot" in msg
+    assert "min_sharpnss" in msg
+
+
+def test_unknown_deeply_nested_key_raises_with_json_path() -> None:
+    """The path in the error message must walk into ``snap_gate``."""
+    data = _full_minimal()
+    data["snapshot"]["snap_gate"] = {
+        "polygon_frac": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+        "trigger_t_prime": [0.5],
+        "trigger_direction": ["forward"],  # typo (missing trailing 's')
+    }
+    with pytest.raises(ConfigError) as excinfo:
+        StreetTrackerConfig.from_dict(data)
+    msg = str(excinfo.value)
+    assert "snapshot.snap_gate" in msg
+    assert "trigger_direction" in msg
+
+
+# ----------------------------------------------------------------------
+# Type strictness.
+
+
+def test_int_field_rejects_string() -> None:
+    data = _full_minimal()
+    data["ports"]["http"] = "80"  # string, not int
+    with pytest.raises(ConfigError, match="expected int"):
+        StreetTrackerConfig.from_dict(data)
+
+
+def test_bool_field_rejects_int_zero() -> None:
+    """bool is a subclass of int in Python -- we must reject the 0/1 form."""
+    data = _full_minimal()
+    data["snapshot"]["enabled"] = 0
+    with pytest.raises(ConfigError, match="expected bool"):
+        StreetTrackerConfig.from_dict(data)
+
+
+def test_int_field_rejects_bool() -> None:
+    """Mirror of the above: ints must not accept True/False either."""
+    data = _full_minimal()
+    data["ports"]["http"] = True
+    with pytest.raises(ConfigError, match="expected int"):
+        StreetTrackerConfig.from_dict(data)
+
+
+def test_float_field_accepts_int_value() -> None:
+    """JSON commonly writes ``5`` where a float was expected. Accept."""
+    data = _full_minimal()
+    data["snapshot"]["timeout_s"] = 5  # no decimal
+    cfg = StreetTrackerConfig.from_dict(data)
+    assert isinstance(cfg.snapshot.timeout_s, float)
+    assert cfg.snapshot.timeout_s == 5.0
+
+
+def test_string_field_rejects_list() -> None:
+    data = _full_minimal()
+    data["camera"]["ip"] = ["192", "168", "1", "72"]
+    with pytest.raises(ConfigError, match="expected string"):
+        StreetTrackerConfig.from_dict(data)
+
+
+def test_dataclass_field_rejects_array() -> None:
+    """A field declared as ``CameraConfig`` must reject an array."""
+    data = _full_minimal()
+    data["camera"] = ["192.168.1.72", "admin", "pw"]
+    with pytest.raises(ConfigError, match="expected object for CameraConfig"):
+        StreetTrackerConfig.from_dict(data)
+
+
+# ----------------------------------------------------------------------
+# Required vs optional fields.
+
+
+def test_missing_required_field_raises() -> None:
+    data = _full_minimal()
+    del data["camera"]["password"]
+    with pytest.raises(ConfigError, match=r"\$.camera.password.*required"):
+        StreetTrackerConfig.from_dict(data)
+
+
+def test_missing_optional_field_uses_default() -> None:
+    """``camera.model`` defaults to empty string; leaving it out is OK."""
+    data = _full_minimal()
+    del data["camera"]["model"]
+    cfg = StreetTrackerConfig.from_dict(data)
+    assert cfg.camera.model == ""
+
+
+def test_entire_nano_block_optional_via_default_factory() -> None:
+    """The ``nano`` compat block is optional -- new clean configs may
+    omit it entirely. Defaults to a NanoCompatConfig with all defaults."""
+    data = _full_minimal()
+    del data["nano"]
+    cfg = StreetTrackerConfig.from_dict(data)
+    assert cfg.nano.preferred_stream == "sub"
+    assert cfg.nano.decoder == "nvv4l2decoder"
+
+
+def test_snap_gate_optional_in_snapshot() -> None:
+    """A snapshot block with no ``snap_gate`` key falls back to legacy
+    peak/decay mode (``None`` means road-gate is not configured)."""
+    data = _full_minimal()
+    assert "snap_gate" not in data["snapshot"]  # sanity
+    cfg = StreetTrackerConfig.from_dict(data)
+    assert cfg.snapshot.snap_gate is None
+
+
+def test_snap_gate_null_in_snapshot() -> None:
+    """Explicit JSON null for the optional gate is also acceptable."""
+    data = _full_minimal()
+    data["snapshot"]["snap_gate"] = None
+    cfg = StreetTrackerConfig.from_dict(data)
+    assert cfg.snapshot.snap_gate is None
+
+
+# ----------------------------------------------------------------------
+# Tuple coercion.
+
+
+def test_lists_are_coerced_to_tuples_in_loaded_config() -> None:
+    """``vehicle_classes`` is declared as ``tuple[int, ...]`` -- JSON
+    sends a list. Make sure the loaded value is a tuple (i.e., hashable
+    and immutable, matching the frozen dataclass posture)."""
+    cfg = StreetTrackerConfig.from_json_file(EXAMPLE_PATH)
+    assert isinstance(cfg.inference.vehicle_classes, tuple)
+    assert isinstance(cfg.streams, tuple)
+    assert isinstance(cfg.snapshot.snap_gate.polygon_frac, tuple)
+    assert isinstance(cfg.snapshot.snap_gate.polygon_frac[0], tuple)
+
+
+def test_nested_tuple_of_pairs() -> None:
+    """``polygon_frac: tuple[tuple[float, float], ...]`` -- two levels."""
+    data = _full_minimal()
+    data["snapshot"]["snap_gate"] = {
+        "polygon_frac": [[0.0, 0.0], [1.0, 0.5], [0.5, 1.0]],
+        "trigger_t_prime": [0.3, 0.7],
+    }
+    cfg = StreetTrackerConfig.from_dict(data)
+    sg = cfg.snapshot.snap_gate
+    assert sg is not None
+    assert sg.polygon_frac == ((0.0, 0.0), (1.0, 0.5), (0.5, 1.0))
+    assert sg.trigger_t_prime == (0.3, 0.7)
+    assert sg.t_usable_frac == (0.0, 1.0)  # default
+    assert sg.trigger_directions is None
+
+
+def test_fixed_length_tuple_validates_arity() -> None:
+    """``t_usable_frac: tuple[float, float]`` (fixed 2-tuple)."""
+    data = _full_minimal()
+    data["snapshot"]["snap_gate"] = {
+        "polygon_frac": [[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]],
+        "trigger_t_prime": [0.5],
+        "t_usable_frac": [0.1, 0.5, 0.9],  # too many
+    }
+    with pytest.raises(ConfigError, match="expected exactly 2 elements"):
+        StreetTrackerConfig.from_dict(data)
+
+
+# ----------------------------------------------------------------------
+# Path coercion.
+
+
+def test_engine_path_is_loaded_as_pathlib_path() -> None:
+    cfg = StreetTrackerConfig.from_json_file(EXAMPLE_PATH)
+    assert isinstance(cfg.inference.engine_path, Path)
+    assert isinstance(cfg.output.dir, Path)
+
+
+def test_engine_path_rejects_non_string() -> None:
+    data = _full_minimal()
+    data["inference"]["engine_path"] = 12345
+    with pytest.raises(ConfigError, match="expected string for Path"):
+        StreetTrackerConfig.from_dict(data)
+
+
+# ----------------------------------------------------------------------
+# Immutability.
+
+
+def test_loaded_config_is_frozen() -> None:
+    """Try mutating the loaded config -- frozen dataclass should refuse."""
+    cfg = StreetTrackerConfig.from_json_file(EXAMPLE_PATH)
+    with pytest.raises(dataclasses_FrozenInstanceError):
+        cfg.camera.ip = "10.0.0.1"  # type: ignore[misc]
+
+
+# ----------------------------------------------------------------------
+# JSON-file path edge cases.
+
+
+def test_from_json_file_with_str_path(tmp_path: Path) -> None:
+    """``from_json_file`` must accept ``str`` paths, not just ``Path``."""
+    out = tmp_path / "camera.json"
+    out.write_text(json.dumps(_full_minimal()))
+    cfg = StreetTrackerConfig.from_json_file(str(out))
+    assert cfg.camera.ip == "192.168.1.72"
+
+
+def test_from_json_file_with_invalid_json_propagates_json_decode_error(
+    tmp_path: Path,
+) -> None:
+    """JSON syntax errors surface as ``json.JSONDecodeError``, not as
+    ``ConfigError``. That preserves the line / column info from the
+    JSON parser."""
+    out = tmp_path / "camera.json"
+    out.write_text("{not valid json")
+    with pytest.raises(json.JSONDecodeError):
+        StreetTrackerConfig.from_json_file(out)
+
+
+# ----------------------------------------------------------------------
+# Helpers.
+
+
+def _build_minimal_camera() -> CameraConfig:
+    return CameraConfig(ip="192.168.1.72", username="admin", password="p")
+
+
+def _full_minimal() -> dict:
+    """Smallest dict that satisfies every required field on the
+    schema. Tests mutate copies of this to provoke specific errors."""
+    return {
+        "camera": {
+            "model": "Test",
+            "ip": "192.168.1.72",
+            "username": "admin",
+            "password": "secret",
+        },
+        "ports": {"http": 80, "rtsp": 554},
+        "streams": [
+            {"name": "sub", "quality": "sub", "codec": "h264",
+             "path": "/h264Preview_01_sub"},
+        ],
+        "nano": {
+            "preferred_stream": "sub",
+            "rtsp_transport": "tcp",
+            "latency_ms": 200,
+            "decoder": "nvv4l2decoder",
+        },
+        "inference": {
+            "engine_path": "yolov8m.engine",
+            "input_size": 640,
+            "conf_threshold": 0.30,
+            "iou_threshold": 0.45,
+            "vehicle_classes": [2],
+        },
+        "tracking": {
+            "iou_match_threshold": 0.30,
+            "max_misses": 15,
+            "min_track_duration_s": 1.0,
+            "parked_displacement_px": 50.0,
+            "by_class": {},
+        },
+        "output": {
+            "dir": "output",
+            "save_thumbnails": True,
+            "session_label_prefix": "session",
+            "html_idle_seconds": 10.0,
+            "html_refresh_seconds": 15,
+        },
+        "http": {"enabled": True, "host": "0.0.0.0", "port": 8080},
+        "snapshot": {
+            "enabled": True,
+            "area_threshold_frac": 0.05,
+            "max_snaps_per_track": 3,
+            "min_sharpness": 0.0,
+            "post_fire_cooldown_frames": 30,
+            "max_concurrent": 2,
+            "timeout_s": 5.0,
+            "keep_days": 7,
+            "cleanup_interval_s": 3600.0,
+        },
+    }
+
+
+# Local alias so a single ``import dataclasses`` doesn't pollute the
+# top-level namespace just for one rare assertion.
+from dataclasses import FrozenInstanceError as dataclasses_FrozenInstanceError  # noqa: E402

@@ -21,6 +21,10 @@ dependencies = [
     "Pillow>=10",
     "jinja2>=3.1",
     "requests>=2.32",
+    # Async HTTP client (snapshotter) + dashboard (aiohttp.web). The
+    # device runtime is asyncio-based; this is the single async-IO
+    # primitive both PR 3b and PR 3d depend on.
+    "aiohttp>=3.9",
     # Required by `streettracker export-engine`: Ultralytics' .pt -> .onnx -> .engine
     # pipeline imports `onnx` (graph build) and `onnxslim` (graph simplify); the
     # in-tree exporter also validates the .onnx via onnxruntime CPU.
