@@ -539,6 +539,189 @@ def test_road_gate_finalize_never_fires_fallback() -> None:
     assert fin.should_fire is False
 
 
+# ----------------------------------------------------------------------
+# Asymmetric (direction-tagged) triggers
+#
+# The synthetic ROAD_POLY is a horizontal stripe, so the principal axis
+# points along +x and "forward" motion (increasing t') corresponds to
+# left-to-right travel in image coords. "reverse" is right-to-left.
+
+ASYM_TRIGGERS = [0.25, 0.50, 0.75]
+
+
+def _asym_planner(
+    directions: list, triggers: list[float] | None = None, cooldown: int = 2
+) -> SnapPlanner:
+    cfg = SnapPlannerConfig(
+        max_per_track=10,
+        post_fire_cooldown_frames=cooldown,
+        road_gate=RoadGateConfig(
+            polygon_frac=ROAD_POLY,
+            trigger_t_prime=triggers if triggers is not None else ASYM_TRIGGERS,
+            t_usable_frac=(0.0, 1.0),
+            trigger_directions=directions,
+        ),
+    )
+    return SnapPlanner(FW, FH, cfg)
+
+
+def test_forward_only_trigger_fires_on_left_to_right_motion() -> None:
+    """All triggers tagged "forward". L-to-R traversal fires all three;
+    R-to-L traversal fires none."""
+    p_lr = _asym_planner(["forward", "forward", "forward"])
+    fires_lr = 0
+    for f in range(30):
+        cx = 150 + f * 25
+        d = p_lr.consider(100, _bbox_at(cx, FH * 0.5), f, sharpness=200.0)
+        if d.should_fire:
+            fires_lr += 1
+    assert fires_lr == 3
+
+    p_rl = _asym_planner(["forward", "forward", "forward"])
+    fires_rl = 0
+    for f in range(30):
+        cx = 870 - f * 25
+        d = p_rl.consider(101, _bbox_at(cx, FH * 0.5), f, sharpness=200.0)
+        if d.should_fire:
+            fires_rl += 1
+    assert fires_rl == 0
+
+
+def test_reverse_only_trigger_fires_on_right_to_left_motion() -> None:
+    """Symmetric to the forward-only case but for "reverse" tags."""
+    p_lr = _asym_planner(["reverse", "reverse", "reverse"])
+    fires_lr = 0
+    for f in range(30):
+        cx = 150 + f * 25
+        d = p_lr.consider(102, _bbox_at(cx, FH * 0.5), f, sharpness=200.0)
+        if d.should_fire:
+            fires_lr += 1
+    assert fires_lr == 0
+
+    p_rl = _asym_planner(["reverse", "reverse", "reverse"])
+    fires_rl = 0
+    for f in range(30):
+        cx = 870 - f * 25
+        d = p_rl.consider(103, _bbox_at(cx, FH * 0.5), f, sharpness=200.0)
+        if d.should_fire:
+            fires_rl += 1
+    assert fires_rl == 3
+
+
+def test_mixed_directions_each_direction_picks_up_only_its_own_plus_both() -> None:
+    """Mix one forward, one both, one reverse. L-to-R sees fwd + both;
+    R-to-L sees rev + both. Neither direction can fire the other's."""
+    directions = ["forward", "both", "reverse"]
+
+    p_lr = _asym_planner(directions)
+    fires_lr: list[tuple[float, int]] = []
+    for f in range(30):
+        cx = 150 + f * 25
+        d = p_lr.consider(104, _bbox_at(cx, FH * 0.5), f, sharpness=200.0)
+        if d.should_fire:
+            assert d.snap_index is not None
+            fires_lr.append((cx, d.snap_index))
+    # Forward sweep: should fire trigger 0 (forward, t'=0.25) then
+    # trigger 1 (both, t'=0.50). Trigger 2 is reverse-only -> skipped.
+    assert len(fires_lr) == 2
+    assert [idx for _, idx in fires_lr] == [1, 2]
+
+    p_rl = _asym_planner(directions)
+    fires_rl: list[tuple[float, int]] = []
+    for f in range(30):
+        cx = 870 - f * 25
+        d = p_rl.consider(105, _bbox_at(cx, FH * 0.5), f, sharpness=200.0)
+        if d.should_fire:
+            assert d.snap_index is not None
+            fires_rl.append((cx, d.snap_index))
+    # Reverse sweep: trigger 2 (reverse, t'=0.75) then trigger 1 (both,
+    # t'=0.50). Trigger 0 is forward-only -> skipped.
+    assert len(fires_rl) == 2
+    assert [idx for _, idx in fires_rl] == [1, 2]
+
+
+def test_directions_default_to_both_when_omitted() -> None:
+    """Omitting trigger_directions must preserve pre-feature behaviour:
+    every trigger fires in either direction. Exercises the default path
+    through RoadGate.from_config without breaking existing configs."""
+    cfg = RoadGateConfig(
+        polygon_frac=ROAD_POLY,
+        trigger_t_prime=ASYM_TRIGGERS,
+        # trigger_directions deliberately omitted
+    )
+    gate = RoadGate.from_config(cfg, FW, FH)
+    assert gate.trigger_directions == ("both", "both", "both")
+
+
+def test_invalid_direction_string_raises() -> None:
+    cfg = RoadGateConfig(
+        polygon_frac=ROAD_POLY,
+        trigger_t_prime=[0.5],
+        trigger_directions=["sideways"],  # type: ignore[list-item]
+    )
+    with pytest.raises(ValueError, match="invalid trigger direction"):
+        RoadGate.from_config(cfg, FW, FH)
+
+
+def test_trigger_directions_length_mismatch_raises() -> None:
+    cfg = RoadGateConfig(
+        polygon_frac=ROAD_POLY,
+        trigger_t_prime=[0.25, 0.5, 0.75],
+        trigger_directions=["forward", "both"],
+    )
+    with pytest.raises(ValueError, match="length must match"):
+        RoadGate.from_config(cfg, FW, FH)
+
+
+def test_stationary_frames_never_fire_any_trigger() -> None:
+    """When cur_tp == prev_tp (motion has neither forward nor reverse
+    sign), no trigger -- including "both" -- should fire. This avoids
+    classifying a stationary jitter as either direction."""
+    cfg = RoadGateConfig(polygon_frac=ROAD_POLY, trigger_t_prime=[0.5])
+    gate = RoadGate.from_config(cfg, FW, FH)
+    # prev_tp == cur_tp == trigger value: motion has no direction.
+    assert gate.crossings(0.5, 0.5, set()) == []
+    # prev_tp == cur_tp slightly past trigger: still no motion, no fire.
+    assert gate.crossings(0.6, 0.6, set()) == []
+
+
+def test_asymmetric_trigger_at_extreme_t_prime_fires_only_in_intended_direction() -> None:
+    """Operator's real-world use case: a forward trigger near t'=0 for
+    R-to-L *approach* captures (front plate) and a reverse trigger near
+    t'=1 for L-to-R *departure* captures (rear plate). Each direction's
+    earliest snap must land at the small-bbox / distant end of its own
+    motion -- which here means the trigger at the *start* of the motion
+    in t' space."""
+    # In our test polygon (axis along +x), "forward" = L-to-R, so a
+    # forward trigger near t'=0 sits near the *left* edge -- the start
+    # of an L-to-R track. A reverse trigger near t'=1 sits near the
+    # *right* edge -- the start of an R-to-L track.
+    directions = ["forward", "reverse"]
+    triggers = [0.10, 0.90]
+    # L-to-R: should fire trigger 0 early in the track and skip trigger 1.
+    p_lr = _asym_planner(directions, triggers=triggers)
+    lr_fires: list[float] = []
+    for f in range(30):
+        cx = 150 + f * 25
+        d = p_lr.consider(106, _bbox_at(cx, FH * 0.5), f, sharpness=200.0)
+        if d.should_fire:
+            lr_fires.append(cx)
+    assert len(lr_fires) == 1
+    # Fired near the left of the track.
+    assert lr_fires[0] < FW * 0.35, f"forward fire too late: x={lr_fires[0]}"
+
+    # R-to-L: should fire trigger 1 early in the track and skip trigger 0.
+    p_rl = _asym_planner(directions, triggers=triggers)
+    rl_fires: list[float] = []
+    for f in range(30):
+        cx = 870 - f * 25
+        d = p_rl.consider(107, _bbox_at(cx, FH * 0.5), f, sharpness=200.0)
+        if d.should_fire:
+            rl_fires.append(cx)
+    assert len(rl_fires) == 1
+    assert rl_fires[0] > FW * 0.65, f"reverse fire too late: x={rl_fires[0]}"
+
+
 def test_backward_compat_no_road_gate_uses_right_half_only() -> None:
     """SnapPlanner with no road_gate config still runs the existing
     right_half_only zone-thirds path."""
