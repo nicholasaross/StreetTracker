@@ -39,7 +39,21 @@ Environment=HOME=/home/streettracker
 ; keyframes. See CLAUDE.md "Device runtime notes".
 Environment=OPENCV_FFMPEG_CAPTURE_OPTIONS=rtsp_transport;tcp
 
-ExecStart=/home/streettracker/.local/bin/uv run streettracker run \
+; The community Jetson torch wheel (cp310, sm_87) is linked against
+; system cuDNN + cuBLAS and the venv-bundled libcudss. Without this
+; the runtime fails immediately at `import torch` on a fresh JetPack
+; 6.x box. The same export lives in ~/.bashrc for interactive use.
+Environment=LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64:/usr/lib/aarch64-linux-gnu:/home/streettracker/streettracker/.venv/lib/python3.10/site-packages/nvidia/cu12/lib
+
+; --no-sync: the venv on the Orin includes the jetson-ai-lab torch wheel
+; plus tensorrt symlinks from the system. A default `uv run` would
+; resync against pyproject.toml, which on aarch64 should already pick
+; the right index — but if the resolver ever flapped (e.g., a wheel
+; got pulled from jetson-ai-lab), an auto-sync would clobber the
+; running install. Pinning to --no-sync makes the service immune to
+; that class of failure; deploy refreshes happen via an explicit
+; `git pull && uv sync` during a maintenance window.
+ExecStart=/home/streettracker/.local/bin/uv run --no-sync streettracker run \
     --config configs/camera.json
 
 ; Crash recovery: restart on any unclean exit, but back off so a broken
