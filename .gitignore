@@ -24,6 +24,9 @@ build/
 *.weights
 output/
 camera_config.json
+# StreetTracker convention: configs/camera.json carries the live Reolink
+# password and is per-install. configs/camera.example.json IS tracked.
+configs/camera.json
 *.mp4
 *.mkv
 
