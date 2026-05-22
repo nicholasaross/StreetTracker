@@ -559,3 +559,100 @@ def test_session_context_records_serialisable(tmp_path: Path) -> None:
     roundtrip = TrackRecord.from_json_dict(payload)
     assert roundtrip.track_id == record.track_id
     assert roundtrip.color == record.color
+
+
+# ----------------------------------------------------------------------
+# run_session disable kwargs -- used by `streettracker batch` to skip
+# the live-only subsystems (Reolink snapshotter, dashboard).
+
+
+async def test_run_session_skips_snapshotter_when_disabled(tmp_path: Path) -> None:
+    """``enable_snapshotter=False`` must skip the Reolink HTTP client
+    and the snap-cleanup task even when the config has them enabled.
+    Exercises run_session end-to-end against an immediately-EOF file
+    source so we never need a real Ultralytics engine."""
+    from streettracker.device.runtime import run_session
+
+    class _ImmediateEOF:
+        is_file = True
+        fps = 30.0
+        opens = 0
+        closes = 0
+
+        def open(self) -> None:
+            self.opens += 1
+
+        def frames(self):  # type: ignore[no-untyped-def]
+            return
+            yield  # makes this a generator
+
+        def close(self) -> None:
+            self.closes += 1
+
+    cfg = _load_example_config()
+    out_root = tmp_path / "out"
+    rc = await run_session(
+        cfg,
+        _ImmediateEOF(),
+        output_root=out_root,
+        no_html=True,
+        no_json=True,
+        yolo=_StubYolo(),
+        ir_detector=IRDetector(),
+        enable_snapshotter=False,
+        enable_dashboard=False,
+        shutdown_grace_s=2.0,
+    )
+    assert rc == 0
+    # The session directory was created -- run_session always lays it down.
+    sessions = list(out_root.iterdir())
+    assert len(sessions) == 1
+
+
+async def test_run_session_disables_dashboard_when_disabled(tmp_path: Path) -> None:
+    """``enable_dashboard=False`` must skip the aiohttp bind even when
+    the config has it enabled. Without this, batch runs would
+    needlessly grab port 8080 on the dev box."""
+    import socket
+
+    from streettracker.device.runtime import run_session
+
+    # Pre-bind port 8080 (config default) so that *if* the dashboard
+    # mistakenly tried to bind it would either succeed on a different
+    # port or fail noisily -- either way we'd notice. With the kwarg
+    # honoured, the bind is never attempted.
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    holder.bind(("127.0.0.1", 0))
+    holder.listen(1)
+
+    class _ImmediateEOF:
+        is_file = True
+        fps = 30.0
+
+        def open(self) -> None:
+            pass
+
+        def frames(self):  # type: ignore[no-untyped-def]
+            return
+            yield
+
+        def close(self) -> None:
+            pass
+
+    try:
+        cfg = _load_example_config()
+        rc = await run_session(
+            cfg,
+            _ImmediateEOF(),
+            output_root=tmp_path / "out",
+            no_html=True,
+            no_json=True,
+            yolo=_StubYolo(),
+            ir_detector=IRDetector(),
+            enable_snapshotter=False,
+            enable_dashboard=False,
+            shutdown_grace_s=2.0,
+        )
+        assert rc == 0
+    finally:
+        holder.close()

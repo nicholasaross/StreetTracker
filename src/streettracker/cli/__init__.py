@@ -2,7 +2,7 @@
 
 Subcommands:
 - ``streettracker run`` — live RTSP (Orin only)
-- ``streettracker batch <video>`` — file input                [pending]
+- ``streettracker batch <video>`` — file input
 - ``streettracker pull`` — scp session from device
 - ``streettracker recolor <session>`` — rerun color heuristic
 - ``streettracker debug-color <crop.jpg>`` — inspect a single crop
@@ -27,7 +27,7 @@ usage: streettracker [--version] <command> [<args>]
 
 commands:
   run             live RTSP tracker (Orin only)
-  batch           batch process a video file                  [pending]
+  batch           batch process a video file
   pull            scp a session from a remote device
   recolor         rerun color heuristic on a closed session
   debug-color     inspect HSV vote on one or more crop JPEGs
@@ -92,11 +92,8 @@ def main(argv: list[str] | None = None) -> int:
         from streettracker.cli.run import main as run_main
         return run_main(rest)
     if head == "batch":
-        print(
-            f"[streettracker] subcommand '{head}' not yet implemented",
-            file=sys.stderr,
-        )
-        return 2
+        from streettracker.cli.batch import main as batch_main
+        return batch_main(rest)
 
     print(f"[streettracker] unknown subcommand: {head}", file=sys.stderr)
     _print_help()
