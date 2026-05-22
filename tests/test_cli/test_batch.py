@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from streettracker.cli.batch import build_parser, main
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -102,6 +104,23 @@ def test_main_returns_2_on_unparseable_config(tmp_path: Path) -> None:
     bad.write_text('{"not": "a streettracker config"}', encoding="utf-8")
     rc = main([str(video), "--config", str(bad)])
     assert rc == 2
+
+
+def test_main_returns_2_when_engine_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Same hardening as cli/run: batch must surface engine-not-found
+    at startup via the shared validate_paths() rather than crashing
+    deep inside Ultralytics during inference setup."""
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"")
+    cfg = tmp_path / "c.json"
+    cfg.write_text(EXAMPLE_CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
+    # No yolov8m.engine on disk -> validate_paths should fail.
+    rc = main([str(video), "--config", str(cfg)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "engine_path" in err
 
 
 # ----------------------------------------------------------------------

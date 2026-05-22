@@ -86,8 +86,14 @@ def _build_rtsp_url(config: StreetTrackerConfig, stream_name: str) -> str:
     Lives here rather than on :class:`StreetTrackerConfig` so the
     config object stays focused on schema + validation; URL composition
     is a CLI concern.
+
+    Uses :meth:`StreetTrackerConfig.stream_by_name_or_quality` so a
+    config that names streams descriptively (``"RTSP sub (H.264)"``)
+    while ``preferred_stream`` is the legacy short token (``"sub"``)
+    still resolves. The strict-name variant is preserved for callers
+    that want explicit failure on a typo.
     """
-    stream = config.stream_by_name(stream_name)
+    stream = config.stream_by_name_or_quality(stream_name)
     import urllib.parse
 
     user = urllib.parse.quote(config.camera.username, safe="")
@@ -117,6 +123,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     try:
         config = StreetTrackerConfig.from_json_file(args.config)
+        config.validate_paths()
     except ConfigError as exc:
         print(f"[run] config error: {exc}", file=sys.stderr)
         return 2
@@ -126,7 +133,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     try:
         stream_name = _resolve_stream_name(config, args.stream)
-        stream = config.stream_by_name(stream_name)
+        stream = config.stream_by_name_or_quality(stream_name)
     except ConfigError as exc:
         print(f"[run] {exc}", file=sys.stderr)
         return 2

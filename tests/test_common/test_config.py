@@ -52,8 +52,12 @@ def test_example_config_loads_cleanly() -> None:
     assert cfg.snapshot.snap_gate is not None
     assert len(cfg.snapshot.snap_gate.trigger_t_prime) == 6
     assert cfg.snapshot.snap_gate.trigger_directions == (
-        "forward", "forward", "forward",
-        "reverse", "reverse", "reverse",
+        "forward",
+        "forward",
+        "forward",
+        "reverse",
+        "reverse",
+        "reverse",
     )
 
 
@@ -69,6 +73,117 @@ def test_stream_by_name_unknown_raises_config_error_not_keyerror() -> None:
     cfg = StreetTrackerConfig.from_json_file(EXAMPLE_PATH)
     with pytest.raises(ConfigError, match="stream 'nonexistent' not declared"):
         cfg.stream_by_name("nonexistent")
+
+
+# ----------------------------------------------------------------------
+# stream_by_name_or_quality -- fallback for migrated configs whose
+# stream names don't match the legacy preferred_stream token.
+
+
+def test_stream_by_name_or_quality_hits_name_first() -> None:
+    """When the key matches a stream name exactly, that wins regardless
+    of any quality match. Keeps deterministic behaviour for configs
+    that follow the example's name == quality convention."""
+    cfg = StreetTrackerConfig.from_json_file(EXAMPLE_PATH)
+    s = cfg.stream_by_name_or_quality("sub")
+    assert s.name == "sub"
+    assert s.quality == "sub"
+
+
+def test_stream_by_name_or_quality_falls_back_to_quality() -> None:
+    """Reproduces the cutover failure: streams have descriptive names
+    but preferred_stream is the legacy short token. Strict-name lookup
+    would fail; quality fallback recovers."""
+    data = _full_minimal()
+    data["streams"] = [
+        {
+            "name": "RTSP main (H.265)",
+            "quality": "main",
+            "codec": "h265",
+            "path": "/h264Preview_01_main",
+        },
+        {
+            "name": "RTSP sub (H.264)",
+            "quality": "sub",
+            "codec": "h264",
+            "path": "/h264Preview_01_sub",
+        },
+    ]
+    cfg = StreetTrackerConfig.from_dict(data)
+    s = cfg.stream_by_name_or_quality("sub")  # legacy token; no name matches
+    assert s.name == "RTSP sub (H.264)"
+    assert s.quality == "sub"
+
+
+def test_stream_by_name_or_quality_raises_when_neither_matches() -> None:
+    cfg = StreetTrackerConfig.from_json_file(EXAMPLE_PATH)
+    with pytest.raises(ConfigError, match="no stream matches 'nope' by name or quality"):
+        cfg.stream_by_name_or_quality("nope")
+
+
+def test_stream_by_name_or_quality_quality_match_is_first_declared() -> None:
+    """When multiple streams share the same quality (unusual but
+    possible), the first declared wins. This is documented; ambiguous
+    configs should be cleaned up rather than relying on order."""
+    data = _full_minimal()
+    data["streams"] = [
+        {"name": "alpha", "quality": "sub", "codec": "h264", "path": "/a"},
+        {"name": "beta", "quality": "sub", "codec": "h264", "path": "/b"},
+    ]
+    cfg = StreetTrackerConfig.from_dict(data)
+    s = cfg.stream_by_name_or_quality("sub")
+    assert s.name == "alpha"
+
+
+# ----------------------------------------------------------------------
+# validate_paths -- engine_path filesystem check.
+
+
+def test_validate_paths_passes_when_engine_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Happy path: engine file exists at the resolved relative location."""
+    data = _full_minimal()
+    data["inference"]["engine_path"] = "fake.engine"
+    cfg = StreetTrackerConfig.from_dict(data)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "fake.engine").write_bytes(b"FAKE_TRT_ENGINE_BYTES")
+    cfg.validate_paths()  # should not raise
+
+
+def test_validate_paths_raises_with_json_path_when_engine_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reproduces the second cutover failure: engine_path points at a
+    file that wasn't built. The error message must include the JSON
+    path AND the resolved absolute path so the operator can fix the
+    config without spelunking Python tracebacks."""
+    data = _full_minimal()
+    data["inference"]["engine_path"] = "yolov8n_fp16.engine"
+    cfg = StreetTrackerConfig.from_dict(data)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ConfigError) as exc_info:
+        cfg.validate_paths()
+    msg = str(exc_info.value)
+    assert "$.inference.engine_path" in msg
+    assert "yolov8n_fp16.engine" in msg
+    assert "does not exist" in msg
+    # The resolved absolute path should appear so the operator can
+    # confirm CWD assumptions match their expectations.
+    assert str(tmp_path) in msg
+    # And the message should hint at the on-device build step.
+    assert "export-engine" in msg
+
+
+def test_validate_paths_accepts_absolute_engine_path(tmp_path: Path) -> None:
+    """Absolute paths bypass the CWD-relative resolution -- common for
+    operators who keep engines outside the repo dir."""
+    data = _full_minimal()
+    engine = tmp_path / "abs.engine"
+    engine.write_bytes(b"FAKE")
+    data["inference"]["engine_path"] = str(engine)
+    cfg = StreetTrackerConfig.from_dict(data)
+    cfg.validate_paths()  # no raise
 
 
 # ----------------------------------------------------------------------
@@ -335,8 +450,7 @@ def _full_minimal() -> dict:
         },
         "ports": {"http": 80, "rtsp": 554},
         "streams": [
-            {"name": "sub", "quality": "sub", "codec": "h264",
-             "path": "/h264Preview_01_sub"},
+            {"name": "sub", "quality": "sub", "codec": "h264", "path": "/h264Preview_01_sub"},
         ],
         "nano": {
             "preferred_stream": "sub",
