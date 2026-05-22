@@ -150,6 +150,13 @@ class SessionContext:
     last_html_write_mono: float = 0.0
     frame_w: int = 0
     frame_h: int = 0
+    # Cumulative count of frames where the snap planner returned
+    # ``reason="blur_gate"`` (sharpness below ``min_sharpness``). Frames
+    # are counted, not tracks -- a fast vehicle can contribute many
+    # blur-skipped frames over its visible span. Surfaced in
+    # SessionMeta.snap_stats at session end so post-cutover ANPR tuning
+    # can correlate this against capture coverage.
+    blur_skip_count: int = 0
 
     @property
     def session_t(self) -> float:
@@ -193,6 +200,17 @@ def build_session_meta(ctx: SessionContext) -> SessionMeta:
     """Snapshot of session metadata, written at session end."""
     elapsed = ctx.session_t
     avg_infer = float(getattr(ctx.yolo, "avg_infer_ms", 0.0))
+    snap_stats: dict[str, Any] | None = None
+    if ctx.snapshotter is not None:
+        s = ctx.snapshotter.stats
+        snap_stats = {
+            "attempts": s.attempts,
+            "successes": s.successes,
+            "failures": s.failures,
+            "dropped": s.dropped,
+            "blur_skipped_frames": ctx.blur_skip_count,
+            "latency": s.latency_summary(),
+        }
     return SessionMeta(
         session_label=ctx.session_label,
         session_start_unix=ctx.t_start_wall,
@@ -200,6 +218,7 @@ def build_session_meta(ctx: SessionContext) -> SessionMeta:
         pipe_fps=round(ctx.frames_processed / elapsed, 2) if elapsed > 0 else 0.0,
         avg_infer_ms=round(avg_infer, 2),
         ir_periods=list(ctx.ir_periods),
+        snap_stats=snap_stats,
     )
 
 
@@ -489,6 +508,23 @@ async def process_frame(
                 sharpness=sharpness,
             )
             if not decision.should_fire or decision.snap_index is None:
+                # Surface blur-gate rejections with per-track throttle so
+                # the journal carries enough signal to correlate against
+                # capture coverage without flooding on a fast vehicle
+                # (which can stay blurred for its whole visible span).
+                # Mirrors NanoTracker (nano_tracker.py:1514-1519); my PR
+                # 3e port silently dropped these.
+                if decision.reason == "blur_gate":
+                    ctx.blur_skip_count += 1
+                    now_mono = time.monotonic()
+                    if now_mono - tr.last_blur_skip_logged_mono >= 5.0:
+                        logger.info(
+                            "[snap] track %d blur skip (sharpness=%.0f < min=%.0f)",
+                            tr.id,
+                            sharpness if sharpness is not None else 0.0,
+                            cfg.min_sharpness,
+                        )
+                        tr.last_blur_skip_logged_mono = now_mono
                 continue
             logger.info(
                 "[snap] track %d fire %d reason=%s score=%.3f",

@@ -54,12 +54,47 @@ _MIN_JPEG_BYTES = 100
 
 @dataclasses.dataclass(slots=True)
 class SnapshotStats:
-    """Counters for the dashboard's "Reolink snaps" panel."""
+    """Counters for the dashboard's "Reolink snaps" panel.
+
+    ``latencies_ms`` records the wall-clock duration of every successful
+    fire -- from ``submit()`` queuing to the JPEG landing on disk. The
+    interesting bit for post-cutover ANPR tuning is the *median* fire
+    latency, because triggers must be placed upstream of the optimal
+    plate-readable position by exactly that much (in t' units along the
+    polygon). Failures aren't sampled because the timing of a failed
+    fire isn't meaningful for placement decisions.
+    """
 
     attempts: int = 0
     successes: int = 0
     failures: int = 0
     dropped: int = 0
+    latencies_ms: list[float] = dataclasses.field(default_factory=list)
+
+    def latency_summary(self) -> dict[str, float | int]:
+        """Percentile breakdown of fire latencies. Empty dict if no samples yet.
+
+        Nearest-rank percentiles (no interpolation) -- simpler than
+        ``statistics.quantiles`` and sufficient for the few-thousand-sample
+        scale of a multi-day session. Rounded to one decimal so the
+        JSON output stays human-readable.
+        """
+        if not self.latencies_ms:
+            return {"count": 0}
+        sorted_ms = sorted(self.latencies_ms)
+        n = len(sorted_ms)
+
+        def pct(p: float) -> float:
+            return sorted_ms[min(n - 1, int(n * p))]
+
+        return {
+            "count": n,
+            "min_ms": round(sorted_ms[0], 1),
+            "p50_ms": round(pct(0.5), 1),
+            "p90_ms": round(pct(0.9), 1),
+            "p99_ms": round(pct(0.99), 1),
+            "max_ms": round(sorted_ms[-1], 1),
+        }
 
 
 def build_snap_url(
@@ -116,8 +151,12 @@ class ReolinkSnapshotter:
             )
             return None
         self._in_flight += 1
+        # Latency is measured from this point (when the runtime decided
+        # to fire) to the JPEG landing on disk. That's what matters for
+        # trigger placement -- not the HTTP roundtrip on its own.
+        t_submit = time.monotonic()
         task = asyncio.create_task(
-            self._fire(output_path), name=f"snap-{output_path.name}"
+            self._fire(output_path, t_submit=t_submit), name=f"snap-{output_path.name}"
         )
         self._tasks.add(task)
         task.add_done_callback(self._on_task_done)
@@ -127,7 +166,7 @@ class ReolinkSnapshotter:
         self._tasks.discard(task)
         self._in_flight = max(0, self._in_flight - 1)
 
-    async def _fire(self, output_path: Path) -> bool:
+    async def _fire(self, output_path: Path, *, t_submit: float) -> bool:
         self.stats.attempts += 1
         timeout = aiohttp.ClientTimeout(total=self.timeout_s)
         try:
@@ -145,6 +184,7 @@ class ReolinkSnapshotter:
             # the Orin's eMMC under load.
             await asyncio.to_thread(output_path.write_bytes, data)
             self.stats.successes += 1
+            self.stats.latencies_ms.append((time.monotonic() - t_submit) * 1000.0)
             return True
         except Exception as exc:
             self.stats.failures += 1

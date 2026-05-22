@@ -38,8 +38,7 @@ from streettracker.device.snapshotter import (
 def test_build_snap_url_format() -> None:
     url = build_snap_url("192.168.1.72", 80, "admin", "secret")
     assert url == (
-        "http://192.168.1.72:80/cgi-bin/api.cgi"
-        "?cmd=Snap&channel=0&user=admin&password=secret"
+        "http://192.168.1.72:80/cgi-bin/api.cgi?cmd=Snap&channel=0&user=admin&password=secret"
     )
 
 
@@ -93,9 +92,7 @@ async def session() -> AsyncIterator[aiohttp.ClientSession]:
 # Happy path: a single submit fires, writes the JPEG, increments stats.
 
 
-async def test_submit_writes_jpeg_to_disk(
-    tmp_path: Path, session: aiohttp.ClientSession
-) -> None:
+async def test_submit_writes_jpeg_to_disk(tmp_path: Path, session: aiohttp.ClientSession) -> None:
     async def handler(_req: web.Request) -> web.Response:
         return web.Response(body=_FAKE_JPEG, content_type="image/jpeg")
 
@@ -180,9 +177,7 @@ async def test_http_error_status_marked_failure(
         await server.close()
 
 
-async def test_timeout_marked_failure(
-    tmp_path: Path, session: aiohttp.ClientSession
-) -> None:
+async def test_timeout_marked_failure(tmp_path: Path, session: aiohttp.ClientSession) -> None:
     """Slow camera -> aiohttp client timeout -> failure stat."""
 
     async def handler(_req: web.Request) -> web.Response:
@@ -191,9 +186,7 @@ async def test_timeout_marked_failure(
 
     server, url = await _start_fake_reolink(handler)
     try:
-        snapper = ReolinkSnapshotter(
-            url=url, session=session, timeout_s=0.1
-        )
+        snapper = ReolinkSnapshotter(url=url, session=session, timeout_s=0.1)
         task = snapper.submit(tmp_path / "vehicle_1_main_1.jpg")
         assert task is not None
         assert await task is False
@@ -221,9 +214,7 @@ async def test_submit_drops_excess_when_at_max_concurrent(
 
     server, url = await _start_fake_reolink(handler)
     try:
-        snapper = ReolinkSnapshotter(
-            url=url, session=session, max_concurrent=2
-        )
+        snapper = ReolinkSnapshotter(url=url, session=session, max_concurrent=2)
         t1 = snapper.submit(tmp_path / "vehicle_1_main_1.jpg")
         t2 = snapper.submit(tmp_path / "vehicle_2_main_1.jpg")
         # Both should be in flight now.
@@ -244,6 +235,90 @@ async def test_submit_drops_excess_when_at_max_concurrent(
         assert await t4 is True
     finally:
         await server.close()
+
+
+# ----------------------------------------------------------------------
+# drain().
+
+
+# ----------------------------------------------------------------------
+# Latency tracking. The runtime needs per-fire wall-clock latency to
+# tune trigger placement post-cutover: shifted upstream of the optimal
+# plate-readable position by exactly the measured median latency.
+
+
+async def test_submit_records_latency_on_success(
+    tmp_path: Path, session: aiohttp.ClientSession
+) -> None:
+    async def handler(_req: web.Request) -> web.Response:
+        return web.Response(body=_FAKE_JPEG, content_type="image/jpeg")
+
+    server, url = await _start_fake_reolink(handler)
+    try:
+        snapper = ReolinkSnapshotter(url=url, session=session)
+        assert snapper.stats.latencies_ms == []
+        task = snapper.submit(tmp_path / "vehicle_1_main_1.jpg")
+        assert task is not None
+        await task
+        assert len(snapper.stats.latencies_ms) == 1
+        # Localhost loopback can complete inside Windows'
+        # ``time.monotonic()`` resolution tick (~15 ms), so the floor
+        # is 0.0 -- not strict positivity. The upper bound just
+        # confirms we recorded *something* and not, say, the unix
+        # epoch by accident.
+        assert 0.0 <= snapper.stats.latencies_ms[0] < 5000.0
+    finally:
+        await server.close()
+
+
+async def test_failed_submit_does_not_record_latency(
+    tmp_path: Path, session: aiohttp.ClientSession
+) -> None:
+    """Failure latencies are not interesting for trigger-placement tuning
+    (a failed fire produces no usable JPEG), so we don't sample them."""
+
+    async def handler(_req: web.Request) -> web.Response:
+        return web.Response(status=500, text="server error")
+
+    server, url = await _start_fake_reolink(handler)
+    try:
+        snapper = ReolinkSnapshotter(url=url, session=session)
+        task = snapper.submit(tmp_path / "vehicle_1_main_1.jpg")
+        assert task is not None
+        await task
+        assert snapper.stats.failures == 1
+        assert snapper.stats.latencies_ms == []
+    finally:
+        await server.close()
+
+
+def test_latency_summary_empty_returns_count_zero() -> None:
+    stats = SnapshotStats()
+    assert stats.latency_summary() == {"count": 0}
+
+
+def test_latency_summary_percentiles_nearest_rank() -> None:
+    """Nearest-rank percentiles (no interpolation). 10 samples lets us
+    pin the expected indices exactly."""
+    stats = SnapshotStats()
+    stats.latencies_ms = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0]
+    s = stats.latency_summary()
+    assert s["count"] == 10
+    assert s["min_ms"] == 10.0
+    assert s["max_ms"] == 100.0
+    # Nearest-rank with int(n*p) indexing: p50 -> index 5 -> 60.0.
+    assert s["p50_ms"] == 60.0
+    # p90 -> index 9 -> 100.0; p99 -> clamped to last -> 100.0.
+    assert s["p90_ms"] == 100.0
+    assert s["p99_ms"] == 100.0
+
+
+def test_latency_summary_rounds_to_one_decimal() -> None:
+    stats = SnapshotStats()
+    stats.latencies_ms = [123.456, 234.567, 345.678]
+    s = stats.latency_summary()
+    assert s["p50_ms"] == 234.6
+    assert s["min_ms"] == 123.5
 
 
 # ----------------------------------------------------------------------
@@ -291,6 +366,7 @@ def test_cleanup_old_snaps_deletes_only_files_older_than_keep_days(
     old.write_bytes(b"x")
     old_mtime = time.time() - 10 * 86400
     import os
+
     os.utime(old, (old_mtime, old_mtime))
     # New: just created
     new = sess / "vehicle_2_main_1.jpg"
@@ -315,6 +391,7 @@ def test_cleanup_old_snaps_zero_keep_days_is_noop(tmp_path: Path) -> None:
     old = sess / "vehicle_1_main_1.jpg"
     old.write_bytes(b"x")
     import os
+
     os.utime(old, (time.time() - 365 * 86400, time.time() - 365 * 86400))
     deleted = cleanup_old_snaps(tmp_path, keep_days=0)
     assert deleted == 0
@@ -343,11 +420,10 @@ async def test_run_cleanup_task_invokes_cleanup_periodically(
     stale = sess / "vehicle_1_main_1.jpg"
     stale.write_bytes(b"x")
     import os
+
     os.utime(stale, (time.time() - 10 * 86400, time.time() - 10 * 86400))
 
-    task = asyncio.create_task(
-        run_cleanup_task(tmp_path, interval_s=0.05, keep_days=1)
-    )
+    task = asyncio.create_task(run_cleanup_task(tmp_path, interval_s=0.05, keep_days=1))
     # Wait one interval + a margin so cleanup has run.
     await asyncio.sleep(0.2)
     assert not stale.exists()
