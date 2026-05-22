@@ -1,7 +1,7 @@
 """StreetTracker CLI entry point.
 
 Subcommands:
-- ``streettracker run`` — live RTSP (Orin only)               [pending]
+- ``streettracker run`` — live RTSP (Orin only)
 - ``streettracker batch <video>`` — file input                [pending]
 - ``streettracker pull`` — scp session from device
 - ``streettracker recolor <session>`` — rerun color heuristic
@@ -26,7 +26,7 @@ _HELP = """\
 usage: streettracker [--version] <command> [<args>]
 
 commands:
-  run             live RTSP tracker (Orin only)               [pending]
+  run             live RTSP tracker (Orin only)
   batch           batch process a video file                  [pending]
   pull            scp a session from a remote device
   recolor         rerun color heuristic on a closed session
@@ -88,7 +88,10 @@ def main(argv: list[str] | None = None) -> int:
         from streettracker.cli.alpr_report import main as alpr_report_main
         return alpr_report_main(rest)
 
-    if head in ("run", "batch"):
+    if head == "run":
+        from streettracker.cli.run import main as run_main
+        return run_main(rest)
+    if head == "batch":
         print(
             f"[streettracker] subcommand '{head}' not yet implemented",
             file=sys.stderr,
