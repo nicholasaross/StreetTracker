@@ -237,6 +237,116 @@ These mean a fresh deploy where you scp the live `configs/camera.json`
 back into place will Just Work without manual edits even if your
 engine target or stream names differ from the example.
 
+## ANPR tuning loop
+
+**Active focus.** Post-cutover work to improve 4K plate-capture
+coverage. The runtime is live and healthy; the snap planner is firing,
+just not with the framing / hit-rate ANPR wants.
+
+### Assessment baseline (2026-05-22, `session_20260522_154224`, ~1h12m of live traffic)
+
+| Metric | Value |
+|---|---|
+| Total tracks (cars + persons) | 133 |
+| Cars with any 4K cap | 34 / 63 (54%) |
+| Cars reaching the configured max of 3 caps | 4 / 63 (6%) |
+| L→R (rear plate, median 47 px/s) | 22 / 74 (29%) any cap; **3 reach 3 caps** |
+| R→L (front plate, median 69 px/s) | 22 / 59 (37%) any cap; only 1 reaches 3 caps |
+
+Persons mostly get zero captures (60 / 70). Correct — sidewalk
+pedestrians are outside the road polygon by design.
+
+Representative tracks (visually inspected via downsampled 4K samples):
+
+| Track | Profile | Verdict |
+|---|---|---|
+| 153 | L→R Mercedes, 2 caps | **representative slow L→R**: rear plate visible, small but readable |
+| 241 | R→L red hatchback, 107 px/s, 1 cap | **representative fast R→L**: car already at left edge of frame, plate region partially out of view |
+| 516 | R→L Land Rover, 4 px/s, 131s in view | **not representative**: parked on the curb, being unloaded |
+
+Plate quality when well-framed is excellent (4K JPEG sharp, readable
+characters). The dominant failure mode is therefore **HTTP-snap
+latency**, not motion blur: by the time the Reolink JPEG arrives, fast
+vehicles have moved past the plate-readable position.
+
+### Step 1 (done): observability — [PR #16](https://github.com/nicholasaross/StreetTracker/pull/16)
+
+Merged 2026-05-22. `SessionMeta.snap_stats` now lands in `*_meta.json`:
+
+* `latency` — count / min / p50 / p90 / p99 / max ms per successful
+  fire (covers Reolink HTTP roundtrip + disk write)
+* `blur_skipped_frames` — cumulative frames where the planner's
+  `min_sharpness` gate suppressed a fire
+* `attempts / successes / failures / dropped` — pre-existing
+  counters, now persisted in JSON rather than journal-only
+
+Blur skips are also logged in the journal, throttled per-track per 5s.
+
+### Step 2 (next): deploy + ~24 h soak
+
+```bash
+ssh streettracker@orin
+cd ~/streettracker && git pull
+sudo -n systemctl restart streettracker.service
+journalctl -u streettracker -f      # confirm clean restart; Ctrl-C
+```
+
+The session JSON is only written at session shutdown, so to read mid-soak:
+
+```bash
+ssh streettracker@orin "sudo -n systemctl stop streettracker.service && \
+  jq .snap_stats ~/streettracker/output/session_*/session_*_meta.json | tail -1 && \
+  sudo -n systemctl start streettracker.service"
+```
+
+(Stopping triggers the runtime's graceful drain → final `_meta.json`
+write, then we restart for the next session.)
+
+### Step 3 (after soak): tune
+
+Read `snap_stats.latency.p50_ms` from the soaked `_meta.json`. Convert
+to a t'-unit trigger offset:
+
+1. Median traffic speed in sub-stream pixels per ms ≈ 0.05–0.07 px/ms
+   (47–69 px/s observed). Call this `v`.
+2. Pixel offset during latency = `p50_ms × v` (typically 15-30 px in
+   the 896-wide sub-stream).
+3. Polygon principal-axis length in sub-stream pixels is in
+   `.claude/triggers_proposal.json` under `axis_endpoints_orig`. Call
+   it `L`.
+4. t'-unit shift = `(p50_ms × v) / L`. Typically 0.02–0.05.
+5. **Forward triggers** (R→L approach, low t' values): *subtract* the
+   shift — fire earlier so the snap lands at the readable position.
+6. **Reverse triggers** (L→R depart, high t' values): *add* the shift
+   — same logic, motion sign is opposite.
+
+If `blur_skipped_frames` is ≳ 20% of (`attempts` + `blur_skipped_frames`),
+also drop `snapshot.min_sharpness` from 100.0 toward 50 or 30. A
+borderline-blurry cap feeds ALPR better than no cap.
+
+Apply changes via the existing recipe in
+[Adjusting triggers without re-sketching](#adjusting-triggers-without-re-sketching):
+edit `triggers_tprime` → render overlay → regenerate `snap_gate.json`
+→ scp to Orin → restart unit.
+
+### Step 4 (validation): re-soak ~1 h + diff against baseline
+
+Same query that produced the baseline table above. Coverage should
+improve on both directions, with R→L showing the bigger lift (it had
+more headroom). If `% with any cap` rises but `% with 3 caps` doesn't,
+the latency offset is probably right but a single trigger crossing is
+still all that fits within a fast vehicle's visible span — consider
+shrinking the gap between adjacent triggers in `triggers_tprime`.
+
+### Open question: trigger direction convention
+
+CLAUDE.md's [snap-gate section](#snap-gate-road-polygon--axis-triggers)
+says R→L = front plate, L→R = rear plate. The assessment's visual
+spot-check on track 153 (L→R, rear plate visible) is consistent, but
+track 516's plate was hard to call from the downsampled frame. Worth
+re-verifying on a clean traffic sample post-tuning before relying on
+the convention for asymmetric trigger placement.
+
 ## Fresh deployment procedure
 
 Canonical reference for any future redeploy on a wiped Orin (e.g.
@@ -437,7 +547,8 @@ values to change.
 | `None`, `right_half_only=False` | Legacy peak/decay | Benchmark only. |
 | `RoadGateConfig(...)` | Road polygon + axis triggers | **Live deployment mode.** Crossing semantics: each frame compares the bbox-centre's t' with the previous frame's; a not-yet-fired trigger between them fires *if its direction tag matches the motion sign* (`"forward"` = t' increasing = camera-approach side, `"reverse"` = t' decreasing = departure side, `"both"` = default). After a fire, `prev_t_prime` is advanced to the trigger's t' (not to `cur_tp`) so subsequent triggers in the same forward motion remain detectable one-per-frame. Asymmetric triggers let R→L (front plate) and L→R (rear plate) tracks each have their own early-capture trigger without one direction consuming the other's. |
 
-Cutover (phase 7) is in progress: once the Orin systemd unit is
-enabled and StreetTracker has run cleanly for ~a week,
-VehicleTracker + NanoTracker get archived (see
-[Cutover](#cutover) above for the operator commands).
+Phase 7 cutover is operationally complete (Orin live since
+2026-05-22); the remaining tail is repo archival on GitHub
+(VehicleTracker + NanoTracker) after ~a week of clean operation.
+Active work is in the [ANPR tuning loop](#anpr-tuning-loop) section
+above — currently awaiting the post-PR-#16 soak.
