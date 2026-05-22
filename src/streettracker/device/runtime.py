@@ -622,6 +622,8 @@ async def run_session(
     shutdown_grace_s: float = 30.0,
     yolo: Any = None,
     ir_detector: IRDetector | None = None,
+    enable_snapshotter: bool = True,
+    enable_dashboard: bool = True,
 ) -> int:
     """Run the live session until source exhaustion, signal, or timeout.
 
@@ -644,6 +646,15 @@ async def run_session(
             for tests (the default constructs an Ultralytics instance,
             which requires torch + the engine file).
         ir_detector: override the default :class:`IRDetector`.
+        enable_snapshotter: if False, skip the Reolink HTTP
+            snapshotter (and its periodic cleanup task). Used by
+            ``streettracker batch`` -- there's no live camera to fetch
+            4K stills from. Combined with the config flag via AND, so
+            ``config.snapshot.enabled=False`` still wins.
+        enable_dashboard: if False, skip the built-in aiohttp
+            dashboard. Used by ``streettracker batch`` -- nothing
+            watches a one-off file run. Combined with the config flag
+            via AND.
     """
     output_root = output_root or config.output.dir
     output_root.mkdir(parents=True, exist_ok=True)
@@ -686,7 +697,7 @@ async def run_session(
     # aiohttp session shared between the snapshotter and any future
     # subsystem that needs outbound HTTP. Owned by run_session.
     async with aiohttp.ClientSession() as http:
-        if config.snapshot.enabled:
+        if config.snapshot.enabled and enable_snapshotter:
             snap_url = build_snap_url(
                 config.camera.ip,
                 config.ports.http,
@@ -700,7 +711,7 @@ async def run_session(
                 max_concurrent=config.snapshot.max_concurrent,
             )
 
-        if config.http.enabled:
+        if config.http.enabled and enable_dashboard:
             ctx.dashboard = await start_dashboard(
                 paths["dir"],
                 host=config.http.host,
@@ -708,7 +719,7 @@ async def run_session(
             )
 
         cleanup_task: asyncio.Task[None] | None = None
-        if config.snapshot.keep_days > 0:
+        if config.snapshot.keep_days > 0 and enable_snapshotter:
             cleanup_task = asyncio.create_task(
                 run_cleanup_task(
                     output_root,
