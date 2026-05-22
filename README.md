@@ -21,7 +21,8 @@ BotSORT, TensorRT, uv-managed.
 
 ```bash
 uv sync
-uv run streettracker batch path/to/video.mp4
+cp configs/camera.example.json configs/camera.json   # tune as needed
+uv run streettracker batch path/to/video.mp4 --config configs/camera.json
 ```
 
 ## Quick start (Orin Nano)
@@ -29,8 +30,13 @@ uv run streettracker batch path/to/video.mp4
 ```bash
 scripts/setup_orin.sh        # idempotent JetPack + uv + Python 3.12 install
 uv sync
-uv run streettracker run --config camera_config.json
+uv run streettracker export-engine yolov8m.pt        # build TRT engine on this GPU
+cp configs/camera.example.json configs/camera.json   # fill in IP + password
+uv run streettracker run --config configs/camera.json
 ```
+
+To run as a systemd service on the Orin, see the
+[Cutover section in `CLAUDE.md`](CLAUDE.md#cutover).
 
 ## CLI
 
