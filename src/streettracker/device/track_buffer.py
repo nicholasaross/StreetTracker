@@ -109,6 +109,11 @@ class BufferedTrack:
     snap_count: int = 0
     snap_saved_indexes: set[int] = field(default_factory=set)
     misses: int = 0  # consecutive frames the tracker did not see this id
+    # ``time.monotonic()`` of the last blur-skip log line emitted for
+    # this track. The runtime's snap walk throttles the per-track log
+    # to once every few seconds so a fast-moving (and therefore
+    # consistently blurred) vehicle doesn't flood the journal.
+    last_blur_skip_logged_mono: float = 0.0
 
     @property
     def last_bbox(self) -> tuple[float, float, float, float] | None:

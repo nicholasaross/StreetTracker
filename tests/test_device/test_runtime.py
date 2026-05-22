@@ -26,7 +26,9 @@ These tests cover the *integratable* pieces:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
+import logging
 import threading
 import time
 from pathlib import Path
@@ -55,6 +57,8 @@ from streettracker.device.runtime import (
     session_paths,
     write_session_outputs,
 )
+from streettracker.device.snap_planner import SnapPlanner, SnapPlannerConfig
+from streettracker.device.snapshotter import SnapshotStats
 from streettracker.device.track_buffer import BufferedTrack, MotionPoint, TrackBuffer
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -559,6 +563,173 @@ def test_session_context_records_serialisable(tmp_path: Path) -> None:
     roundtrip = TrackRecord.from_json_dict(payload)
     assert roundtrip.track_id == record.track_id
     assert roundtrip.color == record.color
+
+
+# ----------------------------------------------------------------------
+# Blur-skip observability + snap_stats in SessionMeta. Both surfaced
+# in PR #16 after the live cutover found that fast-moving vehicles
+# were getting fewer-than-expected 4K captures: blur skips were
+# silently dropped (the runtime had no visibility), and there was no
+# fire-latency data in the session JSON to calibrate trigger placement.
+
+
+def _make_stub_snapshotter() -> Any:
+    """Lightweight snapshotter stand-in.
+
+    The runtime's snap walk only needs ``ctx.snapshotter is not None``
+    plus ``.stats`` for the meta payload. Blur-gate decisions never
+    reach ``.submit()`` so we don't have to model HTTP at all.
+    """
+
+    class _StubSnapshotter:
+        def __init__(self) -> None:
+            self.stats = SnapshotStats()
+
+        def submit(self, _path: Path) -> Any:  # pragma: no cover - never called
+            return None
+
+    return _StubSnapshotter()
+
+
+async def test_process_frame_increments_blur_skip_counter_when_gate_trips(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A frame with sharpness below ``min_sharpness`` must:
+    * advance ctx.blur_skip_count by one,
+    * NOT call snapshotter.submit (the planner's decision short-circuits
+      before the fire path),
+    * emit one log line with the track id + sharpness + threshold."""
+    ctx = _build_ctx(tmp_path)
+    # Override config to enable the blur gate. Frozen dataclass -- use replace.
+    ctx.config = dataclasses.replace(
+        ctx.config,
+        snapshot=dataclasses.replace(ctx.config.snapshot, min_sharpness=1000.0),
+    )
+    ctx.snapshotter = _make_stub_snapshotter()
+    ctx.frame_w, ctx.frame_h = _FRAME_W, _FRAME_H
+    # Pre-init the planner (right-half mode -- no road_gate needed) so
+    # the lazy init in process_frame doesn't fire on the first frame.
+    ctx.planner = SnapPlanner(
+        frame_width=_FRAME_W,
+        frame_height=_FRAME_H,
+        config=SnapPlannerConfig(
+            min_sharpness=1000.0,
+            area_threshold_frac=0.05,
+            max_per_track=3,
+        ),
+    )
+    # Detection in the right half (cx > FW/2 = 320), large enough to
+    # clear the 5% area gate (200*150 / (640*360) = 13%).
+    det = Detection(x1=420.0, y1=180.0, x2=620.0, y2=330.0, score=0.9, class_id=2, track_id=42)
+    ctx.yolo = _StubYolo(returns=[det])
+    # Uniform grey frame -> sharpness 0 -> blur gate trips.
+    frame = _frame(value=128)
+
+    with caplog.at_level(logging.INFO, logger="streettracker.device.runtime"):
+        await process_frame(ctx, frame_idx=0, source_t=0.0, frame=frame)
+
+    assert ctx.blur_skip_count == 1
+    assert any("blur skip" in r.message and "42" in r.message for r in caplog.records), [
+        r.message for r in caplog.records
+    ]
+
+
+async def test_blur_skip_log_throttled_per_track(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A fast vehicle stays blurred for its whole visible span -- ten
+    consecutive blurred frames should yield one log line, not ten. The
+    counter still bumps every frame so the session total remains
+    accurate."""
+    ctx = _build_ctx(tmp_path)
+    ctx.config = dataclasses.replace(
+        ctx.config,
+        snapshot=dataclasses.replace(ctx.config.snapshot, min_sharpness=1000.0),
+    )
+    ctx.snapshotter = _make_stub_snapshotter()
+    ctx.frame_w, ctx.frame_h = _FRAME_W, _FRAME_H
+    ctx.planner = SnapPlanner(
+        frame_width=_FRAME_W,
+        frame_height=_FRAME_H,
+        config=SnapPlannerConfig(min_sharpness=1000.0, area_threshold_frac=0.05),
+    )
+    det = Detection(420.0, 180.0, 620.0, 330.0, 0.9, 2, track_id=42)
+    ctx.yolo = _StubYolo(returns=[det])
+    frame = _frame(value=128)
+
+    with caplog.at_level(logging.INFO, logger="streettracker.device.runtime"):
+        for i in range(10):
+            await process_frame(ctx, frame_idx=i, source_t=i * 0.05, frame=frame)
+
+    blur_logs = [r for r in caplog.records if "blur skip" in r.message]
+    assert len(blur_logs) == 1, f"expected 1 throttled log, got {len(blur_logs)}"
+    assert ctx.blur_skip_count == 10
+
+
+def test_build_session_meta_includes_snap_stats_when_snapshotter_present(
+    tmp_path: Path,
+) -> None:
+    ctx = _build_ctx(tmp_path)
+    stats = SnapshotStats(
+        attempts=5,
+        successes=4,
+        failures=1,
+        dropped=0,
+        latencies_ms=[100.0, 200.0, 300.0, 400.0],
+    )
+
+    class _SS:
+        pass
+
+    ss = _SS()
+    ss.stats = stats  # type: ignore[attr-defined]
+    ctx.snapshotter = ss  # type: ignore[assignment]
+    ctx.blur_skip_count = 12
+
+    meta = build_session_meta(ctx)
+    assert meta.snap_stats is not None
+    assert meta.snap_stats["attempts"] == 5
+    assert meta.snap_stats["successes"] == 4
+    assert meta.snap_stats["failures"] == 1
+    assert meta.snap_stats["blur_skipped_frames"] == 12
+    latency = meta.snap_stats["latency"]
+    assert latency["count"] == 4
+    assert latency["min_ms"] == 100.0
+    assert latency["max_ms"] == 400.0
+
+
+def test_build_session_meta_snap_stats_none_when_no_snapshotter(tmp_path: Path) -> None:
+    """Batch mode + ``snapshot.enabled=False`` paths leave
+    ``ctx.snapshotter`` as ``None``; ``snap_stats`` must then be ``None``
+    rather than an empty dict so downstream consumers can short-circuit
+    on missing data."""
+    ctx = _build_ctx(tmp_path)
+    assert ctx.snapshotter is None
+    meta = build_session_meta(ctx)
+    assert meta.snap_stats is None
+
+
+def test_session_meta_round_trips_snap_stats_through_json(tmp_path: Path) -> None:
+    """The schema contract: meta.json -> SessionMeta -> meta.json must
+    preserve snap_stats verbatim. Guards against an accidental field
+    drop in to_json_dict / from_json_dict."""
+    ctx = _build_ctx(tmp_path)
+    stats = SnapshotStats(attempts=1, successes=1, latencies_ms=[50.0])
+
+    class _SS:
+        pass
+
+    ss = _SS()
+    ss.stats = stats  # type: ignore[attr-defined]
+    ctx.snapshotter = ss  # type: ignore[assignment]
+    ctx.blur_skip_count = 3
+    meta = build_session_meta(ctx)
+    payload = meta.to_json_dict()
+    assert "snap_stats" in payload
+    from streettracker.common.schema import SessionMeta
+
+    roundtrip = SessionMeta.from_json_dict(payload)
+    assert roundtrip.snap_stats == meta.snap_stats
 
 
 # ----------------------------------------------------------------------

@@ -90,6 +90,16 @@ class SessionMeta:
     pipe_fps: float = 0.0
     avg_infer_ms: float = 0.0
     ir_periods: list[IRPeriod] = field(default_factory=list)
+    # Reolink snapshot stats: counters + fire-latency percentiles + the
+    # frame-count where the blur gate suppressed a fire. ``None`` when
+    # the session ran with the snapshotter disabled (``batch`` mode,
+    # or ``snapshot.enabled=False`` in config). Otherwise a flat dict --
+    # see :meth:`ReolinkSnapshotter.latency_summary` and
+    # ``streettracker.device.runtime.build_session_meta`` for the
+    # exact keys. Surfaced here so a multi-day soak's ``_meta.json``
+    # carries the data needed to tune trigger placement post-cutover
+    # without parsing the journal.
+    snap_stats: dict[str, Any] | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -106,6 +116,7 @@ class SessionMeta:
             pipe_fps=d.get("pipe_fps", 0.0),
             avg_infer_ms=d.get("avg_infer_ms", 0.0),
             ir_periods=ir,
+            snap_stats=d.get("snap_stats"),
         )
 
 
