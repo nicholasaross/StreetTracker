@@ -103,10 +103,11 @@ JSON record fields: see `common/schema.py` (`TrackRecord`).
 ## Migration status
 
 This repo is a clean-slate replacement for VehicleTracker + NanoTracker.
-Source-of-truth scaffolding is currently developed in NanoTracker's
+Source-of-truth scaffolding was developed in NanoTracker's
 `claude/nano-orin-setup-plan-CCWUD` branch under `streettracker/` and
-mirrored here phase by phase via `cp -a`. See NanoTracker's `CLAUDE.md`
-"Active migration: StreetTracker" section for the recipe.
+mirrored here phase by phase. All phases are code-complete; the
+remaining cutover step is an operator hand-off (install + enable the
+systemd unit on the Orin, decommission the old Nano).
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -116,11 +117,11 @@ mirrored here phase by phase via `cp -a`. See NanoTracker's `CLAUDE.md`
 | 4a | `analysis/`: recolor + debug-color | **done** |
 | 5 | CLI: `pull`, `export-engine`, `setup_orin.sh`, systemd | **done** |
 | 4b | `analysis/alpr/` wholesale port | **done** |
-| 3 | `device/`: live runtime, snapshotter, dashboard, IR | **in progress** — see [Phase 3 progress](#phase-3-progress) below |
+| 3 | `device/`: live runtime, snapshotter, dashboard, IR | **done** — see [Phase 3 progress](#phase-3-progress) below |
 | 6 | (opt) original Nano archive role | not started |
-| 7 | cutover: archive both old repos | not started |
+| 7 | cutover: enable systemd on Orin + decommission Nano + archive old repos | **in progress** — operator hand-off, see [Cutover](#cutover) below |
 
-Tests at HEAD: **248 passing, ruff clean.**
+Tests at HEAD: **353 passing, ruff clean.**
 
 Verify locally:
 
@@ -139,13 +140,15 @@ uv run streettracker recolor --help
 uv run streettracker debug-color --help
 ```
 
-`run` / `batch` still print "not yet implemented" pending phase 3 / 5b.
-`pull` and `export-engine` are wired; `scripts/setup_orin.sh` and
-`scripts/systemd/streettracker.service` are in place for device install.
-`alpr-run` / `alpr-score` / `alpr-label` / `alpr-report` are available
-under the `alpr` extra (`uv sync --extra alpr`); place the bespoke
-detector at `src/streettracker/analysis/alpr/models/license_plate_detector.pt`
-(gitignored).
+All subcommands are wired: `run` / `batch` go through the asyncio
+runtime, `pull` / `export-engine` ship sessions and build engines,
+and `alpr-run` / `alpr-score` / `alpr-label` / `alpr-report` are
+available under the `alpr` extra (`uv sync --extra alpr`). Place the
+bespoke detector at
+`src/streettracker/analysis/alpr/models/license_plate_detector.pt`
+(gitignored). `scripts/setup_orin.sh` and
+`scripts/systemd/streettracker.service` are in place for device
+install; see [Cutover](#cutover) for the install commands.
 
 **Windows + Git Bash gotcha for `streettracker pull`**: MSYS rewrites
 POSIX-looking arguments (`/home/...`) into Windows paths before Python
@@ -155,11 +158,11 @@ and pass `--key` as a Windows-style path.
 
 ## Phase 3 progress
 
-Phase 3 (`device/`: live runtime, snapshotter, dashboard, IR) is
-broken into 6 PRs plus a cutover step. The plan was scoped after the
-Orin deploy hardening landed (see `git log` for the scoping
-conversation in PR #6's predecessor session). Architectural decisions
-are locked in — re-deciding them mid-stream causes churn:
+Phase 3 (`device/`: live runtime, snapshotter, dashboard, IR) shipped
+across six PRs landing on top of the Orin deploy hardening. The
+architectural decisions below are locked in; re-deciding them
+mid-stream caused churn during scoping, and they remain the contract
+the runtime upholds.
 
 ### Decisions locked in
 
@@ -182,96 +185,75 @@ are locked in — re-deciding them mid-stream causes churn:
 - **Heavy unit tests + manual Orin smoke for the runtime loop.** No
   recorded-frames integration test in CI (would balloon the repo and
   CI deliberately skips torch / ultralytics). End-to-end validation
-  happens by ssh'ing into the Orin against the live Reolink after
-  PR 3e merges.
+  happens by ssh'ing into the Orin against the live Reolink.
 
-### PR breakdown + status
+### Shipped manifest
 
-| PR | What | Status |
+| PR | What | Landed |
 |---|---|---|
-| 3a | `common/config.py` (frozen dataclasses, strict JSON loader) + aiohttp dep + tests against `configs/camera.example.json` | **done** ([#7](https://github.com/nicholasaross/StreetTracker/pull/7)) |
-| 3b | `device/snapshotter.py` (aiohttp Reolink client, semaphore, retries, keep_days cleanup task) | **done** ([#8](https://github.com/nicholasaross/StreetTracker/pull/8)) |
-| 3c | `device/ir_detector.py` (sync frame analysis — R/G/B channel-diff + hysteresis → emits `IRPeriod`) | **next** |
-| 3d | `device/dashboard.py` (aiohttp.web static server, lifecycle helpers) | pending |
-| 3e | `device/runtime.py` + `cli/run.py` (asyncio loop integrating sources / inference / planner / snapshotter / finalize / EventLog / signal handlers / RTSP reconnect / idle HTML regen) | pending |
-| 3f | `cli/batch.py` (file-source variant of runtime, no snapshotter/dashboard) | pending |
-| — | Cutover: CLAUDE.md migration-table update + README + enable systemd on Orin + manual cutover from Nano | pending |
-
-### Resuming PR 3c (IR detector)
-
-Branch off main: `git checkout -b claude/phase-3c-ir-detector`.
-NanoTracker's IR detection is the source-of-truth port reference:
-
-- `nano_tracker.py:295-314` — `is_ir_frame()` plus the constants
-  (`_IR_CHANNEL_DIFF_THR=8`, `_IR_SAMPLE_STRIDE=16`,
-  `_IR_HYSTERESIS_FRAMES=30`). The check is sub-millisecond at 1080p
-  via stride-sampling: max |R-G| and max |G-B| across the strided
-  pixels; if both are below the threshold the frame is monochrome.
-- `nano_tracker.py:1419-1444` — the hysteresis state machine.
-  Maintain a rolling list of the last N readings. Flip to IR mode
-  when **all** N say IR and we're not in IR yet; flip back when
-  **none** say IR and we are. On both transitions emit (or close)
-  an `IRPeriod` record. On entering IR, flush active tracks so the
-  day/night boundary is a clean cut.
-
-`common/schema.IRPeriod` already exists (start/end ISO strings +
-`duration_s`). The detector should return `IRPeriod` instances as
-side outputs of `update(frame, wall_time)` rather than mutate
-shared state — the runtime loop (PR 3e) owns the period list.
-
-API sketch:
-
-```python
-class IRDetector:
-    def __init__(self, *,
-                 channel_diff_threshold: int = 8,
-                 sample_stride: int = 16,
-                 hysteresis_frames: int = 30): ...
-
-    @property
-    def in_ir_mode(self) -> bool: ...
-
-    def update(self, frame: np.ndarray, wall_time: float
-              ) -> IRPeriod | None:
-        """Returns a closed IRPeriod on day-resume, None otherwise."""
-```
-
-Tests: synthetic frames (uniform grayscale = IR; saturated colour =
-day), hysteresis flapping protection (29 IR + 1 day stays in day
-mode), period emission on day→IR→day, fresh detector starts in day
-mode.
-
-### Resuming PRs 3d–3f
-
-When 3c is in, the next branch order is:
-- `claude/phase-3d-dashboard` — independent of 3c, can be parallel
-- `claude/phase-3e-runtime` — integrates 3a + 3b + 3c + 3d (bottleneck)
-- `claude/phase-3f-batch` — derivative of 3e, file source
+| 3a | `common/config.py` (frozen dataclasses, strict JSON loader) + aiohttp dep | [#7](https://github.com/nicholasaross/StreetTracker/pull/7) |
+| 3b | `device/snapshotter.py` (aiohttp Reolink client, semaphore, retries, keep_days cleanup task) | [#8](https://github.com/nicholasaross/StreetTracker/pull/8) |
+| 3c | `device/ir_detector.py` (R/G/B channel-diff + hysteresis → `IRPeriod` emission on day-resume) | [#10](https://github.com/nicholasaross/StreetTracker/pull/10) |
+| 3d | `device/dashboard.py` (aiohttp.web static server + lifecycle helpers) | [#11](https://github.com/nicholasaross/StreetTracker/pull/11) |
+| 3e | `device/runtime.py` + `device/track_buffer.py` + `cli/run.py` (asyncio loop integrating sources / inference / planner / snapshotter / finalize / EventLog / signal handlers / RTSP reconnect / idle HTML regen) | [#12](https://github.com/nicholasaross/StreetTracker/pull/12) |
+| 3f | `cli/batch.py` + `enable_snapshotter` / `enable_dashboard` kwargs on `run_session` (file-source variant, no live-only subsystems) | [#13](https://github.com/nicholasaross/StreetTracker/pull/13) |
 
 ### Reference points in NanoTracker
 
-The full module map is in PR #6's scoping conversation; the most
-useful line ranges to keep open while porting 3e:
+The original Python 3.6 implementation that informed the port. Kept
+here for cross-checking semantics if the runtime ever drifts:
 
-- `nano_tracker.py:537-660` — `ReolinkSnapshotter` (already ported in
-  3b; cross-check semantics)
+- `nano_tracker.py:295-314` — `is_ir_frame()` + constants (PR 3c source)
+- `nano_tracker.py:537-660` — `ReolinkSnapshotter` (PR 3b source)
 - `nano_tracker.py:989-1037` — `start_http_server()` (PR 3d source)
-- `nano_tracker.py:1250-1392` — config unpacking, mutable state,
-  `finalize()` nested closure (PR 3e)
-- `nano_tracker.py:1394-1578` — `process_frame()` body, the actual
-  per-frame work (PR 3e)
-- `nano_tracker.py:1580-1673` — outer reconnect loop + shutdown
-  `finally:` (PR 3e — adapt for asyncio)
+- `nano_tracker.py:1250-1392` — config unpacking + finalize closure (PR 3e source)
+- `nano_tracker.py:1394-1578` — `process_frame()` body (PR 3e source)
+- `nano_tracker.py:1580-1673` — outer reconnect loop + shutdown `finally:` (PR 3e source)
 
-### Hard rule once 3e lands
+## Cutover
 
-The Orin systemd unit's `ExecStart` is already
-`uv run --no-sync streettracker run --config configs/camera.json` —
-flipping the migration to live is one command:
-`sudo systemctl enable --now streettracker.service`. Do NOT enable
-the unit before 3e merges; the stub `streettracker run` exits with
-status 2, and `Restart=on-failure` will flap it. The cutover step
-explicitly belongs after 3e.
+The repo is code-complete; flipping the live deployment to it is an
+operator hand-off. Two boxes are involved: the new Orin Nano 8GB
+Super (where StreetTracker runs) and the original Jetson Nano (where
+NanoTracker was running).
+
+### Orin install
+
+The systemd unit at
+[`scripts/systemd/streettracker.service`](scripts/systemd/streettracker.service)
+ships with `ExecStart=uv run --no-sync streettracker run --config
+configs/camera.json` -- enabling the unit is the one command that
+flips StreetTracker to the live consumer of the Reolink:
+
+```bash
+ssh streettracker@orin
+cd ~/streettracker
+git pull && uv sync
+uv run streettracker export-engine yolov8m.pt   # one-time, on this GPU
+cp configs/camera.example.json configs/camera.json
+$EDITOR configs/camera.json                      # set IP + password
+sudo cp scripts/systemd/streettracker.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now streettracker.service
+journalctl -u streettracker -f                   # confirm first frames
+```
+
+Smoke check after ~30s: `curl http://orin:8080/` should serve either
+the "no sessions yet" page or the first session's summary HTML.
+
+### Old Nano decommission
+
+NanoTracker on the original Jetson Nano never ran as a systemd unit;
+stop the running process (likely in `tmux` / `screen`) and optionally
+tar up the working output dir before the Orin overwrites the live
+RTSP consumer slot.
+
+### Repo archival (phase 7 tail)
+
+Once StreetTracker has run for ~a week with no regressions, archive
+the `VehicleTracker` and `NanoTracker` repos on GitHub (Settings →
+Archive). Their CLAUDE.md files should get a one-line "Superseded by
+StreetTracker as of `<date>`; this repo is read-only" header.
 
 ## Snap gate (road polygon + axis triggers)
 
@@ -343,5 +325,7 @@ values to change.
 | `None`, `right_half_only=False` | Legacy peak/decay | Benchmark only. |
 | `RoadGateConfig(...)` | Road polygon + axis triggers | **Live deployment mode.** Crossing semantics: each frame compares the bbox-centre's t' with the previous frame's; a not-yet-fired trigger between them fires *if its direction tag matches the motion sign* (`"forward"` = t' increasing = camera-approach side, `"reverse"` = t' decreasing = departure side, `"both"` = default). After a fire, `prev_t_prime` is advanced to the trigger's t' (not to `cur_tp`) so subsequent triggers in the same forward motion remain detectable one-per-frame. Asymmetric triggers let R→L (front plate) and L→R (rear plate) tracks each have their own early-capture trigger without one direction consuming the other's. |
 
-Until cutover (phase 7), VehicleTracker + NanoTracker remain
-authoritative for their current targets.
+Cutover (phase 7) is in progress: once the Orin systemd unit is
+enabled and StreetTracker has run cleanly for ~a week,
+VehicleTracker + NanoTracker get archived (see
+[Cutover](#cutover) above for the operator commands).
