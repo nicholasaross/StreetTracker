@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from streettracker.cli.run import (
     _build_rtsp_url,
     _redact_url,
@@ -134,11 +136,43 @@ def test_main_returns_nonzero_on_unparseable_config(tmp_path: Path) -> None:
     assert rc == 2
 
 
-def test_main_returns_nonzero_on_unknown_stream(tmp_path: Path) -> None:
+def _prepare_cwd_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Drop a copy of the example config under ``tmp_path`` + touch a
+    fake engine file there so validate_paths passes. Returns the
+    config path.
+
+    Used by tests that need to reach past the engine-existence check
+    in ``main()`` -- e.g. stream-resolution failure tests.
+    """
     cfg_path = tmp_path / "c.json"
     cfg_path.write_text(EXAMPLE_CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_path / "yolov8m.engine").write_bytes(b"FAKE")
+    monkeypatch.chdir(tmp_path)
+    return cfg_path
+
+
+def test_main_returns_nonzero_on_unknown_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg_path = _prepare_cwd_config(tmp_path, monkeypatch)
     rc = main(["--config", str(cfg_path), "--stream", "nope"])
     assert rc == 2
+
+
+def test_main_returns_2_when_engine_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Engine validation must surface as a clear ConfigError before
+    the runtime tries to load anything. Reproduces the second cutover
+    failure (yolov8n_fp16.engine not on disk)."""
+    cfg_path = tmp_path / "c.json"
+    cfg_path.write_text(EXAMPLE_CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
+    # Don't create yolov8m.engine -- validation should fail.
+    rc = main(["--config", str(cfg_path)])
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "engine_path" in captured.err
+    assert "yolov8m.engine" in captured.err
 
 
 # ----------------------------------------------------------------------

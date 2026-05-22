@@ -123,6 +123,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     try:
         config = StreetTrackerConfig.from_json_file(args.config)
+        config.validate_paths()
     except ConfigError as exc:
         print(f"[batch] config error: {exc}", file=sys.stderr)
         return 2

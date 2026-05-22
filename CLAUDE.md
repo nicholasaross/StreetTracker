@@ -119,9 +119,9 @@ systemd unit on the Orin, decommission the old Nano).
 | 4b | `analysis/alpr/` wholesale port | **done** |
 | 3 | `device/`: live runtime, snapshotter, dashboard, IR | **done** — see [Phase 3 progress](#phase-3-progress) below |
 | 6 | (opt) original Nano archive role | not started |
-| 7 | cutover: enable systemd on Orin + decommission Nano + archive old repos | **in progress** — operator hand-off, see [Cutover](#cutover) below |
+| 7 | cutover: enable systemd on Orin + decommission Nano + archive old repos | **mostly done** — Orin live since 2026-05-22; only the `VehicleTracker` + `NanoTracker` repo archival on GitHub is outstanding. See [Cutover status](#cutover-status) and [Fresh deployment procedure](#fresh-deployment-procedure). |
 
-Tests at HEAD: **353 passing, ruff clean.**
+Tests at HEAD: **362 passing, ruff clean.**
 
 Verify locally:
 
@@ -210,50 +210,162 @@ here for cross-checking semantics if the runtime ever drifts:
 - `nano_tracker.py:1394-1578` — `process_frame()` body (PR 3e source)
 - `nano_tracker.py:1580-1673` — outer reconnect loop + shutdown `finally:` (PR 3e source)
 
-## Cutover
+## Cutover status
 
-The repo is code-complete; flipping the live deployment to it is an
-operator hand-off. Two boxes are involved: the new Orin Nano 8GB
-Super (where StreetTracker runs) and the original Jetson Nano (where
-NanoTracker was running).
+Phase 7 cutover happened **2026-05-22**:
 
-### Orin install
+| Step | Status |
+|---|---|
+| Orin: streettracker.service enabled + live | ✅ Active since 2026-05-22T15:42 BST |
+| Old Jetson Nano: `nano_tracker.py` SIGTERM'd | ✅ Clean shutdown after 986,619 frames over 27.6h; in-flight session's final outputs flushed |
+| Repo archival on GitHub (`VehicleTracker` + `NanoTracker`) | pending — wait ~a week of clean operation, then Settings → Archive on both repos with a "Superseded by StreetTracker as of `<date>`; this repo is read-only" one-liner on each CLAUDE.md |
 
-The systemd unit at
-[`scripts/systemd/streettracker.service`](scripts/systemd/streettracker.service)
-ships with `ExecStart=uv run --no-sync streettracker run --config
-configs/camera.json` -- enabling the unit is the one command that
-flips StreetTracker to the live consumer of the Reolink:
+Two config-mismatch bugs surfaced during the live cutover and were
+hardened in [#15](https://github.com/nicholasaross/StreetTracker/pull/15):
+
+1. **Stream-name lookup is now forgiving.** `cli/run.py` falls back to
+   matching `stream.quality` when `nano.preferred_stream` doesn't
+   match a `stream.name`. Matters for configs migrated from NanoTracker
+   that carry descriptive stream names but the legacy `"sub"` /
+   `"main"` token in `preferred_stream`.
+2. **`engine_path` validated at config load.** Missing engine file
+   now surfaces as `ConfigError: $.inference.engine_path: file ... does
+   not exist (resolved to <abs>)` at startup instead of a Python
+   traceback from inside Ultralytics after ~5s of engine-load attempts.
+
+These mean a fresh deploy where you scp the live `configs/camera.json`
+back into place will Just Work without manual edits even if your
+engine target or stream names differ from the example.
+
+## Fresh deployment procedure
+
+Canonical reference for any future redeploy on a wiped Orin (e.g.
+moving to a new chassis, swapping SD cards, or upgrading JetPack —
+see [JetPack 7 upgrade plan](#jetpack-7-upgrade-plan) below for the
+JP7-specific deltas).
+
+### Backups to keep off-device
+
+Three things are not in the repo and not portable from a fresh OS
+install. Keep these in your usual backup:
+
+| File | Why |
+|---|---|
+| `~/streettracker/configs/camera.json` | Reolink credentials + your operator-traced road polygon + per-install snap_gate tuning. Gitignored on purpose. |
+| `/etc/sudoers.d/streettracker-svc` | Lets the `streettracker` user (and remote agents acting as them) run `systemctl * streettracker.service` without a password prompt. |
+| `~/.ssh/authorized_keys` for the `streettracker` user | The SSH keys you use to administer the box. |
+
+The TRT engine (`yolov8m.engine` or whatever you build) is
+deliberately *not* on this list — it's GPU-architecture-bound and
+must be rebuilt on the target device.
+
+### One-time host setup
+
+```bash
+# As an admin user on the freshly-flashed Orin:
+sudo useradd -m -s /bin/bash streettracker
+sudo usermod -aG video,sudo,systemd-journal streettracker   # video for nvidia, journal so they can read their own service logs
+sudo mkdir -p /home/streettracker/.ssh
+sudo cp ~/.ssh/authorized_keys /home/streettracker/.ssh/
+sudo chown -R streettracker:streettracker /home/streettracker/.ssh
+sudo chmod 700 /home/streettracker/.ssh
+sudo chmod 600 /home/streettracker/.ssh/authorized_keys
+
+# Scoped NOPASSWD for service management (lets you / agents enable / restart
+# the unit over SSH without an interactive sudo prompt).
+echo "streettracker ALL=(ALL) NOPASSWD: /bin/systemctl * streettracker.service" \
+  | sudo tee /etc/sudoers.d/streettracker-svc
+sudo chmod 440 /etc/sudoers.d/streettracker-svc
+```
+
+`systemd-journal` membership is important — without it the
+`streettracker` user can't run `journalctl -u streettracker.service`
+on their own service (silent permission denial; the output of
+`journalctl` looks empty rather than erroring).
+
+### Repo + venv setup
 
 ```bash
 ssh streettracker@orin
+git clone https://github.com/nicholasaross/StreetTracker.git ~/streettracker
 cd ~/streettracker
-git pull && uv sync
-uv run streettracker export-engine yolov8m.pt   # one-time, on this GPU
-cp configs/camera.example.json configs/camera.json
-$EDITOR configs/camera.json                      # set IP + password
-sudo cp scripts/systemd/streettracker.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now streettracker.service
-journalctl -u streettracker -f                   # confirm first frames
+scripts/setup_orin.sh         # idempotent: apt deps + uv + uv sync + tensorrt symlinks + bashrc LD_LIBRARY_PATH + nvpmodel
 ```
 
-Smoke check after ~30s: `curl http://orin:8080/` should serve either
-the "no sessions yet" page or the first session's summary HTML.
+`setup_orin.sh` handles JetPack 6 (Ubuntu 22.04 / Python 3.10) and
+JetPack 7 (Ubuntu 24.04 / Python 3.12) — both via uv's
+`.python-version` honouring. See [JetPack 7 upgrade plan](#jetpack-7-upgrade-plan)
+for the pyproject + setup-script changes that have to land *before*
+the JP7 flash for that path to work.
 
-### Old Nano decommission
+### Per-deploy files
 
-NanoTracker on the original Jetson Nano never ran as a systemd unit;
-stop the running process (likely in `tmux` / `screen`) and optionally
-tar up the working output dir before the Orin overwrites the live
-RTSP consumer slot.
+```bash
+# Restore your backed-up config (gitignored).
+scp <backup>/camera.json streettracker@orin:~/streettracker/configs/
 
-### Repo archival (phase 7 tail)
+# Build the TRT engine on THIS device — engines are not portable
+# across GPU architectures.
+cd ~/streettracker
+uv run streettracker export-engine yolov8m.pt
+# (~5 min on Orin Nano Super. The output filename must match
+# `inference.engine_path` in your camera.json -- the load-time
+# validator catches mismatches with a clear JSON-path error.)
+```
 
-Once StreetTracker has run for ~a week with no regressions, archive
-the `VehicleTracker` and `NanoTracker` repos on GitHub (Settings →
-Archive). Their CLAUDE.md files should get a one-line "Superseded by
-StreetTracker as of `<date>`; this repo is read-only" header.
+### Systemd install
+
+```bash
+sudo cp scripts/systemd/streettracker.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo -n systemctl enable --now streettracker.service   # -n works thanks to the sudoers drop-in above
+journalctl -u streettracker -f                          # tail; Ctrl-C once you see frame-progress lines
+```
+
+Smoke check: `curl http://orin:8080/` returns either the "no sessions
+yet" page (~315 bytes) or the latest summary's `index.html` redirect
+(~96 bytes).
+
+### Roll back
+
+```bash
+sudo -n systemctl disable --now streettracker.service
+```
+
+That's it — the unit stops, the SD card is unchanged, and the next
+`enable --now` starts a fresh session.
+
+## JetPack 7 upgrade plan
+
+NVIDIA's JetPack 7 release for Orin Nano (Jetson Linux 38.2,
+Ubuntu 24.04, Python 3.12 native) is expected in mid-2026. At that
+point the device will be wiped and reflashed. Before the flash, the
+following repo-level changes have to land or the redeploy will fail
+at `uv sync`:
+
+| What | Where | Current (JP6) | JP7 target |
+|---|---|---|---|
+| Python pin | `.python-version` | `3.10` | `3.12` (matches OS native; uv still honours either, but matching avoids a redundant uv-installed interpreter) |
+| Jetson torch wheel index URL | `pyproject.toml` `[[tool.uv.index]] name="jetson-ai-lab-jp6-cu126"` | `https://pypi.jetson-ai-lab.io/jp6/cu126/+simple/` | `https://pypi.jetson-ai-lab.io/jp7/cu130/+simple/` (or whatever Anibali's index publishes for JP7 — confirm at the time) |
+| cuDSS dep | `pyproject.toml` dependency `nvidia-cudss-cu12` | `cu12` (CUDA 12 series) | `cu13` if JP7 ships CUDA 13.x — verify against the JP7 release notes |
+| CUDA lib path | `scripts/setup_orin.sh` `CUDA_LIB=/usr/local/cuda-12.6/lib64` | `cuda-12.6` | Auto-detect via `ls -d /usr/local/cuda-*/lib64 \| sort -V \| tail -1`, OR hardcode `cuda-13.x` after confirming |
+| Systemd LD_LIBRARY_PATH | `scripts/systemd/streettracker.service` Environment block | `cuda-12.6/lib64` + `python3.10/site-packages/nvidia/cu12/lib` | Both paths shift; consider auto-substitution at install time or document the manual edit. The `setup_orin.sh` rewriter for `~/.bashrc` could be extended to also emit the unit. |
+
+**Recommended timing.** Don't pre-empt JP7 — NVIDIA hasn't published
+exact paths yet. When the JP7 release lands:
+
+1. Spin up a separate branch (`claude/jp7-readiness`).
+2. Make the five edits above on the branch.
+3. Verify on a *test* Orin (separate from the live one) — flash JP7,
+   re-run setup_orin.sh, build an engine, run the service for an hour.
+4. Once green, merge to main.
+5. *Then* flash JP7 on the live Orin and run the [Fresh deployment
+   procedure](#fresh-deployment-procedure) above.
+
+The hardening fixes from [#15](https://github.com/nicholasaross/StreetTracker/pull/15)
+mean steps 4-5 are unblocked even if the config you scp back has
+slight drift from the example — the runtime will tell you exactly
+which field needs attention.
 
 ## Snap gate (road polygon + axis triggers)
 

@@ -254,9 +254,59 @@ class StreetTrackerConfig:
             if s.name == name:
                 return s
         names = ", ".join(s.name for s in self.streams)
-        raise ConfigError(
-            f"stream {name!r} not declared in config (available: {names})"
-        )
+        raise ConfigError(f"stream {name!r} not declared in config (available: {names})")
+
+    def stream_by_name_or_quality(self, key: str) -> StreamConfig:
+        """Lookup by ``name`` first, then fall back to matching ``quality``.
+
+        Migrated NanoTracker configs commonly carry descriptive stream
+        names (``"RTSP sub (H.264)"``) while ``nano.preferred_stream``
+        is the legacy short token (``"sub"``). Strict name lookup
+        would fail; this fallback keeps such configs working. If the
+        key matches multiple streams by quality, the first declared
+        one wins -- the operator should rename their streams to
+        unique values if that's ambiguous.
+        """
+        try:
+            return self.stream_by_name(key)
+        except ConfigError:
+            pass
+        for s in self.streams:
+            if s.quality == key:
+                return s
+        names = ", ".join(f"{s.name!r}(quality={s.quality!r})" for s in self.streams)
+        raise ConfigError(f"no stream matches {key!r} by name or quality (available: {names})")
+
+    def validate_paths(self) -> None:
+        """Cross-field validation that requires filesystem access.
+
+        Kept separate from :meth:`from_json_file` so unit tests can
+        load the example config (which references engine files that
+        only exist on the Orin) without filesystem checks. The CLI
+        entry points (``cli/run.py``, ``cli/batch.py``) call this
+        right after load so config errors surface at startup with a
+        clear JSON path -- *not* deep inside Ultralytics with a
+        generic ``FileNotFoundError`` traceback after a 5-second
+        engine-load attempt.
+
+        Currently checks:
+
+        * ``inference.engine_path`` resolves to an existing file. The
+          path is interpreted relative to CWD (matching how
+          Ultralytics' ``check_file`` resolves it).
+
+        Raises ``ConfigError`` with the failed JSON path and the
+        absolute resolved path on first failure.
+        """
+        engine = self.inference.engine_path
+        resolved = engine if engine.is_absolute() else Path.cwd() / engine
+        if not resolved.is_file():
+            raise ConfigError(
+                f"$.inference.engine_path: file {str(engine)!r} does not "
+                f"exist (resolved to {resolved!s}). Build it with "
+                f"`streettracker export-engine <weights.pt>` on this device "
+                f"-- TRT engines are not portable across GPU architectures."
+            )
 
 
 # ----------------------------------------------------------------------
@@ -289,41 +339,36 @@ def _load(cls: Any, data: Any, path: str) -> Any:
                 return None
             raise ConfigError(f"{path}: expected {cls}, got null")
         if len(args) != 1:
-            raise ConfigError(
-                f"{path}: complex unions not supported in config schema ({cls})"
-            )
+            raise ConfigError(f"{path}: complex unions not supported in config schema ({cls})")
         return _load(args[0], data, path)
 
     # Dataclass -- recurse over declared fields.
     if dataclasses.is_dataclass(cls) and isinstance(cls, type):
         if not isinstance(data, dict):
             raise ConfigError(
-                f"{path}: expected object for {cls.__name__}, got "
-                f"{type(data).__name__}"
+                f"{path}: expected object for {cls.__name__}, got {type(data).__name__}"
             )
         return _load_dataclass(cls, _strip_comments(data), path)
 
     # Tuple of fixed type (e.g. ``tuple[float, ...]``).
     if origin is tuple:
         if not isinstance(data, list):
-            raise ConfigError(
-                f"{path}: expected list for tuple field, got "
-                f"{type(data).__name__}"
-            )
-        args = typing.get_args(cls)
+            raise ConfigError(f"{path}: expected list for tuple field, got {type(data).__name__}")
+        # Use a distinct name from the list-typed ``args`` bound in
+        # the Union branch above; mypy otherwise complains about the
+        # re-assignment narrowing list[Any] -> tuple[Any, ...].
+        tuple_args = typing.get_args(cls)
         # ``tuple[X, ...]`` -- homogenous, variable-length
-        if len(args) == 2 and args[1] is Ellipsis:
-            return tuple(
-                _load(args[0], v, f"{path}[{i}]") for i, v in enumerate(data)
-            )
+        if len(tuple_args) == 2 and tuple_args[1] is Ellipsis:
+            return tuple(_load(tuple_args[0], v, f"{path}[{i}]") for i, v in enumerate(data))
         # ``tuple[X, Y]`` -- fixed-length, mixed types
-        if len(data) != len(args):
+        if len(data) != len(tuple_args):
             raise ConfigError(
-                f"{path}: expected exactly {len(args)} elements, got {len(data)}"
+                f"{path}: expected exactly {len(tuple_args)} elements, got {len(data)}"
             )
         return tuple(
             _load(t, v, f"{path}[{i}]")
-            for i, (t, v) in enumerate(zip(args, data, strict=True))
+            for i, (t, v) in enumerate(zip(tuple_args, data, strict=True))
         )
 
     # Dict (left untyped for now -- e.g. tracking.by_class).
@@ -387,13 +432,9 @@ def _load_dataclass(cls: type, data: dict[str, Any], path: str) -> Any:
         else:
             # Field missing -- only OK if there's a default.
             if f.default is MISSING and f.default_factory is MISSING:
-                raise ConfigError(
-                    f"{path}.{f.name}: required field missing from config"
-                )
+                raise ConfigError(f"{path}.{f.name}: required field missing from config")
             # Default applies on construction; nothing to do here.
     if remaining:
         unknown = ", ".join(sorted(remaining))
-        raise ConfigError(
-            f"{path}: unknown key(s) for {cls.__name__}: {unknown}"
-        )
+        raise ConfigError(f"{path}: unknown key(s) for {cls.__name__}: {unknown}")
     return cls(**kwargs)
