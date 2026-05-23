@@ -366,6 +366,38 @@ def test_nested_tuple_of_pairs() -> None:
     assert sg.trigger_directions is None
 
 
+def test_snap_gate_pipeline_fields_default_to_disabled() -> None:
+    """A snap_gate block without pipeline fields must default to the
+    disabled values, preserving pre-pipeline camera.json compatibility."""
+    data = _full_minimal()
+    data["snapshot"]["snap_gate"] = {
+        "polygon_frac": [[0.0, 0.0], [1.0, 0.5], [0.5, 1.0]],
+        "trigger_t_prime": [0.5],
+    }
+    cfg = StreetTrackerConfig.from_dict(data)
+    sg = cfg.snapshot.snap_gate
+    assert sg is not None
+    assert sg.pipeline_interval_ms == 0
+    assert sg.pipeline_max_per_track == 10
+
+
+def test_snap_gate_pipeline_fields_round_trip() -> None:
+    """When pipeline_interval_ms and pipeline_max_per_track are set in
+    JSON they must reach the loaded config unchanged."""
+    data = _full_minimal()
+    data["snapshot"]["snap_gate"] = {
+        "polygon_frac": [[0.0, 0.0], [1.0, 0.5], [0.5, 1.0]],
+        "trigger_t_prime": [0.5],
+        "pipeline_interval_ms": 400,
+        "pipeline_max_per_track": 8,
+    }
+    cfg = StreetTrackerConfig.from_dict(data)
+    sg = cfg.snapshot.snap_gate
+    assert sg is not None
+    assert sg.pipeline_interval_ms == 400
+    assert sg.pipeline_max_per_track == 8
+
+
 def test_fixed_length_tuple_validates_arity() -> None:
     """``t_usable_frac: tuple[float, float]`` (fixed 2-tuple)."""
     data = _full_minimal()

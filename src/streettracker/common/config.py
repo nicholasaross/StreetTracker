@@ -181,6 +181,13 @@ class SnapGateSpec:
     trigger_t_prime: tuple[float, ...]
     t_usable_frac: tuple[float, float] = (0.0, 1.0)
     trigger_directions: tuple[str, ...] | None = None
+    # Pipeline-mode (continuous in-band) firing. Both default to the
+    # disabled values so a pre-pipeline camera.json loads unchanged.
+    # When ``pipeline_interval_ms > 0`` the planner fires an additional
+    # snap every N ms a track spends inside the usable t-band, on top
+    # of the existing trigger-crossing fires.
+    pipeline_interval_ms: int = 0
+    pipeline_max_per_track: int = 10
 
 
 @dataclass(frozen=True, slots=True)
