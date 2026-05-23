@@ -709,6 +709,68 @@ def test_build_session_meta_snap_stats_none_when_no_snapshotter(tmp_path: Path) 
     assert meta.snap_stats is None
 
 
+def test_build_session_meta_emits_pipeline_counters_when_snapshotter_present(
+    tmp_path: Path,
+) -> None:
+    """Pipeline aggregate counters are always emitted (even as zeros)
+    when a snapshotter is present. Lets soak comparisons across configs
+    diff against a stable key set."""
+    ctx = _build_ctx(tmp_path)
+    stats = SnapshotStats(attempts=2, successes=2, latencies_ms=[100.0, 200.0])
+
+    class _SS:
+        pass
+
+    ss = _SS()
+    ss.stats = stats  # type: ignore[attr-defined]
+    ctx.snapshotter = ss  # type: ignore[assignment]
+    ctx.pipeline_fires_total = 7
+    ctx.pipeline_throttled = 23
+    ctx.pipeline_budget_exhausted = 4
+
+    meta = build_session_meta(ctx)
+    assert meta.snap_stats is not None
+    assert meta.snap_stats["pipeline_fires"] == 7
+    assert meta.snap_stats["pipeline_throttled"] == 23
+    assert meta.snap_stats["pipeline_budget_exhausted"] == 4
+    # Per-track distributions only land when we actually have finalized
+    # tracks with pipeline state -- this ctx has none.
+    assert "fires_per_track" not in meta.snap_stats
+    assert "time_in_band_ms_per_track" not in meta.snap_stats
+
+
+def test_build_session_meta_includes_per_track_distributions_when_populated(
+    tmp_path: Path,
+) -> None:
+    """When the per_track_* lists carry finalized-track samples,
+    snap_stats must include p50 / p90 / max / mean / n summaries that
+    the operator can read post-soak to tune pipeline_interval_ms."""
+    ctx = _build_ctx(tmp_path)
+    stats = SnapshotStats(attempts=1, successes=1, latencies_ms=[100.0])
+
+    class _SS:
+        pass
+
+    ss = _SS()
+    ss.stats = stats  # type: ignore[attr-defined]
+    ctx.snapshotter = ss  # type: ignore[assignment]
+    # 5 tracks, fires ranging 0..6; time-in-band 0..10s.
+    ctx.per_track_fires_total = [0, 1, 3, 5, 6]
+    ctx.per_track_time_in_band_ms = [0.0, 1500.0, 4000.0, 8000.0, 10000.0]
+
+    meta = build_session_meta(ctx)
+    assert meta.snap_stats is not None
+    fpt = meta.snap_stats["fires_per_track"]
+    assert fpt["n"] == 5
+    assert fpt["zero"] == 1
+    assert fpt["max"] == 6
+    # Nearest-rank p50 of 5 sorted values -> index int(5*0.5)=2 -> value 3.
+    assert fpt["p50"] == 3
+    tib = meta.snap_stats["time_in_band_ms_per_track"]
+    assert tib["n"] == 5
+    assert tib["max_ms"] == 10000.0
+
+
 def test_session_meta_round_trips_snap_stats_through_json(tmp_path: Path) -> None:
     """The schema contract: meta.json -> SessionMeta -> meta.json must
     preserve snap_stats verbatim. Guards against an accidental field

@@ -157,6 +157,21 @@ class SessionContext:
     # SessionMeta.snap_stats at session end so post-cutover ANPR tuning
     # can correlate this against capture coverage.
     blur_skip_count: int = 0
+    # Pipeline (continuous in-band) accounting. ``pipeline_fires_total``
+    # is the aggregate of successful pipeline submits across all tracks.
+    # ``pipeline_throttled`` counts frames where the per-track interval
+    # blocked a fire; ``pipeline_budget_exhausted`` counts frames where
+    # the per-track pipeline cap blocked a fire. Together they give the
+    # operator visibility into whether the configured interval / cap is
+    # too tight, too loose, or just right.
+    pipeline_fires_total: int = 0
+    pipeline_throttled: int = 0
+    pipeline_budget_exhausted: int = 0
+    # Per-track pipeline stats captured at finalize-time (so each entry
+    # corresponds to a single track's complete visible history). At
+    # session end we render p50/p90/max distributions into snap_stats.
+    per_track_fires_total: list[int] = field(default_factory=list)
+    per_track_time_in_band_ms: list[float] = field(default_factory=list)
 
     @property
     def session_t(self) -> float:
@@ -196,6 +211,32 @@ def session_paths(output_root: Path, session_label: str) -> dict[str, Path]:
     }
 
 
+def _percentile_summary(
+    xs: list[float], *, ms_unit: bool = False, round_ndigits: int = 1
+) -> dict[str, float | int]:
+    """Nearest-rank percentile summary used in snap_stats distributions.
+
+    Same convention as ``ReolinkSnapshotter.latency_summary`` -- no
+    interpolation, rounded to ``round_ndigits``. ``ms_unit=True`` emits
+    ``p50_ms`` style keys for time-unit histograms; otherwise plain
+    ``p50``.
+    """
+    sorted_xs = sorted(xs)
+    n = len(sorted_xs)
+
+    def pct(p: float) -> float:
+        return sorted_xs[min(n - 1, int(n * p))]
+
+    sfx = "_ms" if ms_unit else ""
+    return {
+        "n": n,
+        f"p50{sfx}": round(pct(0.5), round_ndigits),
+        f"p90{sfx}": round(pct(0.9), round_ndigits),
+        f"max{sfx}": round(sorted_xs[-1], round_ndigits),
+        f"mean{sfx}": round(sum(sorted_xs) / n, round_ndigits),
+    }
+
+
 def build_session_meta(ctx: SessionContext) -> SessionMeta:
     """Snapshot of session metadata, written at session end."""
     elapsed = ctx.session_t
@@ -209,8 +250,32 @@ def build_session_meta(ctx: SessionContext) -> SessionMeta:
             "failures": s.failures,
             "dropped": s.dropped,
             "blur_skipped_frames": ctx.blur_skip_count,
+            # Pipeline-mode accounting. Aggregated from the planner's
+            # per-frame decisions, not the snapshotter (which only sees
+            # the union of fire submits). Present even when pipelining
+            # is disabled -- the values are just zero, which makes
+            # before/after comparisons in soak _meta.json files easier.
+            "pipeline_fires": ctx.pipeline_fires_total,
+            "pipeline_throttled": ctx.pipeline_throttled,
+            "pipeline_budget_exhausted": ctx.pipeline_budget_exhausted,
             "latency": s.latency_summary(),
         }
+        # Per-track distributions: only emitted when we actually have
+        # finalized tracks with pipeline state. Lets us tune
+        # pipeline_interval_ms after a soak by reading the achieved
+        # fires-per-track distribution against time-in-band.
+        if ctx.per_track_fires_total:
+            snap_stats["fires_per_track"] = {
+                **_percentile_summary(
+                    [float(x) for x in ctx.per_track_fires_total],
+                    round_ndigits=2,
+                ),
+                "zero": sum(1 for x in ctx.per_track_fires_total if x == 0),
+            }
+        if ctx.per_track_time_in_band_ms:
+            snap_stats["time_in_band_ms_per_track"] = _percentile_summary(
+                ctx.per_track_time_in_band_ms, ms_unit=True
+            )
     return SessionMeta(
         session_label=ctx.session_label,
         session_start_unix=ctx.t_start_wall,
@@ -255,6 +320,8 @@ def _maybe_lazy_init_planner(ctx: SessionContext) -> None:
             trigger_t_prime=list(s.trigger_t_prime),
             t_usable_frac=s.t_usable_frac,
             trigger_directions=directions,
+            pipeline_interval_ms=s.pipeline_interval_ms,
+            pipeline_max_per_track=s.pipeline_max_per_track,
         )
     ctx.planner = SnapPlanner(
         frame_width=ctx.frame_w,
@@ -353,6 +420,15 @@ def finalize_track(ctx: SessionContext, track: BufferedTrack) -> None:
                 rescue.reason,
             )
             _fire_snap(ctx, track, rescue.snap_index)
+        # Capture per-track pipeline stats BEFORE forget(). Only emit
+        # into the session distributions when road_gate mode is active
+        # (i.e., the planner actually has road-gate state to report);
+        # in non-road-gate mode time_in_band_ms is meaningless.
+        if ctx.planner.road_gate is not None:
+            stats = ctx.planner.track_pipeline_stats(track.id, time.monotonic() * 1000.0)
+            if stats is not None:
+                ctx.per_track_fires_total.append(int(stats["fires_total"]))
+                ctx.per_track_time_in_band_ms.append(float(stats["time_in_band_ms"]))
         ctx.planner.forget(track.id)
 
     # 2. Color vote.
@@ -534,6 +610,41 @@ async def process_frame(
                 decision.score,
             )
             _fire_snap(ctx, tr, decision.snap_index)
+
+        # Pipeline (continuous in-band) decision path -- evaluated
+        # separately so trigger crossings retain priority on the
+        # snap_index ordering, and so a disabled pipeline (interval=0)
+        # is a near-zero-cost no-op (consider_pipeline returns
+        # immediately on the interval check).
+        wall_ms = time.monotonic() * 1000.0
+        for tr in ctx.buffer.active():
+            if not tr.points:
+                continue
+            p = tr.points[-1]
+            bbox = (p.x1, p.y1, p.x2, p.y2)
+            sharpness = None
+            if cfg.min_sharpness > 0.0:
+                sharpness = _bbox_center_sharpness(frame, bbox)
+            pipe_dec = ctx.planner.consider_pipeline(
+                track_id=tr.id,
+                bbox=bbox,
+                frame_idx=frame_idx,
+                wall_ms=wall_ms,
+                sharpness=sharpness,
+            )
+            if not pipe_dec.should_fire or pipe_dec.snap_index is None:
+                if pipe_dec.reason == "pipeline_throttled":
+                    ctx.pipeline_throttled += 1
+                elif pipe_dec.reason == "pipeline_budget_exhausted":
+                    ctx.pipeline_budget_exhausted += 1
+                continue
+            ctx.pipeline_fires_total += 1
+            logger.info(
+                "[snap] track %d pipeline fire %d",
+                tr.id,
+                pipe_dec.snap_index,
+            )
+            _fire_snap(ctx, tr, pipe_dec.snap_index)
 
     # Idle HTML regen.
     now = time.monotonic()

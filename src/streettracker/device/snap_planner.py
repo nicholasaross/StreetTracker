@@ -80,6 +80,14 @@ SnapReason = Literal[
     "out_of_gate",
     "trigger_crossing",
     "outside_road_polygon",
+    # Pipeline (continuous in-band) firing path. Distinguishing pipeline
+    # outcomes from trigger outcomes keeps the journal + snap_stats
+    # legible -- the operator can see whether captures came from
+    # operator-traced trigger crossings or from the opportunistic
+    # in-band stream.
+    "pipeline",
+    "pipeline_throttled",
+    "pipeline_budget_exhausted",
 ]
 
 
@@ -127,6 +135,17 @@ class RoadGateConfig:
     trigger_t_prime: list[float]
     t_usable_frac: tuple[float, float] = (0.0, 1.0)
     trigger_directions: list[TriggerDirection] | None = None
+
+    # Pipeline (continuous in-band) firing knobs. Set to 0 to disable
+    # (preserves the pre-pipeline trigger-only behaviour). When > 0,
+    # the planner fires a snap every ``pipeline_interval_ms`` of
+    # wall-clock time that a track spends inside the polygon's usable
+    # t-band, capped at ``pipeline_max_per_track`` per track. The
+    # snapshotter's ``max_concurrent`` is still the cross-track
+    # throughput cap; pipeline fires that arrive while the snapshotter
+    # is saturated are dropped, not queued.
+    pipeline_interval_ms: int = 0
+    pipeline_max_per_track: int = 10
 
 
 @dataclass(slots=True)
@@ -200,6 +219,17 @@ class _TrackState:
     triggers_fired: set[int] = field(default_factory=set)
     prev_t_prime: float | None = None
     ever_in_road_gate: bool = False
+    # Pipeline-mode (continuous in-band) state. ``pipeline_fires`` is
+    # incremented per opportunistic fire; ``last_pipeline_submit_wall_ms``
+    # is the wall-clock timestamp of the most recent pipeline fire (0
+    # before the first). ``in_band_since_wall_ms`` tracks the entry
+    # timestamp for the current contiguous span in the usable t-band;
+    # ``time_in_band_ms`` is the cumulative time across all spans (only
+    # closed spans contribute -- the open span is added at finalize).
+    pipeline_fires: int = 0
+    last_pipeline_submit_wall_ms: float = 0.0
+    in_band_since_wall_ms: float | None = None
+    time_in_band_ms: float = 0.0
 
 
 # ----------------------------------------------------------------------
@@ -305,9 +335,7 @@ def _point_in_polygon(px: float, py: float, poly: list[tuple[float, float]]) -> 
     for i in range(n):
         xi, yi = poly[i]
         xj, yj = poly[j]
-        if ((yi > py) != (yj > py)) and (
-            px < (xj - xi) * (py - yi) / (yj - yi + 1e-12) + xi
-        ):
+        if ((yi > py) != (yj > py)) and (px < (xj - xi) * (py - yi) / (yj - yi + 1e-12) + xi):
             inside = not inside
         j = i
     return inside
@@ -348,9 +376,7 @@ class RoadGate:
         if not cfg.trigger_t_prime:
             raise ValueError("road gate has no triggers")
         if cfg.trigger_directions is None:
-            directions: tuple[TriggerDirection, ...] = tuple(
-                "both" for _ in cfg.trigger_t_prime
-            )
+            directions: tuple[TriggerDirection, ...] = tuple("both" for _ in cfg.trigger_t_prime)
         else:
             if len(cfg.trigger_directions) != len(cfg.trigger_t_prime):
                 raise ValueError(
@@ -360,8 +386,7 @@ class RoadGate:
             for d in cfg.trigger_directions:
                 if d not in _VALID_DIRECTIONS:
                     raise ValueError(
-                        f"invalid trigger direction {d!r}; "
-                        f"expected one of {_VALID_DIRECTIONS}"
+                        f"invalid trigger direction {d!r}; expected one of {_VALID_DIRECTIONS}"
                     )
             directions = tuple(cfg.trigger_directions)
         # Polygon in pixel coords for the active frame size.
@@ -441,9 +466,7 @@ class RoadGate:
         usable_span = self.t_usable_hi - self.t_usable_lo
         return (t_norm - self.t_usable_lo) / usable_span
 
-    def crossings(
-        self, prev_tp: float | None, cur_tp: float, already_fired: set[int]
-    ) -> list[int]:
+    def crossings(self, prev_tp: float | None, cur_tp: float, already_fired: set[int]) -> list[int]:
         """Return trigger indices whose t' value lies strictly between
         ``prev_tp`` and ``cur_tp``, filtered by each trigger's direction
         tag and excluding any already in ``already_fired``. Order is the
@@ -557,8 +580,13 @@ class SnapPlanner:
         # threshold + cooldown still apply as basic sanity checks.
         if self._road_gate is not None:
             return self._consider_road_gate(
-                st, frame_idx, sharpness, score, area_frac,
-                bbox_center_x, bbox_center_y,
+                st,
+                frame_idx,
+                sharpness,
+                score,
+                area_frac,
+                bbox_center_x,
+                bbox_center_y,
             )
 
         if area_frac < cfg.area_threshold_frac:
@@ -580,7 +608,12 @@ class SnapPlanner:
             if should_rescue:
                 st.fires_committed += 1
                 st.cooldown_until_frame = frame_idx + cfg.post_fire_cooldown_frames
-                return SnapDecision(True, "exit_imminent", score, st.fires_committed)
+                return SnapDecision(
+                    True,
+                    "exit_imminent",
+                    score,
+                    st.fires_committed + st.pipeline_fires,
+                )
             return SnapDecision(False, "ineligible", score)
 
         st.frames_eligible += 1
@@ -616,7 +649,12 @@ class SnapPlanner:
             st.cooldown_until_frame = frame_idx + cfg.post_fire_cooldown_frames
             st.peak_score = 0.0
             st.frame_idx_at_peak = frame_idx
-            return SnapDecision(True, "right_half_entry", score, st.fires_committed)
+            return SnapDecision(
+                True,
+                "right_half_entry",
+                score,
+                st.fires_committed + st.pipeline_fires,
+            )
 
         # Legacy peak/decay triggers.
         reason: SnapReason | None = None
@@ -640,7 +678,7 @@ class SnapPlanner:
         st.cooldown_until_frame = frame_idx + cfg.post_fire_cooldown_frames
         st.peak_score = 0.0
         st.frame_idx_at_peak = frame_idx
-        return SnapDecision(True, reason, score, st.fires_committed)
+        return SnapDecision(True, reason, score, st.fires_committed + st.pipeline_fires)
 
     def _consider_road_gate(
         self,
@@ -714,7 +752,113 @@ class SnapPlanner:
         # any further triggers in the same forward motion are still
         # detected on subsequent frames.
         st.prev_t_prime = gate.triggers_t_prime[trig_idx]
-        return SnapDecision(True, "trigger_crossing", score, st.fires_committed)
+        return SnapDecision(True, "trigger_crossing", score, st.fires_committed + st.pipeline_fires)
+
+    def consider_pipeline(
+        self,
+        track_id: int,
+        bbox: tuple[float, float, float, float],
+        frame_idx: int,
+        wall_ms: float,
+        sharpness: float | None = None,
+    ) -> SnapDecision:
+        """Pipeline-mode opportunistic fire while in the usable t-band.
+
+        Independent decision path from :meth:`consider`. Designed to be
+        called *after* ``consider()`` on the same frame so trigger
+        crossings retain priority on the snap_index ordering. Returns
+        a ``SnapDecision`` with reason ``"pipeline"`` (fire),
+        ``"pipeline_throttled"`` (interval not yet elapsed since last
+        pipeline fire for this track), ``"pipeline_budget_exhausted"``
+        (per-track pipeline cap reached), ``"blur_gate"`` (sharpness
+        below ``min_sharpness``), or one of ``"out_of_gate"`` /
+        ``"outside_road_polygon"`` when geometry fails. Unlike
+        :meth:`consider`, this path:
+
+        * Ignores ``area_threshold_frac`` -- a small sub-stream bbox
+          still produces a full 4K main snap that ANPR can read.
+        * Ignores ``post_fire_cooldown_frames`` -- the per-track
+          interval is the throttle.
+        * Doesn't share the trigger budget -- ``pipeline_fires`` is
+          counted separately from ``fires_committed``.
+
+        Disabled when ``road_gate is None`` or
+        ``road_gate.pipeline_interval_ms <= 0``.
+        """
+        del frame_idx  # accepted for symmetry with consider(); not used
+        cfg = self.config
+        gate_cfg = cfg.road_gate
+        if self._road_gate is None or gate_cfg is None:
+            return SnapDecision(False, "out_of_gate", 0.0)
+        interval = gate_cfg.pipeline_interval_ms
+        if interval <= 0:
+            return SnapDecision(False, "out_of_gate", 0.0)
+
+        st = self._state.get(track_id)
+        if st is None:
+            st = _TrackState()
+            self._state[track_id] = st
+
+        x1, _y1, x2, _y2 = bbox
+        cx = (x1 + x2) * 0.5
+        cy = (bbox[1] + bbox[3]) * 0.5
+
+        gate = self._road_gate
+        if not gate.contains(cx, cy):
+            self._close_in_band_span(st, wall_ms)
+            return SnapDecision(False, "outside_road_polygon", 0.0)
+        cur_tp = gate.t_prime(cx, cy)
+        if cur_tp is None:
+            self._close_in_band_span(st, wall_ms)
+            return SnapDecision(False, "out_of_gate", 0.0)
+
+        if st.in_band_since_wall_ms is None:
+            st.in_band_since_wall_ms = wall_ms
+
+        if (
+            st.last_pipeline_submit_wall_ms > 0.0
+            and (wall_ms - st.last_pipeline_submit_wall_ms) < interval
+        ):
+            return SnapDecision(False, "pipeline_throttled", 0.0)
+
+        if st.pipeline_fires >= gate_cfg.pipeline_max_per_track:
+            return SnapDecision(False, "pipeline_budget_exhausted", 0.0)
+
+        if cfg.min_sharpness > 0 and (sharpness is None or sharpness < cfg.min_sharpness):
+            return SnapDecision(False, "blur_gate", 0.0)
+
+        st.pipeline_fires += 1
+        st.last_pipeline_submit_wall_ms = wall_ms
+        # Filename ordinal spans both pools so trigger and pipeline
+        # captures never collide on a single track's _main_N.jpg path.
+        snap_index = st.fires_committed + st.pipeline_fires
+        return SnapDecision(True, "pipeline", 0.0, snap_index)
+
+    @staticmethod
+    def _close_in_band_span(st: _TrackState, wall_ms: float) -> None:
+        """Accumulate a completed in-band span into ``time_in_band_ms``."""
+        if st.in_band_since_wall_ms is not None:
+            st.time_in_band_ms += max(0.0, wall_ms - st.in_band_since_wall_ms)
+            st.in_band_since_wall_ms = None
+
+    def track_pipeline_stats(self, track_id: int, wall_ms: float) -> dict[str, float | int] | None:
+        """Per-track pipeline counters, for session-end distributions.
+
+        Must be called BEFORE :meth:`forget`. Closes any still-open
+        in-band span using ``wall_ms`` so the returned ``time_in_band_ms``
+        reflects the track's full visible history. Returns ``None`` if
+        no state exists for ``track_id``.
+        """
+        st = self._state.get(track_id)
+        if st is None:
+            return None
+        self._close_in_band_span(st, wall_ms)
+        return {
+            "fires_total": st.fires_committed + st.pipeline_fires,
+            "trigger_fires": st.fires_committed,
+            "pipeline_fires": st.pipeline_fires,
+            "time_in_band_ms": st.time_in_band_ms,
+        }
 
     def on_track_finalize(self, track_id: int) -> SnapDecision:
         """Last-chance fire for a track that ended without any snap.
@@ -742,7 +886,12 @@ class SnapPlanner:
         if self.config.right_half_only and not st.ever_in_right_half:
             return SnapDecision(False, "out_of_gate", st.peak_score)
         st.fires_committed += 1
-        return SnapDecision(True, "finalize_last_chance", st.peak_score, st.fires_committed)
+        return SnapDecision(
+            True,
+            "finalize_last_chance",
+            st.peak_score,
+            st.fires_committed + st.pipeline_fires,
+        )
 
     def forget(self, track_id: int) -> None:
         """Drop state for ``track_id``. Call after a track is finalized."""

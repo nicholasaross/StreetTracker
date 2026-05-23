@@ -722,6 +722,280 @@ def test_asymmetric_trigger_at_extreme_t_prime_fires_only_in_intended_direction(
     assert rl_fires[0] > FW * 0.65, f"reverse fire too late: x={rl_fires[0]}"
 
 
+# ----------------------------------------------------------------------
+# Pipeline mode (continuous in-band firing)
+#
+# Pipeline fires are independent of trigger crossings -- they run while
+# the track is anywhere inside the usable t-band, throttled by an
+# interval rather than by trigger geometry. Designed to overlap with
+# the snapshotter's max_concurrent so the Reolink stays busy.
+
+
+def _pipeline_planner(
+    interval_ms: int,
+    *,
+    max_per_track: int = 10,
+    triggers: list[float] | None = None,
+    cooldown: int = 2,
+    min_sharpness: float = 0.0,
+) -> SnapPlanner:
+    """Road-gate planner with pipeline mode enabled. Same polygon as the
+    other road-gate tests; triggers are placed at the same defaults so a
+    pipeline test can also exercise the trigger path when needed."""
+    cfg = SnapPlannerConfig(
+        max_per_track=10,
+        post_fire_cooldown_frames=cooldown,
+        min_sharpness=min_sharpness,
+        road_gate=RoadGateConfig(
+            polygon_frac=ROAD_POLY,
+            trigger_t_prime=triggers if triggers is not None else ROAD_TRIGGERS,
+            t_usable_frac=(0.0, 1.0),
+            pipeline_interval_ms=interval_ms,
+            pipeline_max_per_track=max_per_track,
+        ),
+    )
+    return SnapPlanner(FW, FH, cfg)
+
+
+def test_pipeline_disabled_when_interval_is_zero() -> None:
+    """Interval 0 must preserve the trigger-only behaviour: calling
+    consider_pipeline returns "out_of_gate" without touching state."""
+    p = _pipeline_planner(interval_ms=0)
+    d = p.consider_pipeline(
+        track_id=200,
+        bbox=_bbox_at(FW * 0.5, FH * 0.5),
+        frame_idx=0,
+        wall_ms=1000.0,
+    )
+    assert d.should_fire is False
+    assert d.reason == "out_of_gate"
+
+
+def test_pipeline_disabled_when_no_road_gate() -> None:
+    """consider_pipeline must be a safe no-op when the planner has no
+    road_gate at all -- runtime calls it unconditionally."""
+    p = SnapPlanner(FW, FH, SnapPlannerConfig())  # right_half_only default
+    d = p.consider_pipeline(
+        track_id=201,
+        bbox=_bbox_at(FW * 0.5, FH * 0.5),
+        frame_idx=0,
+        wall_ms=1000.0,
+    )
+    assert d.should_fire is False
+    assert d.reason == "out_of_gate"
+
+
+def test_pipeline_fires_on_first_in_band_frame() -> None:
+    """A track entering the usable band must get a pipeline fire on
+    frame 1 -- no warm-up delay (unlike trigger crossings which need
+    two consecutive samples)."""
+    p = _pipeline_planner(interval_ms=400)
+    d = p.consider_pipeline(
+        track_id=210,
+        bbox=_bbox_at(FW * 0.5, FH * 0.5),
+        frame_idx=0,
+        wall_ms=1000.0,
+    )
+    assert d.should_fire is True
+    assert d.reason == "pipeline"
+    assert d.snap_index == 1
+
+
+def test_pipeline_throttles_by_interval() -> None:
+    """Two pipeline calls inside the interval window: second is
+    throttled. Past the window: second fires."""
+    p = _pipeline_planner(interval_ms=400)
+    p.consider_pipeline(
+        track_id=211,
+        bbox=_bbox_at(FW * 0.5, FH * 0.5),
+        frame_idx=0,
+        wall_ms=1000.0,
+    )
+    # 200ms later -- inside the window
+    d_throttled = p.consider_pipeline(
+        track_id=211,
+        bbox=_bbox_at(FW * 0.5, FH * 0.5),
+        frame_idx=5,
+        wall_ms=1200.0,
+    )
+    assert d_throttled.should_fire is False
+    assert d_throttled.reason == "pipeline_throttled"
+    # 401ms after the first -- past the window
+    d_fires = p.consider_pipeline(
+        track_id=211,
+        bbox=_bbox_at(FW * 0.5, FH * 0.5),
+        frame_idx=10,
+        wall_ms=1401.0,
+    )
+    assert d_fires.should_fire is True
+    assert d_fires.snap_index == 2
+
+
+def test_pipeline_respects_per_track_cap() -> None:
+    """After ``pipeline_max_per_track`` fires, further calls return
+    pipeline_budget_exhausted regardless of how much time has passed."""
+    p = _pipeline_planner(interval_ms=100, max_per_track=3)
+    fires = 0
+    for i in range(20):
+        d = p.consider_pipeline(
+            track_id=212,
+            bbox=_bbox_at(FW * 0.5, FH * 0.5),
+            frame_idx=i,
+            # wall_ms steps by 150ms so the interval throttle doesn't bite.
+            wall_ms=1000.0 + i * 150.0,
+        )
+        if d.should_fire:
+            fires += 1
+        else:
+            assert d.reason in ("pipeline_throttled", "pipeline_budget_exhausted")
+    assert fires == 3
+
+
+def test_pipeline_rejects_outside_polygon() -> None:
+    """Bbox centre outside the road polygon must not fire pipeline."""
+    p = _pipeline_planner(interval_ms=400)
+    d = p.consider_pipeline(
+        track_id=213,
+        bbox=_bbox_at(FW * 0.5, FH * 0.05),  # top strip, outside polygon
+        frame_idx=0,
+        wall_ms=1000.0,
+    )
+    assert d.should_fire is False
+    assert d.reason == "outside_road_polygon"
+
+
+def test_pipeline_rejects_outside_usable_t_band() -> None:
+    """Bbox inside polygon but outside the usable t-band must not fire."""
+    p = _pipeline_planner(interval_ms=400, triggers=[0.5])
+    # Reconstruct with a narrowed band that excludes the centre.
+    p = SnapPlanner(
+        FW,
+        FH,
+        SnapPlannerConfig(
+            road_gate=RoadGateConfig(
+                polygon_frac=ROAD_POLY,
+                trigger_t_prime=[0.5],
+                t_usable_frac=(0.0, 0.1),  # narrow band at far-left only
+                pipeline_interval_ms=400,
+            ),
+        ),
+    )
+    # Bbox at the centre of the frame projects to t' well outside [0.0, 0.1].
+    d = p.consider_pipeline(
+        track_id=214,
+        bbox=_bbox_at(FW * 0.5, FH * 0.5),
+        frame_idx=0,
+        wall_ms=1000.0,
+    )
+    assert d.should_fire is False
+    assert d.reason == "out_of_gate"
+
+
+def test_pipeline_ignores_area_threshold() -> None:
+    """A bbox too small to satisfy the trigger-path area gate must still
+    produce a pipeline fire -- the 4K main snap is useful even when the
+    sub-stream bbox is tiny ("distant snap at 4K")."""
+    p = _pipeline_planner(interval_ms=400)
+    # 30x30 = 900 px^2 / (896*512) ~= 0.2% area, well under the 5%
+    # area_threshold_frac that gates trigger fires.
+    tiny = (FW * 0.5 - 15, FH * 0.5 - 15, FW * 0.5 + 15, FH * 0.5 + 15)
+    d = p.consider_pipeline(
+        track_id=215, bbox=tiny, frame_idx=0, wall_ms=1000.0
+    )
+    assert d.should_fire is True
+    assert d.reason == "pipeline"
+
+
+def test_pipeline_blur_gate_suppresses_fire() -> None:
+    """``min_sharpness`` applies to pipeline fires too -- a too-blurry
+    crop is skipped (no fire, no state change beyond throttling)."""
+    p = _pipeline_planner(interval_ms=400, min_sharpness=100.0)
+    d = p.consider_pipeline(
+        track_id=216,
+        bbox=_bbox_at(FW * 0.5, FH * 0.5),
+        frame_idx=0,
+        wall_ms=1000.0,
+        sharpness=20.0,  # well below the gate
+    )
+    assert d.should_fire is False
+    assert d.reason == "blur_gate"
+
+
+def test_pipeline_and_trigger_share_unique_snap_indexes() -> None:
+    """Calling consider() (trigger fire) and consider_pipeline() (pipe
+    fire) on the same track must produce distinct snap_index values
+    so the _main_N.jpg filenames never collide."""
+    p = _pipeline_planner(interval_ms=400)
+    # Frame 0: pipeline fires (snap_index=1). consider() sets prev_t_prime.
+    d_consider_f0 = p.consider(
+        300, _bbox_at(200, FH * 0.5), 0, sharpness=200.0
+    )
+    assert d_consider_f0.should_fire is False  # first frame just sets prev_tp
+    d_pipe_f0 = p.consider_pipeline(
+        track_id=300,
+        bbox=_bbox_at(200, FH * 0.5),
+        frame_idx=0,
+        wall_ms=1000.0,
+    )
+    assert d_pipe_f0.should_fire is True
+    assert d_pipe_f0.snap_index == 1
+
+    # Frame 1: consider() crosses the t'=0.25 trigger (cx 200 -> 275
+    # spans t' ~0.154 -> ~0.259). Pipeline does NOT fire again -- the
+    # interval throttle still applies and the call site in process_frame
+    # would skip it (we don't even need to call it here to prove the
+    # ordering invariant).
+    d_consider_f1 = p.consider(
+        300, _bbox_at(275, FH * 0.5), 1, sharpness=200.0
+    )
+    # Pipeline fire bumped st.pipeline_fires=1; trigger fire bumps
+    # st.fires_committed=1; snap_index = 1 + 1 = 2.
+    assert d_consider_f1.should_fire is True
+    assert d_consider_f1.reason == "trigger_crossing"
+    assert d_consider_f1.snap_index == 2
+
+
+def test_pipeline_resets_in_band_span_on_exit() -> None:
+    """A track that leaves the polygon and returns has its first-fire
+    behaviour preserved (still respects the interval throttle), but
+    time_in_band_ms accumulates only the contiguous in-band span."""
+    p = _pipeline_planner(interval_ms=400)
+    # Enter band at t=1000, fire.
+    p.consider_pipeline(
+        track_id=400,
+        bbox=_bbox_at(FW * 0.5, FH * 0.5),
+        frame_idx=0,
+        wall_ms=1000.0,
+    )
+    # Exit band at t=1500.
+    p.consider_pipeline(
+        track_id=400,
+        bbox=_bbox_at(FW * 0.5, FH * 0.05),  # top strip, outside polygon
+        frame_idx=5,
+        wall_ms=1500.0,
+    )
+    # Re-enter band at t=2000.
+    p.consider_pipeline(
+        track_id=400,
+        bbox=_bbox_at(FW * 0.5, FH * 0.5),
+        frame_idx=10,
+        wall_ms=2000.0,
+    )
+    # Stats at t=2300: accumulated 500ms (first span) + 300ms (open
+    # span closes against wall_ms) = 800ms. Re-entry was 1000ms after
+    # the first fire so the throttle window had cleared -- both fires
+    # counted.
+    stats = p.track_pipeline_stats(400, wall_ms=2300.0)
+    assert stats is not None
+    assert abs(float(stats["time_in_band_ms"]) - 800.0) < 1e-6
+    assert int(stats["pipeline_fires"]) == 2
+
+
+def test_track_pipeline_stats_returns_none_for_unknown_track() -> None:
+    p = _pipeline_planner(interval_ms=400)
+    assert p.track_pipeline_stats(999, wall_ms=1000.0) is None
+
+
 def test_backward_compat_no_road_gate_uses_right_half_only() -> None:
     """SnapPlanner with no road_gate config still runs the existing
     right_half_only zone-thirds path."""
