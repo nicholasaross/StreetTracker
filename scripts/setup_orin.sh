@@ -24,12 +24,37 @@
 #   6. lock the Orin into max-clock / max-power mode (15W / MAXN).
 #   7. verify the full media + ML pipeline.
 #
+# Subcommand flags:
+#   --symlinks-only   Run step 4 only (re-link system TensorRT into the
+#                     venv).  No sudo / apt / network needed.  Use this
+#                     after a `uv sync` that rebuilt .venv — the rebuild
+#                     wipes the dist-packages symlinks and the systemd
+#                     service then fails with `ModuleNotFoundError: No
+#                     module named 'tensorrt'`.
+#
 # We deliberately do NOT install pycuda or trtexec by hand — Ultralytics'
 # built-in TRT path (`YOLO('best.engine')`) handles engine inference,
 # and `streettracker export-engine` handles .pt -> .engine conversion
 # via the system tensorrt symlinked in step 4.
 
 set -euo pipefail
+
+# ---- subcommand parsing ----
+SYMLINKS_ONLY=0
+for arg in "$@"; do
+    case "$arg" in
+        --symlinks-only) SYMLINKS_ONLY=1 ;;
+        -h|--help)
+            sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
+            exit 0
+            ;;
+        *)
+            echo "[setup] unknown argument: $arg" >&2
+            echo "        run with --help for the supported flags" >&2
+            exit 2
+            ;;
+    esac
+done
 
 # ---- locate repo root (script lives in <repo>/scripts/) ----
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,6 +77,44 @@ if [[ -f /etc/nv_tegra_release ]]; then
     echo "[setup] JetPack: $(head -1 /etc/nv_tegra_release)"
 else
     echo "[setup] WARNING: /etc/nv_tegra_release not found — is this an Orin?"
+fi
+
+# ---- tensorrt-symlink step.  Extracted so it can be run on its own
+# via --symlinks-only.  JetPack ships tensorrt as a system Python
+# package at /usr/lib/python${PY_VERSION}/dist-packages/.  The
+# uv-managed venv uses uv's own Python so it doesn't pick that up by
+# default.  Symlinks are the simplest bridge -- no
+# `include-system-site-packages` pollution, only the four tensorrt
+# namespaces are exposed.  Idempotent (ln -sf overwrites).
+link_tensorrt_into_venv() {
+    local site
+    site="$REPO_ROOT/.venv/lib/python${PY_VERSION}/site-packages"
+    if [[ -d "$SYS_TRT_DIR/tensorrt" && -d "$site" ]]; then
+        for pkg in tensorrt tensorrt_dispatch tensorrt_lean; do
+            if [[ -e "$SYS_TRT_DIR/$pkg" ]]; then
+                # -n is critical: without it, ln -sf descends into an
+                # existing symlink-to-directory and tries to create the
+                # link INSIDE the target, which fails with EACCES on
+                # the root-owned /usr/lib/.../dist-packages tree.
+                ln -sfn "$SYS_TRT_DIR/$pkg" "$site/$pkg"
+            fi
+            for dist in "$SYS_TRT_DIR/${pkg}-"*.dist-info; do
+                [[ -e "$dist" ]] && ln -sfn "$dist" "$site/$(basename "$dist")"
+            done
+        done
+        echo "[setup]   OK: tensorrt symlinked from $SYS_TRT_DIR -> $site"
+        return 0
+    fi
+    echo "[setup]   WARN: $SYS_TRT_DIR/tensorrt not found (or .venv missing) — engine builds will fail" >&2
+    return 1
+}
+
+if [[ $SYMLINKS_ONLY -eq 1 ]]; then
+    echo ""
+    echo "[setup] --symlinks-only: running step 4 only"
+    link_tensorrt_into_venv
+    echo "[setup] Done."
+    exit 0
 fi
 
 echo ""
@@ -87,26 +150,7 @@ uv sync
 
 echo ""
 echo "[setup] (4/7) symlinking system TensorRT into the venv"
-# JetPack ships tensorrt as a system Python package at
-# /usr/lib/python${PY_VERSION}/dist-packages/.  The uv-managed venv uses
-# uv's own Python so it doesn't pick that up by default.  Symlinks are
-# the simplest bridge — no `include-system-site-packages` pollution,
-# only the four tensorrt namespaces are exposed.
-SITE="$REPO_ROOT/.venv/lib/python${PY_VERSION}/site-packages"
-if [[ -d "$SYS_TRT_DIR/tensorrt" && -d "$SITE" ]]; then
-    # Glob the dist-info dirs since the version number is in their name.
-    for pkg in tensorrt tensorrt_dispatch tensorrt_lean; do
-        if [[ -e "$SYS_TRT_DIR/$pkg" ]]; then
-            ln -sf "$SYS_TRT_DIR/$pkg" "$SITE/$pkg"
-        fi
-        for dist in "$SYS_TRT_DIR/${pkg}-"*.dist-info; do
-            [[ -e "$dist" ]] && ln -sf "$dist" "$SITE/$(basename "$dist")"
-        done
-    done
-    echo "[setup]   OK: tensorrt symlinked from $SYS_TRT_DIR -> $SITE"
-else
-    echo "[setup]   WARN: $SYS_TRT_DIR/tensorrt not found — engine builds will fail" >&2
-fi
+link_tensorrt_into_venv || true
 
 echo ""
 echo "[setup] (5/7) appending Jetson library paths to ~/.bashrc"
