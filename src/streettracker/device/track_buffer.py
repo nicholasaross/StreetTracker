@@ -108,6 +108,18 @@ class BufferedTrack:
     hq_best_area: int = 0
     snap_count: int = 0
     snap_saved_indexes: set[int] = field(default_factory=set)
+    # Per-snap-index record of the asset prefix used to build the on-disk
+    # path at fire time. BotSORT can reassign a track's class as evidence
+    # accumulates (see ``ingest`` below), so a track may fire its first
+    # snap as "person" and finalize as "vehicle" -- the on-disk filename
+    # would then mismatch ``record.asset_prefix``. ``finalize_track``
+    # consults this dict to rename any mismatched files; the snap
+    # ``_on_done`` callback consults ``final_prefix`` for in-flight
+    # fires that complete after finalize.
+    snap_fire_prefixes: dict[int, str] = field(default_factory=dict)
+    # Set in ``finalize_track`` to lock the prefix used for the
+    # TrackRecord. ``None`` while the track is still active.
+    final_prefix: str | None = None
     misses: int = 0  # consecutive frames the tracker did not see this id
     # ``time.monotonic()`` of the last blur-skip log line emitted for
     # this track. The runtime's snap walk throttles the per-track log
