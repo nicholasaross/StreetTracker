@@ -44,7 +44,11 @@ alpr = [
     "easyocr>=1.7,<2.0",
     "fast-plate-ocr>=0.3",
     "open-image-models>=0.2",
-    "onnxruntime-gpu>=1.18",
+    # Cap onnxruntime-gpu below 1.20 so it resolves on Python 3.10 (the
+    # Jetson torch wheel index only stocks cp310 on the JP6 channel, so
+    # the project's .python-version stays at 3.10 until JP7). 1.19.x has
+    # cp310 wheels; later versions are cp311+ only.
+    "onnxruntime-gpu>=1.18,<1.20",
 ]
 dev = [
     "pytest>=8",
