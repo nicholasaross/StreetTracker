@@ -231,15 +231,68 @@ def test_buffer_appends_subsequent_points_to_same_track() -> None:
     assert tr.points[1].cx == pytest.approx(170.0)
 
 
-def test_buffer_class_id_follows_latest_detection() -> None:
-    """BotSORT occasionally reclassifies a track. The buffer should
-    track the most recent class, since that's what shows up in the
-    finalized TrackRecord."""
+def test_buffer_class_id_is_confidence_weighted_majority() -> None:
+    """BotSORT occasionally reclassifies a track mid-life. The buffer
+    accumulates per-class confidence votes and exposes
+    ``argmax(class_votes)`` as ``class_id``. With two equal-confidence
+    detections of different classes, the first inserted wins
+    (deterministic tie-break via dict insertion order)."""
     buf = TrackBuffer()
-    buf.ingest([_det(7, class_id=2)], frame_idx=0, t=0.0, frame=_frame())
-    buf.ingest([_det(7, class_id=7)], frame_idx=1, t=0.05, frame=_frame())
+    buf.ingest([_det(7, class_id=2, score=0.9)], frame_idx=0, t=0.0, frame=_frame())
+    buf.ingest([_det(7, class_id=7, score=0.9)], frame_idx=1, t=0.05, frame=_frame())
     [tr] = buf.active()
-    assert tr.class_id == 7
+    assert tr.class_votes == {2: pytest.approx(0.9), 7: pytest.approx(0.9)}
+    assert tr.class_id == 2  # first-inserted on tie
+
+
+def test_buffer_class_id_resists_late_single_frame_flip() -> None:
+    """A single late-frame detection of a different class with similar
+    confidence cannot flip a track that has accumulated several frames
+    of the prior class. This is the fix for the ``person #500 / car #976``
+    misclassifications observed 2026-05-25 in the live deployment, where
+    the previous "most-recent-detection wins" rule let a single end-of-life
+    YOLO slip corrupt the entire track's class_name."""
+    buf = TrackBuffer()
+    # Five frames of class 2 (car) at moderate confidence.
+    for i in range(5):
+        buf.ingest(
+            [_det(7, class_id=2, score=0.85)],
+            frame_idx=i,
+            t=i * 0.05,
+            frame=_frame(),
+        )
+    # One trailing frame of class 0 (person) at the same confidence.
+    buf.ingest(
+        [_det(7, class_id=0, score=0.85)],
+        frame_idx=5,
+        t=0.25,
+        frame=_frame(),
+    )
+    [tr] = buf.active()
+    assert tr.class_id == 2  # majority vote, not the last detection
+    assert tr.class_votes[2] == pytest.approx(5 * 0.85)
+    assert tr.class_votes[0] == pytest.approx(0.85)
+
+
+def test_buffer_class_id_flips_when_cumulative_evidence_outweighs() -> None:
+    """Voting still flips the class if the new class accumulates more
+    confidence than the prior class. The fix doesn't lock in the first
+    class -- it just requires more than a single frame of disagreement."""
+    buf = TrackBuffer()
+    # One low-confidence frame of class 2.
+    buf.ingest([_det(7, class_id=2, score=0.2)], frame_idx=0, t=0.0, frame=_frame())
+    # Four high-confidence frames of class 0.
+    for i in range(1, 5):
+        buf.ingest(
+            [_det(7, class_id=0, score=0.9)],
+            frame_idx=i,
+            t=i * 0.05,
+            frame=_frame(),
+        )
+    [tr] = buf.active()
+    assert tr.class_id == 0  # 4 * 0.9 = 3.6 > 0.2
+    assert tr.class_votes[0] == pytest.approx(4 * 0.9)
+    assert tr.class_votes[2] == pytest.approx(0.2)
 
 
 def test_buffer_expires_tracks_after_max_misses() -> None:
