@@ -90,11 +90,36 @@ class PreCropDetector:
 
         self._yolo = YOLO(self._vehicle_model_spec)
 
-    def detect(self, image: np.ndarray) -> PlateDetection | None:
+    def detect(
+        self,
+        image: np.ndarray,
+        *,
+        bbox_hint: tuple[int, int, int, int] | None = None,
+    ) -> PlateDetection | None:
+        """Detect a plate.
+
+        If ``bbox_hint`` is provided (typically piped from the
+        :attr:`TrackRecord.main_snap_bboxes` scaled into 4K coords by
+        the CLI), the YOLO vehicle-detection step is skipped entirely
+        and the plate detector runs directly on the hint's crop. This
+        eliminates parked-car aliasing -- the wrapper targets the
+        exact BotSORT-tracked vehicle instead of whichever vehicle
+        happens to be largest in the frame.
+
+        When ``bbox_hint`` is None, falls back to the
+        largest-vehicle-by-area heuristic. Useful for sessions
+        recorded before the runtime started persisting per-snap
+        bboxes (older data) and for one-off images that aren't from
+        a tracked session.
+        """
         import numpy as np
 
-        self._ensure_loaded()
         h, w = image.shape[:2]
+
+        if bbox_hint is not None:
+            return self._detect_with_hint(image, bbox_hint, w, h)
+
+        self._ensure_loaded()
 
         # Vehicle detection. ``verbose=False`` suppresses the per-frame
         # ultralytics stdout banner.
@@ -148,3 +173,48 @@ class PreCropDetector:
         # All vehicle crops exhausted with no plate found. Final
         # fallback: the full image. Rare in practice but defensible.
         return self._plate_detector.detect(image)
+
+    def _detect_with_hint(
+        self,
+        image: np.ndarray,
+        bbox_hint: tuple[int, int, int, int],
+        w: int,
+        h: int,
+    ) -> PlateDetection | None:
+        """Plate-detect on the hinted vehicle bbox.
+
+        The hint comes in already-scaled to the input image's pixel
+        coords. Padding is applied as in the YOLO path so the
+        detector sees a small margin around the bbox; the plate bbox
+        is projected back to original-image coords for the downstream
+        OCR crop.
+        """
+        x1, y1, x2, y2 = bbox_hint
+        # Clamp the hint to the image rect before padding so a bbox
+        # captured at the sub-stream edge (slightly off-frame) doesn't
+        # cause an empty crop.
+        x1 = max(0, min(int(x1), w))
+        x2 = max(0, min(int(x2), w))
+        y1 = max(0, min(int(y1), h))
+        y2 = max(0, min(int(y2), h))
+        bw, bh = x2 - x1, y2 - y1
+        if bw <= 0 or bh <= 0:
+            # Degenerate hint -- fall back to full-image detection.
+            return self._plate_detector.detect(image)
+        pad_x, pad_y = bw * self._pad_frac, bh * self._pad_frac
+        cx1 = max(0, int(x1 - pad_x))
+        cy1 = max(0, int(y1 - pad_y))
+        cx2 = min(w, int(x2 + pad_x))
+        cy2 = min(h, int(y2 + pad_y))
+        if cx2 <= cx1 or cy2 <= cy1:
+            return self._plate_detector.detect(image)
+
+        crop = image[cy1:cy2, cx1:cx2]
+        det = self._plate_detector.detect(crop)
+        if det is None:
+            return None
+        px1, py1, px2, py2 = det.bbox
+        return PlateDetection(
+            bbox=(px1 + cx1, py1 + cy1, px2 + cx1, py2 + cy1),
+            det_confidence=det.det_confidence,
+        )

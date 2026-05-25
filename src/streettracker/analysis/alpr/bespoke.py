@@ -43,7 +43,17 @@ class BespokeDetector:
         self._imgsz = imgsz
         self._det_conf = det_conf
 
-    def detect(self, image: np.ndarray) -> PlateDetection | None:
+    def detect(
+        self,
+        image: np.ndarray,
+        *,
+        bbox_hint: tuple[int, int, int, int] | None = None,
+    ) -> PlateDetection | None:
+        # Accept ``bbox_hint`` for protocol compliance with the
+        # PreCrop-aware Detector interface; this detector ignores it
+        # (the wrapper consults it). Wrap-bespoke-with-precrop is
+        # the path that benefits from the hint.
+        del bbox_hint
         import numpy as np
 
         results = self._yolo.predict(

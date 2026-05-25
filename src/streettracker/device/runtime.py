@@ -284,6 +284,11 @@ def build_session_meta(ctx: SessionContext) -> SessionMeta:
         avg_infer_ms=round(avg_infer, 2),
         ir_periods=list(ctx.ir_periods),
         snap_stats=snap_stats,
+        # Sub-stream frame size captured from the first frame -- used by
+        # analysis-side ALPR to scale per-snap bboxes (which live in
+        # sub-stream coords on the TrackRecord) into the 4K snap's coord
+        # system. ``[0, 0]`` only if the session never saw a frame.
+        frame_size=[ctx.frame_w, ctx.frame_h] if ctx.frame_w and ctx.frame_h else None,
     )
 
 
@@ -423,6 +428,18 @@ def _fire_snap(ctx: SessionContext, track: BufferedTrack, snap_index: int) -> No
     if task is None:
         return  # snapshotter dropped (concurrency cap)
     track.snap_fire_prefixes[snap_index] = fire_prefix
+    # Capture the BotSORT-tracked sub-stream bbox at the moment of
+    # fire so analysis-side ALPR can pre-crop the 4K snap to the
+    # tracked vehicle (vs largest-in-frame). Stored as integer pixel
+    # coords; ``last_bbox`` is None only for brand-new tracks with
+    # zero motion points, which can't fire a snap, so the guard is
+    # defensive.
+    last_bbox = track.last_bbox
+    if last_bbox is not None:
+        track.snap_fire_bboxes[snap_index] = (
+            int(last_bbox[0]), int(last_bbox[1]),
+            int(last_bbox[2]), int(last_bbox[3]),
+        )
     output_dir = ctx.output_dir
 
     def _on_done(t: asyncio.Task[bool]) -> None:
