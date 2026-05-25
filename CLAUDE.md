@@ -136,7 +136,7 @@ systemd unit on the Orin, decommission the old Nano).
 | 6 | (opt) original Nano archive role | not started |
 | 7 | cutover: enable systemd on Orin + decommission Nano + archive old repos | **mostly done** — Orin live since 2026-05-22; only the `VehicleTracker` + `NanoTracker` repo archival on GitHub is outstanding. See [Cutover status](#cutover-status) and [Fresh deployment procedure](#fresh-deployment-procedure). |
 
-Tests at HEAD: **403 passing on Python 3.10, ruff clean.**
+Tests at HEAD: **413 passing on Python 3.10, ruff clean.**
 
 Verify locally:
 
@@ -254,20 +254,20 @@ engine target or stream names differ from the example.
 
 ## ANPR tuning loop
 
-**Status as of 2026-05-25: coverage objective met (97 % of cars get
-a 4K snap); ALPR read-rate floor measured at 59 % high-confidence
-plates per car.** The capture-coverage gap that motivated this loop
-was closed by enabling **pipeline mode** on the live `snap_gate`
-(see [Pipeline mode](#pipeline-mode-the-dominant-capture-mechanism)
-below). The trigger-geometry tuning prescription preserved further
-down turns out not to be the binding knob for this deployment —
-pipeline-timer fires dominate the trigger-based fires by roughly an
-order of magnitude. The remaining gap is plate *readability* not
-plate *existence*; next decision is whether to (a) move on to
-dataset-level analysis (re-id, recolor, make/model) on the 236
-high-confidence reads, or (b) investigate the 30 % of cars whose 4K
-snaps exist but didn't yield a read. See
-[Step 6 (done): ALPR read-rate measurement](#step-6-done-alpr-read-rate-measurement).
+**Status as of end-of-day 2026-05-25:**
+
+| Layer | Status |
+|---|---|
+| **4K capture coverage** | Solved. 97 % of cars get at least one 4K snap. Pipeline mode (`pipeline_interval_ms=400`, `pipeline_max_per_track=15`) is the dominant mechanism; trigger geometry is a small minority. |
+| **Plate detector hit rate** | Solved. Pre-crop wrapper + `yolo-v9-t-640` lifts per-image detection from 16 % to 99 %. ([Step 7](#step-7-done-b1-diagnostic--vehicle-pre-crop-2026-05-25)) |
+| **Per-car read rate (best of any snap)** | 91.5 % (with aliasing), measured 2026-05-25. ([Step 7 results](#step-7-done-b1-diagnostic--vehicle-pre-crop-2026-05-25)) |
+| **Aliasing-free per-car read rate** | Awaiting a fresh session — bbox-pipe fix landed end-of-day 2026-05-25 but the live deployment hasn't yet recorded enough traffic with it. See [Tomorrow's analysis runbook](#tomorrows-analysis-runbook-2026-05-26). |
+| **Misclassification (person ↔ car)** | Single-frame flips defended by confidence-weighted voting ([Step 3 of bug-fix subsections, PR #23]). Consistent model errors still possible — heuristic or detector retrain is the next layer if it matters. |
+
+Coverage objective is met; readability gap is the remaining frontier.
+Best-known per-car read rate is 91.5 % (with aliasing); the
+aliasing-free number is expected to land ~95 %+ after tomorrow's
+re-run. See the runbook below for the exact procedure.
 
 ### Soak completion (2026-05-25, `session_20260524_075630`, 27.3h, 880 tracks)
 
@@ -494,13 +494,140 @@ new sidecar JSON; alpr-run reads it back at load time) -- next
 batch of work if the 91.5 % floor isn't enough.
 
 Headline lift: **+32.5 pp on per-car high-confidence reads** for one
-code wrapper + one CLI default change. The path from here is either:
+code wrapper + one CLI default change. Next-step path:
 
 1. Land the BotSORT-bbox persistence (eliminates aliasing, lifts
-   per-car reads probably another 3-8 pp toward ~95 %).
+   per-car reads probably another 3-8 pp toward ~95 %). **Done in
+   Step 8 below.**
 2. Move on to dataset-level analysis (C1-C3 in the next-steps
    menu) -- 91.5 % is already a very strong floor for a residential
    street.
+
+### Step 8 (done, awaiting fresh-data validation): BotSORT-bbox pipe — [PR #28](https://github.com/nicholasaross/StreetTracker/pull/28)
+
+Eliminates the parked-car aliasing surfaced by Step 7's re-run.
+Instead of guessing the tracked vehicle by area at analysis time,
+the runtime now persists BotSORT's per-snap sub-stream bbox into
+the session output and ``alpr-run`` reads it back as a hint to the
+pre-crop wrapper.
+
+Runtime additions (live on Orin since `session_20260525_200916`,
+2026-05-25 ~20:09 BST):
+
+* `BufferedTrack.snap_fire_bboxes: dict[int, (x1, y1, x2, y2)]` --
+  captured per snap at fire-decision time, sourced from
+  `track.last_bbox`.
+* `TrackRecord.main_snap_bboxes: list[[x1,y1,x2,y2] | None] | None` --
+  parallel to `main_snaps` at finalize. `None` per element if the
+  bbox wasn't captured (defensive); outer `None` for older sessions.
+* `SessionMeta.frame_size: [w, h]` -- sub-stream dimensions so
+  analysis can scale to the 4K snap's pixel coords. Reolink's
+  sub is 896×512 and main is 3840×2160; aspect ratios differ
+  slightly so x and y are scaled independently at load time.
+
+Analysis-pipeline additions (dev box):
+
+* `Detector` protocol gained a keyword-only `bbox_hint`. Stock
+  `BespokeDetector` / `OpenImageModelsDetector` accept-and-ignore
+  it; `PreCropDetector` uses it to bypass YOLO entirely when
+  present.
+* `PipelineRunner` pipes `bbox_hint` into `detect()`.
+* `streettracker alpr-run` CLI loads `data.json` + `_meta.json` on
+  startup, builds a `(track_id, snap_index) -> sub_stream_bbox` map,
+  and scales each hint into the snap's 4K pixel coords before
+  passing it to the detector. JPEG dimensions are read via
+  `PIL.Image.open(...).size` (lazy -- header only; PipelineRunner
+  decodes the full pixels separately moments later anyway).
+
+**Backward-compatible:** sessions recorded before this change have
+no `main_snap_bboxes` in `data.json`. `alpr-run` logs
+
+```
+[alpr] no per-snap bboxes in data.json -- pre-crop will use the YOLO
+       largest-vehicle-bbox fallback (older session?)
+```
+
+and falls back to Step 7's largest-vehicle heuristic.
+
+Tests: 413 passing on 3.10 (+10 new for this PR). Ruff clean.
+
+**Expected lift vs the 91.5 % aliased baseline:** the
+`(track_id, snap_index)` hint targets the exact BotSORT-tracked
+vehicle, so the `FD61PVX`-style ghost plates can't enter a
+non-`FD61PVX` track's read pool. Predicted per-car high-conf rate
+≥ 95 % after [Tomorrow's analysis](#tomorrows-analysis-runbook-2026-05-26).
+Will be measured then.
+
+### Tomorrow's analysis runbook (2026-05-26)
+
+The bbox-pipe (Step 8) is live but no fresh session has
+accumulated enough vehicle activity overnight to validate the
+predicted ≥ 95 % aliasing-free read rate. Do this in the morning
+once a few hours of traffic have rolled past the camera:
+
+```bash
+# 1. Stop the live service to flush the current session's data.json
+#    + meta.json. The runtime only writes those at session shutdown;
+#    in-flight sessions only have events.jsonl populated.
+ssh streettracker@orin "sudo -n systemctl stop streettracker.service"
+
+# 2. Pick the most recent session that has the bbox-pipe data (any
+#    session with a start time after 2026-05-25 20:09 BST).
+ssh streettracker@orin "ls -1dt ~/streettracker/output/session_* | head -3"
+# Likely candidates: session_20260526_HHMMSS
+
+# 3. Smoke-check that the new session actually carries the new
+#    fields before pulling it. If frame_size is None or
+#    main_snap_bboxes is absent on every car, the runtime didn't
+#    pick up PR #28 -- abort and check the deploy.
+SESSION=session_20260526_<fill_in>
+ssh streettracker@orin "jq '.frame_size' ~/streettracker/output/$SESSION/${SESSION}_meta.json && jq '[.[] | select(.class_name==\"car\") | .main_snap_bboxes] | map(. != null) | {n: length, with_bboxes: (map(select(.)) | length)}' ~/streettracker/output/$SESSION/${SESSION}_data.json"
+
+# 4. Restart the service so we don't lose ongoing traffic.
+ssh streettracker@orin "sudo -n systemctl start streettracker.service"
+
+# 5. Tar + scp the new session down to the dev box.
+ssh streettracker@orin "tar -cf /tmp/${SESSION}.tar -C ~/streettracker/output ${SESSION}"
+scp streettracker@orin:/tmp/${SESSION}.tar D:/Projects/StreetTracker/output/
+cd D:/Projects/StreetTracker/output && tar -xf ${SESSION}.tar && rm ${SESSION}.tar
+
+# 6. Re-run alpr-run with --pre-crop. The CLI will log
+#    "loaded N per-snap bboxes (sub-stream (896, 512)); pre-crop
+#    hints active" -- that's the new path firing.
+cd D:/Projects/StreetTracker
+uv run streettracker alpr-run output/${SESSION} --pipeline both --pre-crop
+
+# 7. Aggregate the new numbers. Compare to the 91.5 % baseline from
+#    Step 7. Specifically check the ghost-plate count -- if the bbox
+#    pipe worked, no single plate should appear in >2-3 distinct
+#    tracks.
+uv run python -c "
+import json
+from collections import Counter
+d = json.load(open('output/${SESSION}/${SESSION}_alpr.json'))
+plate_track_count = Counter()
+for r in d:
+    if r['pipeline'] != 'preferred': continue
+    if r.get('ocr_text') and (r.get('ocr_conf') or 0) >= 0.9:
+        plate_track_count[(r['ocr_text'], r['track_id'])] = 1
+top = Counter()
+for (txt, tid) in plate_track_count:
+    top[txt] += 1
+print('top 10 plate strings by track count (ghost-detector):')
+for s, n in top.most_common(10):
+    print(f'  {s:<10}  {n} tracks')
+"
+```
+
+If the ghost count for the top string is < 5 tracks, the bbox pipe
+is working as expected. If it's still in the dozens or hundreds,
+something is wrong -- check that the per-snap bboxes loaded
+correctly (look for `loaded N per-snap bboxes` in the alpr-run log).
+
+After confirming aliasing is fixed, update the status table at the
+top of [ANPR tuning loop](#anpr-tuning-loop) with the actual
+aliasing-free read rate, then decide whether to move on to
+dataset-level analysis (re-id, recolor, make/model) or keep tuning.
 
 ### Known issue surfaced during the soak: asset_prefix split-flip — fixed in [#21](https://github.com/nicholasaross/StreetTracker/pull/21)
 
@@ -924,8 +1051,11 @@ values to change.
 Phase 7 cutover is operationally complete (Orin live since
 2026-05-22); the remaining tail is repo archival on GitHub
 (VehicleTracker + NanoTracker) after ~a week of clean operation.
-The [ANPR tuning loop](#anpr-tuning-loop) section above is at a
-natural decision point — Step 6 measured a 59 % high-confidence
-read-rate floor; next move is either dataset-level analysis on the
-236 readable plates or a follow-up on the 120 cars whose snaps
-didn't yield a read. No specific work is committed-to yet.
+The [ANPR tuning loop](#anpr-tuning-loop) section above lifted the
+per-car high-confidence read rate from a 59 % floor (Step 6) through
+91.5 % (Step 7, with parked-car aliasing) and is now blocked on
+fresh-data validation of the bbox-pipe fix (Step 8 -- predicted
+≥ 95 % aliasing-free). The
+[tomorrow's analysis runbook](#tomorrows-analysis-runbook-2026-05-26)
+documents the exact sequence to measure that number once a few
+hours of vehicle activity have accumulated on the live deployment.
