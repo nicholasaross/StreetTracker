@@ -101,6 +101,16 @@ class BufferedTrack:
 
     id: int
     class_id: int
+    # Confidence-weighted class vote: ``class_id -> sum(detection_score)``
+    # over all detections this track has accumulated. ``class_id`` is kept
+    # in sync with ``argmax(class_votes)`` after every :meth:`TrackBuffer.ingest`
+    # update so fire-time and finalize-time reads of ``class_id`` agree
+    # with the cumulative evidence. A single late-frame flip can no longer
+    # corrupt the final class unless its detection confidence outweighs
+    # the prior cumulative vote for the previous class. Empty on tracks
+    # constructed manually in tests (the legacy ``class_id`` constructor
+    # argument is still authoritative until the first ``ingest`` call).
+    class_votes: dict[int, float] = field(default_factory=dict)
     points: list[MotionPoint] = field(default_factory=list)
     crops: list[CropSample] = field(default_factory=list)
     hq_best_crop: np.ndarray | None = None
@@ -286,10 +296,19 @@ class TrackBuffer:
             if tr is None:
                 tr = BufferedTrack(id=d.track_id, class_id=d.class_id)
                 self._active[d.track_id] = tr
-            else:
-                # Update class_id to most recent (BotSORT occasionally
-                # reassigns a track's class as evidence accumulates).
-                tr.class_id = d.class_id
+            # Confidence-weighted class vote. ``class_id`` is always
+            # ``argmax(class_votes)`` after the update; a single
+            # late-frame flip can't corrupt the recorded class unless
+            # its detection confidence outweighs the cumulative vote
+            # for the prior class. Replaces the earlier "most-recent
+            # detection wins" behaviour, which was fragile against
+            # YOLO/BotSORT producing a stray bad class on the last
+            # visible frame of an otherwise correctly-classified
+            # track.
+            tr.class_votes[d.class_id] = (
+                tr.class_votes.get(d.class_id, 0.0) + d.score
+            )
+            tr.class_id = max(tr.class_votes, key=tr.class_votes.__getitem__)
             self._append_point(tr, d, frame_idx, t, frame, w, h)
 
         # Tick misses on tracks not seen this frame; expire those over the cap.

@@ -29,7 +29,22 @@ MP4 (NVDEC on Orin)┘                  (BotSORT integrated)
 
 ## Compatibility rules
 
-- **Python 3.12.** Pin via `.python-version`. uv manages the install.
+- **Python 3.11 today, 3.12 the JP7 target.** `.python-version` is
+  pinned to `3.11`, inside `pyproject.toml`'s `requires-python =
+  ">=3.10,<3.13"` band. The bump from 3.10 → 3.11 landed on 2026-05-25
+  because the `alpr` extra's `onnxruntime-gpu>=1.18` has no Python
+  3.10 wheels at recent versions. The eventual move to 3.12 is bundled
+  with the JetPack 7 flash — see
+  [JetPack 7 upgrade plan](#jetpack-7-upgrade-plan). uv installs
+  whichever interpreter `.python-version` names; tests pass on 3.11.
+- **Orin redeploys after the 3.10 → 3.11 bump** need a `uv sync` to
+  rebuild the venv at 3.11. The systemd unit passes `--no-sync` so
+  the running service won't auto-rebuild on `git pull`; do it
+  explicitly during the next deploy window. Verify the Jetson torch
+  wheel index
+  (`https://pypi.jetson-ai-lab.io/jp6/cu126/+simple/`) actually has
+  3.11 wheels before the first 3.11 deploy, since JP6 ships 3.10
+  natively and the index may not stock 3.11.
 - **No Python 3.6 hacks.** sys.path reorder, NamedTuple-for-dataclass,
   `# type:` comments — all gone. Use `@dataclass(slots=True)` and PEP-604
   unions (`X | None`).
@@ -121,7 +136,7 @@ systemd unit on the Orin, decommission the old Nano).
 | 6 | (opt) original Nano archive role | not started |
 | 7 | cutover: enable systemd on Orin + decommission Nano + archive old repos | **mostly done** — Orin live since 2026-05-22; only the `VehicleTracker` + `NanoTracker` repo archival on GitHub is outstanding. See [Cutover status](#cutover-status) and [Fresh deployment procedure](#fresh-deployment-procedure). |
 
-Tests at HEAD: **362 passing, ruff clean.**
+Tests at HEAD: **396 passing on Python 3.11, ruff clean.**
 
 Verify locally:
 
@@ -239,13 +254,20 @@ engine target or stream names differ from the example.
 
 ## ANPR tuning loop
 
-**Status: coverage objective met as of the 2026-05-25 soak; active focus
-has moved to ALPR read-rate measurement.** The capture-coverage gap that
-motivated this loop was closed by enabling **pipeline mode** on the live
-`snap_gate` (see [Pipeline mode](#pipeline-mode-the-dominant-capture-mechanism)
-below). The trigger-geometry tuning prescription preserved further down
-turns out not to be the binding knob for this deployment — pipeline-timer
-fires dominate the trigger-based fires by roughly an order of magnitude.
+**Status as of 2026-05-25: coverage objective met (97 % of cars get
+a 4K snap); ALPR read-rate floor measured at 59 % high-confidence
+plates per car.** The capture-coverage gap that motivated this loop
+was closed by enabling **pipeline mode** on the live `snap_gate`
+(see [Pipeline mode](#pipeline-mode-the-dominant-capture-mechanism)
+below). The trigger-geometry tuning prescription preserved further
+down turns out not to be the binding knob for this deployment —
+pipeline-timer fires dominate the trigger-based fires by roughly an
+order of magnitude. The remaining gap is plate *readability* not
+plate *existence*; next decision is whether to (a) move on to
+dataset-level analysis (re-id, recolor, make/model) on the 236
+high-confidence reads, or (b) investigate the 30 % of cars whose 4K
+snaps exist but didn't yield a read. See
+[Step 6 (done): ALPR read-rate measurement](#step-6-done-alpr-read-rate-measurement).
 
 ### Soak completion (2026-05-25, `session_20260524_075630`, 27.3h, 880 tracks)
 
@@ -309,29 +331,86 @@ will silently fall back to trigger-only and coverage will collapse.
 `pipeline_interval_ms: 0` is the default and disables pipeline mode
 entirely (legacy trigger-only behaviour).
 
-### Active focus: ALPR read-rate measurement
+### Step 6 (done): ALPR read-rate measurement
 
-The remaining ANPR question is plate *quality at capture*, not plate
-*existence*. The data already exists in `output/session_20260524_075630`.
+Ran `streettracker alpr-run --pipeline both` against the soak's 4K
+snaps on 2026-05-25. Setup:
 
-1. `uv sync --extra alpr` (one-time; pulls the OCR deps).
-2. Pull the session output to the dev box (~6.9 GB) — fastest path is
-   `tar -cf /tmp/soak.tar …` on the Orin, then `scp` the single
-   tarball, then extract. `rsync` is not available in Git Bash on
-   Windows; tar+scp is the workaround.
-3. `uv run streettracker alpr-run output/session_20260524_075630
-   --pipeline both` — runs both the bespoke (custom YOLO + EasyOCR)
-   and preferred (open-image-models + fast-plate-ocr) pipelines.
-   Writes `<session>_alpr.json` (per-image detections) and
-   `<session>_alpr_by_track.json` (aggregated to one read attempt per
-   track).
-4. Inspect by-track read rate. If a meaningful fraction of cars have
-   ≥1 high-confidence read, this is the new floor and work shifts to
-   dataset-level analysis (recolor, make/model, re-id).
-5. If read rates are below expectations, dig into failure modes by
-   capture position: blurry on fast tracks → consider raising
-   `min_sharpness`; wrong-angle close-ups → trim `t_usable_frac`
-   exit edge; occluded plates → geometry can't fix.
+1. `.python-version` bumped 3.10 → 3.11 (the `alpr` extra's
+   `onnxruntime-gpu>=1.18` has no 3.10 wheels at recent versions).
+   See [Compatibility rules](#compatibility-rules).
+2. Session pulled to dev box via `tar | scp` (~6.9 GB; `rsync` is not
+   on Git Bash for Windows).
+3. `uv sync --extra alpr --extra dev`.
+4. `uv run streettracker alpr-run output/session_20260524_075630
+   --pipeline both` — CPU fallback for ONNX (TensorRT/CUDA libs not
+   present locally), but throughput is fine; full run finished in
+   under an hour.
+
+**Floor against the 400-car soak population:**
+
+| Read criterion | Count | Rate |
+|---|---|---|
+| Any OCR text from either pipeline | 267 / 400 | **66.8 %** |
+| Preferred-pipeline read ≥ 0.95 conf | 236 / 400 | **59.0 %** |
+| Bespoke-pipeline read ≥ 0.50 conf | 65 / 400 | 16.3 % |
+
+Per-image rates (2391 vehicle-prefix 4K snaps processed):
+
+| Pipeline | Any OCR | Conf ≥ 0.5 |
+|---|---|---|
+| bespoke (custom YOLO + EasyOCR) | 206 / 2391 = 8.6 % | 76 / 2391 = 3.2 % |
+| preferred (open-image-models + fast-plate-ocr) | 380 / 2391 = 15.9 % | 380 / 2391 = 15.9 % |
+
+**Pipeline comparison.** When both pipelines produce a read on the
+same image (108 cases), they *disagree on the plate string 98 times
+out of 108*. Spot-checking the disagreements (track 184: bespoke
+`LGSRXH` vs preferred `LG15RXH`; track 294: bespoke `GXIGHXT` vs
+preferred `G419HXT`; track 301: bespoke `HBY` vs preferred `LY05WBY`)
+shows the preferred pipeline produces clean UK plates at conf ≥0.99,
+while bespoke output is typically truncated or garbled at much lower
+confidence. The bespoke pipeline as currently configured is not
+contributing useful signal — likely retrain or replace as a separate
+piece of work; for now treat preferred as the read-rate authority.
+
+**Caveats on the 66.8 % / 59.0 % numbers.**
+
+- 13 of the 400 cars have no vehicle-prefix 4K snaps on disk at all
+  — 7 because the [asset_prefix split-flip bug](#known-issue-surfaced-during-the-soak-asset_prefix-split-flip--fixed-in-21)
+  put their snaps under `person_<id>_main_*.jpg`, 6 because they had
+  zero captures recorded. These are invisible to `alpr-run`'s
+  glob-and-prefix discovery. If the 7 orphan-prefix tracks were
+  rescued (one-off rename script suggested in PR #21 notes), they'd
+  contribute up to 7 more reads, lifting the upper bound by ≤ 2 pp.
+- 120 of the 387 cars with vehicle-prefix snaps yielded *zero* reads
+  on either pipeline. Worth a follow-up sample: are they
+  predominantly fast tracks with motion-blurred plates, oblique
+  close-ups past the readable angle, or genuinely no-plate frames
+  (delivery vans with rear obstructions, etc.)?
+
+**Interpretation.** 59 % high-confidence read-rate per car is a
+respectable baseline floor for a non-ANPR-purpose-built RTSP camera
+running on a residential street. The plate-existence problem is
+solved (97 % of cars had a 4K snap available); the *plate-readability*
+gap is now the bottleneck. Two non-mutually-exclusive paths:
+
+1. **Move on to dataset-level analysis.** ~59 % high-confidence plate
+   reads across 400 cars in 27 h is enough data to start meaningful
+   per-vehicle aggregation: re-id within session, recolor on the
+   readable plates' HQ thumbnails, make/model on the 4K crops.
+2. **Investigate the 30 % of cars with snaps but no reads** to see
+   if a snap_planner tweak (later trim of `t_usable_frac`, raising
+   `min_sharpness`) would convert any of them into readable snaps,
+   or whether the gap is intrinsic to camera placement / vehicle
+   types.
+
+Outputs landed at:
+- `output/session_20260524_075630/session_20260524_075630_alpr.json`
+  (per-image detections; ~4782 entries: 2391 images × 2 pipelines)
+- `output/session_20260524_075630/session_20260524_075630_alpr_by_track.json`
+  (per-track best read across all snaps)
+- `output/session_20260524_075630/alpr_crops/{bespoke,preferred}/`
+  (cropped plate regions per detection)
 
 ### Known issue surfaced during the soak: asset_prefix split-flip — fixed in [#21](https://github.com/nicholasaross/StreetTracker/pull/21)
 
@@ -359,6 +438,50 @@ filenames and the record agree. Live on Orin since 2026-05-25.
 Existing on-disk orphans in `session_20260524_075630` aren't
 backfilled by this change — a one-off rename script can recover them
 per-session if you want the dashboard / `alpr-run` to see them.
+
+### Follow-up: confidence-weighted class voting (2026-05-25, not yet deployed)
+
+Even with PR #21 in place, two tracks in the live
+`session_20260525_121236` were flagged by the operator as obviously
+misclassified: track 500 was a parked grey Toyota Prius+ labelled
+`person`, track 976 was a pedestrian in white walking labelled `car`.
+Visual inspection of dashboard tiles + 4K main snaps confirmed both.
+
+Diagnosis: PR #21 made the *file prefix* consistent with the
+*finalize-time class*, but the finalize-time class itself came from
+"most-recent-detection wins"
+([track_buffer.py:290-292](src/streettracker/device/track_buffer.py)).
+A single stray YOLO frame at the end of an otherwise correctly
+classified track was enough to corrupt the entire record. For tracks
+500 / 976 specifically the model was *consistently* wrong (every saved
+file is one-class — no flip between fire and finalize), so PR #21's
+rename-on-finalize logic had nothing to fix; the underlying class
+was just wrong.
+
+Fix landed on a branch (not yet on Orin):
+
+* `BufferedTrack.class_votes: dict[int, float]` — `class_id ->
+  sum(detection_score)` over the track's life.
+* `TrackBuffer.ingest` accumulates each frame's detection score into
+  `class_votes` then sets `class_id = argmax(class_votes)` so
+  fire-time and finalize-time reads always see the cumulative
+  argmax, not the latest single detection.
+* Tie-break is dict-insertion-order (the first class seen wins on
+  ties; deterministic in CPython 3.7+).
+* Three new tests cover: equal-confidence tie-break (first wins),
+  five-frames-of-A-then-one-frame-of-B resists the flip, and
+  one-low-conf-A vs four-high-conf-B does flip.
+
+What this *does* fix: any class confusion where YOLO mostly agrees
+with itself but emits one or two stray frames of the wrong class.
+What this *doesn't* fix: tracks 500 / 976 themselves, since the
+model is consistently wrong on those scenes. Those would need
+either a heuristic guardrail at finalize (e.g. cross-check
+`class_name` against `speed_px_s` + bbox aspect ratio) or a
+detector retrain.
+
+Tests: 396 passing on 3.11 (was 394; +3 new vote tests, −1 obsolete
+"most-recent wins" assertion).
 
 ### Assessment baseline (2026-05-22, `session_20260522_154224`, ~1h12m of live traffic) — historical
 
@@ -595,7 +718,7 @@ at `uv sync`:
 
 | What | Where | Current (JP6) | JP7 target |
 |---|---|---|---|
-| Python pin | `.python-version` | `3.10` | `3.12` (matches OS native; uv still honours either, but matching avoids a redundant uv-installed interpreter) |
+| Python pin | `.python-version` | `3.11` (bumped from `3.10` on 2026-05-25 to unblock the `alpr` extra) | `3.12` (matches OS native; uv still honours either, but matching avoids a redundant uv-installed interpreter) |
 | Jetson torch wheel index URL | `pyproject.toml` `[[tool.uv.index]] name="jetson-ai-lab-jp6-cu126"` | `https://pypi.jetson-ai-lab.io/jp6/cu126/+simple/` | `https://pypi.jetson-ai-lab.io/jp7/cu130/+simple/` (or whatever Anibali's index publishes for JP7 — confirm at the time) |
 | cuDSS dep | `pyproject.toml` dependency `nvidia-cudss-cu12` | `cu12` (CUDA 12 series) | `cu13` if JP7 ships CUDA 13.x — verify against the JP7 release notes |
 | CUDA lib path | `scripts/setup_orin.sh` `CUDA_LIB=/usr/local/cuda-12.6/lib64` | `cuda-12.6` | Auto-detect via `ls -d /usr/local/cuda-*/lib64 \| sort -V \| tail -1`, OR hardcode `cuda-13.x` after confirming |
@@ -668,7 +791,8 @@ values to change.
 
 ### Re-sketching the road (camera moved, new view)
 
-1. Pull a fresh 4K frame: `curl http://.../cmd=Snap...` via the Nano
+1. Pull a fresh 4K frame: `curl http://.../cmd=Snap...` via the Orin
+   (or directly against the Reolink HTTP endpoint with credentials)
    and `scp` it back to `.claude/live_frame.jpg`.
 2. Downscale to 1200px wide → `.claude/sketch_me.png`.
 3. Operator opens it in any image editor, traces the visible road
@@ -695,6 +819,8 @@ values to change.
 Phase 7 cutover is operationally complete (Orin live since
 2026-05-22); the remaining tail is repo archival on GitHub
 (VehicleTracker + NanoTracker) after ~a week of clean operation.
-Active work is in the [ANPR tuning loop](#anpr-tuning-loop) section
-above — coverage objective is now met; current focus is the ALPR
-read-rate measurement against the 2026-05-25 soak's 4522 4K snaps.
+The [ANPR tuning loop](#anpr-tuning-loop) section above is at a
+natural decision point — Step 6 measured a 59 % high-confidence
+read-rate floor; next move is either dataset-level analysis on the
+236 readable plates or a follow-up on the 120 cars whose snaps
+didn't yield a read. No specific work is committed-to yet.
