@@ -41,7 +41,44 @@ def test_track_record_main_snaps_default() -> None:
         net_displacement_px=0.0, num_detections=0,
     )
     assert r.main_snaps == []
+    assert r.main_snap_bboxes is None  # absent by default; older sessions stay backward-compatible
     assert r.asset_prefix == "vehicle"
+
+
+def test_track_record_main_snap_bboxes_round_trip() -> None:
+    """Per-snap BotSORT bboxes survive JSON serialisation and the
+    parallel-list alignment with main_snaps is preserved."""
+    r = TrackRecord(
+        track_id=42, class_id=2, class_name="car",
+        time_start="t", time_end="t",
+        time_start_unix=0.0, time_end_unix=0.0,
+        time_start_s=0.0, time_end_s=0.0,
+        duration_visible=0.0,
+        direction="left to right", speed_px_s=0.0,
+        color="unknown", lane="middle",
+        avg_confidence=0.0, displacement_px=0.0,
+        net_displacement_px=0.0, num_detections=0,
+        main_snaps=[1, 2, 5],
+        main_snap_bboxes=[[100, 200, 300, 400], None, [110, 210, 310, 410]],
+    )
+    back = TrackRecord.from_json_dict(json.loads(json.dumps(r.to_json_dict())))
+    assert back.main_snaps == [1, 2, 5]
+    assert back.main_snap_bboxes == [[100, 200, 300, 400], None, [110, 210, 310, 410]]
+
+
+def test_session_meta_frame_size_round_trip() -> None:
+    """SessionMeta.frame_size survives the round trip and is None
+    for older meta files that don't carry it."""
+    meta = SessionMeta(
+        session_label="s", session_start_unix=0.0,
+        frame_size=[896, 512],
+    )
+    back = SessionMeta.from_json_dict(json.loads(json.dumps(meta.to_json_dict())))
+    assert back.frame_size == [896, 512]
+
+    older = {"session_label": "s", "session_start_unix": 0.0}
+    back_older = SessionMeta.from_json_dict(older)
+    assert back_older.frame_size is None
 
 
 def test_session_meta_round_trip(sample_session_meta: SessionMeta) -> None:

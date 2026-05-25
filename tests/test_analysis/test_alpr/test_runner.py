@@ -21,8 +21,10 @@ class _FakeDetector:
 
     def __init__(self, detection: PlateDetection | None) -> None:
         self._d = detection
+        self.last_bbox_hint: tuple[int, int, int, int] | None = None
 
-    def detect(self, image):  # noqa: ANN001 — runtime test stub
+    def detect(self, image, *, bbox_hint=None):  # noqa: ANN001 — runtime test stub
+        self.last_bbox_hint = bbox_hint
         return self._d
 
 
@@ -39,7 +41,8 @@ class _FakeRecognizer:
 class _ExplodingDetector:
     name = "boom-det"
 
-    def detect(self, image):  # noqa: ANN001
+    def detect(self, image, *, bbox_hint=None):  # noqa: ANN001
+        del bbox_hint
         raise RuntimeError("kaboom")
 
 

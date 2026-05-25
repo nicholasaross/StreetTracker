@@ -127,6 +127,16 @@ class BufferedTrack:
     # ``_on_done`` callback consults ``final_prefix`` for in-flight
     # fires that complete after finalize.
     snap_fire_prefixes: dict[int, str] = field(default_factory=dict)
+    # Per-snap-index BotSORT-tracked sub-stream bbox captured at
+    # fire-decision time. ``[x1, y1, x2, y2]`` in sub-stream pixel
+    # coords. Persisted into :attr:`TrackRecord.main_snap_bboxes` at
+    # finalize. Analysis-side ALPR pre-cropping uses these to target
+    # the exact tracked vehicle in the 4K snap instead of falling back
+    # to "largest vehicle bbox", which aliases onto parked cars on the
+    # far side of the road (see CLAUDE.md ANPR tuning loop, Step 7).
+    snap_fire_bboxes: dict[int, tuple[int, int, int, int]] = field(
+        default_factory=dict
+    )
     # Set in ``finalize_track`` to lock the prefix used for the
     # TrackRecord. ``None`` while the track is still active.
     final_prefix: str | None = None
@@ -444,4 +454,14 @@ def compute_attributes(
         num_detections=len(track.points),
         asset_prefix=asset_prefix_for_class(track.class_id),
         main_snaps=sorted(main_snaps) if main_snaps else [],
+        # Parallel list of sub-stream bboxes captured at fire time.
+        # ``None`` for any snap-index that ran before the bbox-capture
+        # change landed (graceful in mixed-version sessions). The whole
+        # field stays ``None`` if no snaps fired -- keeps the JSON
+        # diff minimal for tracks that don't have any 4K assets.
+        main_snap_bboxes=(
+            [list(track.snap_fire_bboxes[n]) if n in track.snap_fire_bboxes else None
+             for n in sorted(main_snaps)]
+            if main_snaps else None
+        ),
     )

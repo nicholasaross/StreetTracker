@@ -30,6 +30,7 @@ class TrackRecord:
         detection: avg_confidence, num_detections
         attrs:     color
         assets:    main_snaps (list of int N values whose _main_N.jpg landed)
+                   main_snap_bboxes (parallel list of sub-stream bboxes at fire time)
     """
 
     track_id: int
@@ -52,6 +53,17 @@ class TrackRecord:
     num_detections: int
     asset_prefix: str = "vehicle"   # "vehicle" | "person"
     main_snaps: list[int] = field(default_factory=list)
+    # Parallel to ``main_snaps``: the BotSORT-tracked sub-stream bbox at
+    # the moment that snap was fired, as ``[x1, y1, x2, y2]`` in
+    # sub-stream pixel coords (matches the resolution in
+    # ``SessionMeta.frame_size``). ``None`` per element if the runtime
+    # didn't capture a bbox for that snap; outer ``None`` for older
+    # sessions written before the field existed. Analysis-side ALPR
+    # uses these to pre-crop the 4K snap to the *tracked* vehicle
+    # (vs the largest in frame); eliminates the parked-car aliasing
+    # surfaced by the 2026-05-25 soak re-run. See
+    # :func:`streettracker.device.runtime._fire_snap`.
+    main_snap_bboxes: list[list[int] | None] | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -100,6 +112,15 @@ class SessionMeta:
     # carries the data needed to tune trigger placement post-cutover
     # without parsing the journal.
     snap_stats: dict[str, Any] | None = None
+    # Sub-stream frame size ``[width, height]`` (typically `[896, 512]`
+    # for the Reolink sub-stream we drive inference from). Captured at
+    # session start. ``None`` for older sessions written before the
+    # field existed. Analysis tools use this together with
+    # :attr:`TrackRecord.main_snap_bboxes` to scale per-snap bboxes
+    # from the sub-stream coord system into the 4K snap coords (each
+    # snap's actual pixel size is read from the JPEG at load time, so
+    # different mainstream resolutions are handled transparently).
+    frame_size: list[int] | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -117,6 +138,7 @@ class SessionMeta:
             avg_infer_ms=d.get("avg_infer_ms", 0.0),
             ir_periods=ir,
             snap_stats=d.get("snap_stats"),
+            frame_size=d.get("frame_size"),
         )
 
 

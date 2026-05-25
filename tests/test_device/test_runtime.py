@@ -273,6 +273,60 @@ def test_finalize_skips_rename_when_no_class_flip(tmp_path: Path) -> None:
     assert tr.final_prefix == "vehicle"
 
 
+def test_fire_snap_captures_bbox_from_last_motion_point(tmp_path: Path) -> None:
+    """_fire_snap must persist the BotSORT-tracked sub-stream bbox at
+    fire time into ``BufferedTrack.snap_fire_bboxes`` so finalize can
+    fold it into the TrackRecord. The bbox is the last motion point's
+    (x1, y1, x2, y2) -- analysis-side ALPR reads it back, scales into
+    4K coords, and uses it to target the tracked vehicle."""
+
+    class _StubTask:
+        def add_done_callback(self, _cb: Any) -> None:
+            pass
+
+        def result(self) -> bool:
+            return False  # _on_done short-circuits
+
+    class _StubSnapshotter:
+        def submit(self, _path: Path) -> _StubTask:
+            return _StubTask()
+
+    ctx = _build_ctx(tmp_path)
+    ctx.snapshotter = cast("Any", _StubSnapshotter())
+    # last motion point is at cx=500 -> bbox (450, 150, 550, 250)
+    tr = _moving_track_with_id(7, class_id=2)
+
+    _fire_snap(ctx, tr, snap_index=3)
+
+    assert tr.snap_fire_bboxes[3] == (450, 150, 550, 250)
+
+
+def test_fire_snap_skips_bbox_when_no_motion_points(tmp_path: Path) -> None:
+    """Defensive: a track that has no motion points yet shouldn't crash
+    fire-time. Shouldn't actually happen at runtime (the planner needs
+    at least one detection to decide to fire) but the guard keeps the
+    invariant clean."""
+
+    class _StubTask:
+        def add_done_callback(self, _cb: Any) -> None:
+            pass
+
+        def result(self) -> bool:
+            return False
+
+    class _StubSnapshotter:
+        def submit(self, _path: Path) -> _StubTask:
+            return _StubTask()
+
+    ctx = _build_ctx(tmp_path)
+    ctx.snapshotter = cast("Any", _StubSnapshotter())
+    tr = BufferedTrack(id=11, class_id=2)  # no MotionPoints
+
+    _fire_snap(ctx, tr, snap_index=1)
+
+    assert tr.snap_fire_bboxes == {}
+
+
 def test_fire_snap_callback_renames_late_arrival(tmp_path: Path) -> None:
     """An in-flight snap that completes after finalize must rename
     itself when it lands (the synchronous sweep in finalize couldn't see

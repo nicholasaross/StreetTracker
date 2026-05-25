@@ -34,7 +34,16 @@ class OpenImageModelsDetector:
         self._detector = LicensePlateDetector(detection_model=detector_model)
         self._det_conf = det_conf
 
-    def detect(self, image: np.ndarray) -> PlateDetection | None:
+    def detect(
+        self,
+        image: np.ndarray,
+        *,
+        bbox_hint: tuple[int, int, int, int] | None = None,
+    ) -> PlateDetection | None:
+        # Accept ``bbox_hint`` for protocol compliance with the
+        # PreCrop-aware Detector interface; this detector ignores it
+        # (the wrapper consults it).
+        del bbox_hint
         detections = self._detector.predict(image)
         if not detections:
             return None

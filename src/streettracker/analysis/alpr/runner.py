@@ -29,7 +29,19 @@ if TYPE_CHECKING:
 class Detector(Protocol):
     name: str
 
-    def detect(self, image: np.ndarray) -> PlateDetection | None: ...
+    def detect(
+        self,
+        image: np.ndarray,
+        *,
+        bbox_hint: tuple[int, int, int, int] | None = None,
+    ) -> PlateDetection | None:
+        """Detect a plate. Optional ``bbox_hint`` gives the
+        tracked-vehicle bbox in *image*'s pixel coords; detectors that
+        know how to use it (e.g. :class:`PreCropDetector`) skip their
+        own vehicle-detection step. Detectors that don't care must
+        accept the kwarg and ignore it.
+        """
+        ...
 
 
 class Recognizer(Protocol):
@@ -53,6 +65,8 @@ class PipelineRunner:
         snap_index: int,
         class_name: str,
         crop_out_dir: Path,
+        *,
+        bbox_hint: tuple[int, int, int, int] | None = None,
     ) -> PlateResult:
         import cv2  # deferred — pipelines can import this module without cv2
 
@@ -68,7 +82,7 @@ class PipelineRunner:
                         pipeline_ms=0.0, error="imread_failed",
                     )
 
-                detection = self._detector.detect(image)
+                detection = self._detector.detect(image, bbox_hint=bbox_hint)
                 if detection is None:
                     return PlateResult(
                         image_path=str(image_path), image_name=image_name,

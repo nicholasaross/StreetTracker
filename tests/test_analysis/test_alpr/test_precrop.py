@@ -24,7 +24,13 @@ class _FakePlateDetector:
         self.last_input_shape: tuple[int, int] | None = None
         self.calls = 0
 
-    def detect(self, image: np.ndarray) -> PlateDetection | None:
+    def detect(
+        self,
+        image: np.ndarray,
+        *,
+        bbox_hint: tuple[int, int, int, int] | None = None,
+    ) -> PlateDetection | None:
+        del bbox_hint  # this stub is the underlying detector, not the wrapper
         self.calls += 1
         self.last_input_shape = image.shape[:2]
         return self._d
@@ -132,7 +138,13 @@ def test_pre_crop_iterates_vehicles_largest_first() -> None:
             self.calls = 0
             self.shapes: list[tuple[int, int]] = []
 
-        def detect(self, image: np.ndarray) -> PlateDetection | None:
+        def detect(
+            self,
+            image: np.ndarray,
+            *,
+            bbox_hint: tuple[int, int, int, int] | None = None,
+        ) -> PlateDetection | None:
+            del bbox_hint
             self.calls += 1
             self.shapes.append(image.shape[:2])
             if self.calls == 1:
@@ -210,6 +222,79 @@ def test_pre_crop_all_vehicles_miss_falls_back_to_full_image() -> None:
     # One call on the vehicle crop, one final call on the full image.
     assert plate.calls == 2
     assert out is None  # plate detector returns None on both
+
+
+def test_pre_crop_with_hint_skips_yolo_entirely() -> None:
+    """When a bbox_hint is provided (typically piped from the
+    TrackRecord's main_snap_bboxes), the YOLO vehicle-detection step
+    is bypassed and the plate detector runs directly on the hinted
+    crop. This is the path that eliminates parked-car aliasing."""
+    plate = _FakePlateDetector(
+        detection=PlateDetection(bbox=(50, 30, 150, 70), det_confidence=0.9)
+    )
+    pre = PreCropDetector(plate_detector=plate, pad_frac=0.0)
+    # Deliberately DO NOT inject a fake YOLO -- if the wrapper tried
+    # to load ultralytics here the test would either ImportError or
+    # download a model from the network. The hint path must bypass
+    # _ensure_loaded entirely.
+
+    out = pre.detect(
+        _make_image(), bbox_hint=(1000, 800, 2000, 1600),
+    )
+
+    assert out is not None
+    # Plate at (50, 30) inside crop starting at (1000, 800) -> (1050, 830).
+    assert out.bbox == (1050, 830, 1150, 870)
+    assert out.det_confidence == 0.9
+    assert plate.calls == 1
+    assert plate.last_input_shape == (800, 1000)
+
+
+def test_pre_crop_hint_applies_padding() -> None:
+    """The bbox_hint path applies the same pad_frac padding as the
+    YOLO path so both routes feed the plate detector consistent
+    crop margins."""
+    plate = _FakePlateDetector(
+        detection=PlateDetection(bbox=(0, 0, 30, 10), det_confidence=0.5)
+    )
+    pre = PreCropDetector(plate_detector=plate, pad_frac=0.10)
+
+    pre.detect(_make_image(), bbox_hint=(1000, 800, 2000, 1600))
+
+    # 1000-px-wide hint + 10% pad each side -> 1200x960 crop.
+    assert plate.last_input_shape == (960, 1200)
+
+
+def test_pre_crop_hint_clamps_to_image_bounds() -> None:
+    """A hint near the image edge with padding overflowing the frame
+    is clamped, not skipped."""
+    plate = _FakePlateDetector(
+        detection=PlateDetection(bbox=(0, 0, 30, 10), det_confidence=0.5)
+    )
+    pre = PreCropDetector(plate_detector=plate, pad_frac=0.50)
+
+    pre.detect(_make_image(h=500, w=500), bbox_hint=(0, 0, 100, 100))
+
+    # 100x100 hint clamped at the origin, +50px pad on the trailing edges.
+    assert plate.last_input_shape == (150, 150)
+
+
+def test_pre_crop_degenerate_hint_falls_back_to_full_image() -> None:
+    """A hint with zero or negative area (after clamping past the
+    image edge) is treated as missing and the plate detector runs on
+    the original image. Defensive against sub-stream bboxes that
+    drifted off-frame before fire-time."""
+    plate = _FakePlateDetector(
+        detection=PlateDetection(bbox=(1, 1, 5, 3), det_confidence=0.3)
+    )
+    pre = PreCropDetector(plate_detector=plate, pad_frac=0.0)
+
+    out = pre.detect(_make_image(h=500, w=500), bbox_hint=(600, 600, 700, 700))
+
+    assert out is not None
+    assert plate.calls == 1
+    # Should have seen the full 500x500 frame, not the (clamped-to-zero) crop.
+    assert plate.last_input_shape == (500, 500)
 
 
 def test_pre_crop_name_decorates_underlying_detector_name() -> None:

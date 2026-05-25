@@ -521,6 +521,50 @@ def test_compute_attributes_main_snaps_sorted_and_unique() -> None:
     assert result.main_snaps == [1, 2, 3]
 
 
+def test_compute_attributes_main_snap_bboxes_aligned_with_main_snaps() -> None:
+    """When the BufferedTrack has per-snap bboxes recorded, the
+    TrackRecord must carry a parallel list of bboxes aligned with
+    ``main_snaps`` (sorted ascending). Missing per-index bboxes
+    become ``None`` so downstream analysis can detect mixed states."""
+    tr = _track_with_motion([(0.0, 100, 100), (1.0, 300, 100)])
+    tr.snap_fire_bboxes[1] = (50, 80, 150, 180)
+    tr.snap_fire_bboxes[3] = (250, 80, 350, 180)
+    # snap_index 2 deliberately omitted
+    result = compute_attributes(
+        tr,
+        frame_h=_FRAME_H,
+        min_duration_s=0.0,
+        parked_disp_px=10.0,
+        color="red",
+        t_start_wall=_T0_WALL,
+        main_snaps=[3, 1, 2],
+    )
+    assert result is not None
+    assert result.main_snaps == [1, 2, 3]
+    assert result.main_snap_bboxes == [
+        [50, 80, 150, 180],   # for snap 1
+        None,                  # for snap 2 (missing)
+        [250, 80, 350, 180],  # for snap 3
+    ]
+
+
+def test_compute_attributes_main_snap_bboxes_none_when_no_snaps() -> None:
+    """No snaps -> no bbox list (keeps JSON diff minimal for tracks
+    that don't have any 4K assets to begin with)."""
+    tr = _track_with_motion([(0.0, 100, 100), (1.0, 300, 100)])
+    result = compute_attributes(
+        tr,
+        frame_h=_FRAME_H,
+        min_duration_s=0.0,
+        parked_disp_px=10.0,
+        color="red",
+        t_start_wall=_T0_WALL,
+    )
+    assert result is not None
+    assert result.main_snaps == []
+    assert result.main_snap_bboxes is None
+
+
 def test_crop_sample_dataclass_holds_expected_fields() -> None:
     """Light type-shape check so a future field rename triggers the
     test rather than mysteriously breaking downstream consumers."""
