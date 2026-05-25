@@ -35,3 +35,8 @@ configs/camera.json
 .idea/
 *.swp
 .DS_Store
+
+# Claude Code workspace: per-install operator artifacts, scratch
+# scripts, sample-snap bundles, embedded worktrees. Never committed --
+# all checked-in CLAUDE-related content goes in CLAUDE.md and src/.
+.claude/

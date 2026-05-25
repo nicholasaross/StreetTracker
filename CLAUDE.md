@@ -673,6 +673,21 @@ JetPack 7 (Ubuntu 24.04 / Python 3.12) — both via uv's
 for the pyproject + setup-script changes that have to land *before*
 the JP7 flash for that path to work.
 
+**Recovery from a venv rebuild.** A `uv sync` that recreates `.venv`
+(e.g. after a `.python-version` change or someone deleting the
+directory) **wipes the system-tensorrt symlinks** that `setup_orin.sh`
+step 4 installs. The systemd service then fails to load the TRT
+engine with `ModuleNotFoundError: No module named 'tensorrt'` and
+restart-loops. Recovery is the dedicated subcommand:
+
+```bash
+ssh streettracker@orin "cd ~/streettracker && scripts/setup_orin.sh --symlinks-only && sudo -n systemctl restart streettracker.service"
+```
+
+No sudo / apt / network needed — `--symlinks-only` runs step 4 in
+isolation. Hit this exact failure on 2026-05-25 during the 3.10 →
+3.11 → 3.10 pin churn, hence the new flag.
+
 ### Per-deploy files
 
 ```bash
