@@ -464,9 +464,43 @@ sub-stream bbox alongside the 4K filename in `_meta.json`) -- a
 follow-up if the aggregate accuracy after the soak re-run looks
 worse than the pre-pre-crop baseline.
 
-Full re-run with `--pipeline both --pre-crop` on the soak's 2391
-vehicle snaps is in flight as of this write; population-level numbers
-to be filled in once it completes.
+Full re-run with `--pipeline both --pre-crop` against the soak's
+2391 vehicle snaps completed 2026-05-25 evening. Population-level
+results:
+
+| Metric | Baseline (pre-crop OFF, t-384) | Pre-crop ON (t-640) |
+|---|---|---|
+| Per-image detection (preferred pipeline) | 16 % | **99 %** |
+| Per-image OCR at conf ≥ 0.95 (preferred) | 16 % | **99 %** |
+| **Per-car real-plate read (conf ≥ 0.9, ghost-filtered)** | 59 % | **91.5 %** (366 / 400) |
+| Tracks with multiple distinct OCR strings (aliasing) | 4 % | 96 % |
+
+**Aliasing is the new bottleneck.** The plate string `FD61PVX`
+(clearly one parked car on the far side of the road) appeared in
+**363 of 410** tracks after the re-run -- the largest-vehicle-bbox
+heuristic locks onto it whenever the BotSORT-tracked car is small
+in the frame. Filtering plates that appear across > 5 tracks
+("ghosts") removes 7 strings and reveals the underlying real
+per-car read rate of 91.5 %.
+
+A by-track aggregation that takes the *mode* string across snaps,
+or weights by total cumulative OCR confidence, is more robust than
+the current max-conf-per-snap. But the proper fix is to **persist
+BotSORT's per-snap bbox** alongside the 4K filename so the
+PreCropDetector can target the exact tracked vehicle instead of
+guessing-by-area. That's a runtime change (snapshotter +
+snap_planner emit a per-snap bbox into either `_meta.json` or a
+new sidecar JSON; alpr-run reads it back at load time) -- next
+batch of work if the 91.5 % floor isn't enough.
+
+Headline lift: **+32.5 pp on per-car high-confidence reads** for one
+code wrapper + one CLI default change. The path from here is either:
+
+1. Land the BotSORT-bbox persistence (eliminates aliasing, lifts
+   per-car reads probably another 3-8 pp toward ~95 %).
+2. Move on to dataset-level analysis (C1-C3 in the next-steps
+   menu) -- 91.5 % is already a very strong floor for a residential
+   street.
 
 ### Known issue surfaced during the soak: asset_prefix split-flip — fixed in [#21](https://github.com/nicholasaross/StreetTracker/pull/21)
 
