@@ -239,17 +239,128 @@ engine target or stream names differ from the example.
 
 ## ANPR tuning loop
 
-**Active focus.** Post-cutover work to improve 4K plate-capture
-coverage. The runtime is live and healthy; we've shipped observability
-([PR #16](https://github.com/nicholasaross/StreetTracker/pull/16)) and
-the pipelining feature
-([PR #18](https://github.com/nicholasaross/StreetTracker/pull/18)) that
-together moved ≥3-cap coverage from **6% → 71%** of vehicles. Currently
-running a tuning soak (2026-05-23 15:47 BST) with
-`pipeline_max_per_track=15` and `snapshot.max_concurrent=3` to address
-the two residual constraints the 2026-05-23 validation soak surfaced.
+**Status: coverage objective met as of the 2026-05-25 soak; active focus
+has moved to ALPR read-rate measurement.** The capture-coverage gap that
+motivated this loop was closed by enabling **pipeline mode** on the live
+`snap_gate` (see [Pipeline mode](#pipeline-mode-the-dominant-capture-mechanism)
+below). The trigger-geometry tuning prescription preserved further down
+turns out not to be the binding knob for this deployment — pipeline-timer
+fires dominate the trigger-based fires by roughly an order of magnitude.
 
-### Assessment baseline (2026-05-22, `session_20260522_154224`, ~1h12m of live traffic)
+### Soak completion (2026-05-25, `session_20260524_075630`, 27.3h, 880 tracks)
+
+| Metric | Value | Read |
+|---|---|---|
+| HTTP attempts / successes / failures | 4522 / 4522 / 0 | Reolink endpoint solid. |
+| Latency p50 / p90 / p99 / max | 688 / 937 / 1211 / 2423 ms | The "magic number" from Step 3 — real but no longer the binding constraint. |
+| `blur_skipped_frames` | **2** | `min_sharpness=100.0` is essentially never tripping; do not lower. |
+| `pipeline_throttled` / `pipeline_budget_exhausted` | 14850 / 2484 | Snap budget *is* binding, but coverage is still saturated. |
+| Cars L→R any cap | 179 / 182 = **98 %** | Up from baseline's 29 %. |
+| Cars L→R 3+ caps | 177 / 182 = **97 %** | Up from baseline's 4 %. |
+| Cars R→L any cap | 215 / 218 = **99 %** | Up from baseline's 37 %. |
+| Cars R→L 3+ caps | 208 / 218 = **95 %** | Up from baseline's 2 %. |
+
+Visual review of six representative cars (slow/median/fast in each
+direction) confirmed:
+
+- **Every observed car has at least one plate-readable 4K snap.** ANPR
+  coverage objective is met.
+- The *first* snap in each track's sequence is consistently the gold
+  capture for both directions. Later snaps either catch a receding /
+  distant vehicle (L→R) or an empty frame post-exit / a wrong-angle
+  close-up (R→L) — the 688 ms p50 latency landing pipeline fires
+  outside the plate-readable window.
+- The L→R = rear plate, R→L = front plate convention is visually
+  correct (this resolves the original "open question" carried under
+  Step 4 below).
+
+Samples used for the inspection are at `.claude/soak_samples/` (52
+files, ~65 MB; not committed).
+
+### Pipeline mode (the dominant capture mechanism)
+
+The 2026-05-22 baseline reflects a **trigger-only** snap_gate (6
+triggers at fixed t' positions on the polygon principal axis, max ~3
+fires per car). At some point on 2026-05-23 (Orin
+`configs/camera.json` mtime `21:49 BST`) two extra fields were added
+to the deployed `snap_gate` block:
+
+```json
+"pipeline_interval_ms": 400,
+"pipeline_max_per_track": 15
+```
+
+Behaviour (verified in `src/streettracker/device/snap_planner.py` near
+the `consider_pipeline` method): while a track is inside the
+polygon's `t_usable` band, fire a 4K snap every
+`pipeline_interval_ms` of wall-clock time, capped at
+`pipeline_max_per_track` per track. Pipeline fires share the
+snapshotter's `max_concurrent` HTTP semaphore but have their own
+per-track counter (`pipeline_fires`) separate from the trigger pool
+(`fires_committed`).
+
+The local artifact at `.claude/snap_gate.json` represents the
+*pre-pipeline-mode* config (same polygon + same 6 triggers, but no
+`pipeline_*` fields). The two configs match on geometry; they diverge
+only on whether pipeline mode is enabled. Don't blindly re-deploy the
+local artifact without preserving the pipeline fields, or the gate
+will silently fall back to trigger-only and coverage will collapse.
+
+`pipeline_interval_ms: 0` is the default and disables pipeline mode
+entirely (legacy trigger-only behaviour).
+
+### Active focus: ALPR read-rate measurement
+
+The remaining ANPR question is plate *quality at capture*, not plate
+*existence*. The data already exists in `output/session_20260524_075630`.
+
+1. `uv sync --extra alpr` (one-time; pulls the OCR deps).
+2. Pull the session output to the dev box (~6.9 GB) — fastest path is
+   `tar -cf /tmp/soak.tar …` on the Orin, then `scp` the single
+   tarball, then extract. `rsync` is not available in Git Bash on
+   Windows; tar+scp is the workaround.
+3. `uv run streettracker alpr-run output/session_20260524_075630
+   --pipeline both` — runs both the bespoke (custom YOLO + EasyOCR)
+   and preferred (open-image-models + fast-plate-ocr) pipelines.
+   Writes `<session>_alpr.json` (per-image detections) and
+   `<session>_alpr_by_track.json` (aggregated to one read attempt per
+   track).
+4. Inspect by-track read rate. If a meaningful fraction of cars have
+   ≥1 high-confidence read, this is the new floor and work shifts to
+   dataset-level analysis (recolor, make/model, re-id).
+5. If read rates are below expectations, dig into failure modes by
+   capture position: blurry on fast tracks → consider raising
+   `min_sharpness`; wrong-angle close-ups → trim `t_usable_frac`
+   exit edge; occluded plates → geometry can't fix.
+
+### Known issue surfaced during the soak: asset_prefix split-flip — fixed in [#21](https://github.com/nicholasaross/StreetTracker/pull/21)
+
+On at least one track (`track_id=4463` in this session), the dashboard
+tile + HQ were written as `vehicle_4463_*` but the 4K main snaps as
+`person_4463_main_*.jpg`. The data.json record carries `asset_prefix:
+"vehicle"`, so the summary HTML and downstream tooling look for the
+wrong prefix and miss the 4K captures entirely.
+
+Root cause: BotSORT reassigns a track's class as evidence accumulates
+([track_buffer.py:280](src/streettracker/device/track_buffer.py)), so
+`track.class_id` can flip mid-life. The 4K snap path was built from
+`track.class_id` at fire time, while the TrackRecord + tile/HQ were
+built from it at finalize time. A flip between those moments left the
+on-disk filenames disagreeing with `record.asset_prefix`. 26/880
+tracks (~3%) in the soak were affected.
+
+Fix: `BufferedTrack` now records the fire-time prefix per snap_index
+and a `final_prefix` slot. `finalize_track` locks the final prefix,
+sweeps already-saved snaps whose fire prefix differs, and renames
+them; the snap `_on_done` callback handles snaps that complete after
+finalize. Thumbnails reuse the same `final_prefix` so all on-disk
+filenames and the record agree. Live on Orin since 2026-05-25.
+
+Existing on-disk orphans in `session_20260524_075630` aren't
+backfilled by this change — a one-off rename script can recover them
+per-session if you want the dashboard / `alpr-run` to see them.
+
+### Assessment baseline (2026-05-22, `session_20260522_154224`, ~1h12m of live traffic) — historical
 
 | Metric | Value |
 |---|---|
@@ -271,9 +382,9 @@ Representative tracks (visually inspected via downsampled 4K samples):
 | 516 | R→L Land Rover, 4 px/s, 131s in view | **not representative**: parked on the curb, being unloaded |
 
 Plate quality when well-framed is excellent (4K JPEG sharp, readable
-characters). The original dominant failure mode was therefore
-**HTTP-snap latency**, not motion blur: by the time the Reolink JPEG
-arrived, fast vehicles had moved past the plate-readable position.
+characters). The dominant failure mode is therefore **HTTP-snap
+latency**, not motion blur: by the time the Reolink JPEG arrives, fast
+vehicles have moved past the plate-readable position.
 
 ### Step 1 (done): observability — [PR #16](https://github.com/nicholasaross/StreetTracker/pull/16)
 
@@ -288,174 +399,16 @@ Merged 2026-05-22. `SessionMeta.snap_stats` now lands in `*_meta.json`:
 
 Blur skips are also logged in the journal, throttled per-track per 5s.
 
-### Step 2 (done): latency investigation — pivot from trigger-shift to pipelining
+### Step 2 (done): deploy + ~24 h soak
 
-After the PR #16 soak (2026-05-23 07:34–09:46 BST, `session_20260523_073430`),
-the latency numbers came back much larger than the original tuning math
-assumed:
-
-```
-attempts 112  successes 112  failures 0  dropped 0  blur_skipped 0
-latency   min 522.5  p50 630.5  p90 833.8  p99 1428.4  max 1725.3   ms
+```bash
+ssh streettracker@orin
+cd ~/streettracker && git pull
+sudo -n systemctl restart streettracker.service
+journalctl -u streettracker -f      # confirm clean restart; Ctrl-C
 ```
 
-A 25-call `curl` baseline directly against `cmd=Snap` (runtime stopped)
-decomposed the 643 ms total: **TTFB ≈ 370 ms (Reolink rendering the 4K
-JPEG) + body ≈ 260 ms (~1.7 MB at ~50 Mbps over a gigabit LAN)**. The
-runtime adds no measurable overhead. eno1 link is 1 Gb/s; network is
-not the bottleneck. The camera is the floor.
-
-Converting the 630 ms p50 to t' shifts using the polygon's usable-band
-axis length of 456.5 sub-stream-px (sub-stream is 896×512, polygon
-band span 606.94 sketch-px scaled component-wise):
-
-```
-R→L fast (forward)  shift = 0.0953   F1 (t'=0.05) → -0.0453  out of [0,1]
-L→R slow (reverse)  shift = 0.0649   R1 (t'=0.95) →  1.0149  out of [0,1]
-```
-
-No purely-tuning trigger edit recovers all six triggers — F1 and R1 get
-pushed out of the band. That was the trigger that the original
-"Step 3 (tune)" recipe was meant to apply; **deferring it** in favour
-of pipelining (below) was the right call. The recipe itself is still
-valid and is preserved under [Trigger-shift recipe (deferred)](#trigger-shift-recipe-deferred)
-in case ANPR's residual gaps after pipelining warrant revisiting it.
-
-An endurance probe (200 calls, 2 concurrent loops sustained 85 s)
-closed the safety question for sustained pulls:
-
-```
-http_codes  {200: 200}   non-jpeg  0   no truncation
-total ms    min 565  p50 834  p90 968  p99 1134  max 1154
-TTFB ms     min 297  p50 551  p90 693  p99 896   max 909
-2-concurrent overhead vs single-call: 1.30x  (4-concurrent was 2.4x)
-no latency drift across five 20 s buckets
-```
-
-Throughput jumps from 1.5 fires/s (single) to 2.36 fires/s (2-concurrent).
-The win was clear: instead of trying to time-shift triggers to absorb
-camera latency, **keep the camera continuously busy** so each vehicle
-gets multiple captures and ALPR has more chances per transit.
-
-### Step 3 (done): pipelining — [PR #18](https://github.com/nicholasaross/StreetTracker/pull/18)
-
-Merged 2026-05-23. `SnapPlanner.consider_pipeline(...)` runs after each
-frame's normal `consider()` and fires opportunistically every
-`pipeline_interval_ms` (default 0 = off, set to 400 on the live deploy)
-while a track sits in the usable t-band. Pipeline fires:
-
-* ignore `area_threshold_frac` — a tiny sub-stream bbox still produces
-  a full 4K main snap that ANPR can read, even at the polygon's
-  distant edge
-* ignore `post_fire_cooldown_frames` — the wall-clock interval is the
-  throttle
-* use a separate counter so the trigger budget is untouched
-* share a combined `snap_index = fires_committed + pipeline_fires`
-  for filename ordinals so no `_main_N.jpg` collision is possible
-
-Config knobs (under `snapshot.snap_gate`):
-
-| Knob | Default | Live deploy (2026-05-23) | Tuning soak (2026-05-23 15:47) |
-|---|---|---|---|
-| `pipeline_interval_ms` | `0` (off) | `400` | `400` |
-| `pipeline_max_per_track` | `10` | `10` | `15` |
-| `snapshot.max_concurrent` | `2` | `2` | `3` |
-
-New `snap_stats` keys (always emitted when `snap_gate` is configured):
-
-* `pipeline_fires` — aggregate successful pipeline submits
-* `pipeline_throttled` — frames where the interval blocked a fire
-* `pipeline_budget_exhausted` — frames where `pipeline_max_per_track`
-  blocked a fire
-* `fires_per_track` — `{n, p50, p90, max, mean, zero}` distribution
-  computed at session end from per-track state captured before
-  `forget()`
-* `time_in_band_ms_per_track` — same shape, `*_ms` keys, sets the
-  ceiling on possible fires per track
-
-### Step 4 (done): validation soak — 2026-05-23, 3 h 50 min, 289 vehicles
-
-Two sessions:
-
-| Session | Duration | Vehicles | Trigger fires | Pipeline fires | Drops | Latency p50 |
-|---|---|---|---|---|---|---|
-| `session_20260523_114752` | 1 h 04 m | 69 | 38 | 430 | 14 | 1007.7 ms |
-| `session_20260523_125127` | 2 h 46 m | 220 | 113 | 1128 | 146 | 1048.1 ms |
-
-Combined `snap_stats`-style summary:
-
-```
-attempts 1563  successes 1563  failures 0  dropped 160 (9.3%)
-pipeline_fires 1558 (91% of all fires)
-pipeline_throttled 4577   pipeline_budget_exhausted 2937
-blur_skipped 1
-latency (combined) ~p50 1030 ms   ~p90 1557 ms   max 2375.6 ms
-```
-
-Caps-per-vehicle distribution against the baseline:
-
-| Caps | Pipelined (2026-05-23) | Baseline (2026-05-22) |
-|---|---|---|
-| 0 | 58 / 289 (20%) | 29 / 63 (46%) |
-| 1-2 | 27 (9%) | 26 (41%) |
-| 3-5 | 62 (21%) | 4 (6%) |
-| 6-9 | 97 (34%) | 0 |
-| 10+ | 45 (16%) | 0 (was capped at 3) |
-
-**≥3 caps: 71% vs 6% baseline.** Direction balance also closed:
-L→R 5.42 caps/track vs R→L 4.86 (was 29% vs 37% asymmetry).
-
-Three readings from the new counters worth remembering for future
-diagnostic work:
-
-* `pipeline_budget_exhausted / pipeline_fires ≈ 1.88` — for every
-  pipeline fire we allowed, ~1.88 were blocked by the per-track cap.
-  The cap of 10 was the dominant rate limiter for slow / long-dwell
-  vehicles, not the interval.
-* `dropped / attempts = 9.3%` — `max_concurrent=2` was the bottleneck
-  during multi-track bursts. Each drop is one specific frame's fire
-  that didn't happen; the interval-throttled per-track behaviour means
-  the next frame is still eligible, so it doesn't compound.
-* `latency p50 1030 ms` vs the endurance probe's 830 ms prediction —
-  real traffic bursts have more contention than two-loop synthetic
-  pulls. The system is stable at this floor (no drift across
-  3 h 50 min).
-
-`fires_per_track.n = 215` (session 1) and `738` (session 2) include
-*all* planner-tracked entities — vehicles AND pedestrians that briefly
-entered the polygon. Most pedestrians never reach the band, so
-`fires_per_track.p50 = 0` in both. **For tuning decisions read the
-distribution from `events.jsonl` directly (vehicles only)**, not
-`snap_stats.fires_per_track`.
-
-### Step 5 (in progress): tuning soak — `pipeline_max_per_track=15` + `max_concurrent=3`
-
-Live since 2026-05-23 15:47:07 BST (`session_20260523_154707`). The
-two changes address the two residual constraints Step 4 identified:
-
-* Raising `pipeline_max_per_track` from 10 → 15 should unblock the ~16%
-  of vehicles that hit the cap during Step 4. Expected effect: the
-  `10+ caps` bucket re-distributes some weight into a new `13-15`
-  range; `pipeline_budget_exhausted` drops proportionally.
-* Raising `snapshot.max_concurrent` from 2 → 3 should cut the drop
-  rate. The endurance probe only tested 2 vs 4 concurrent (1.30x vs
-  2.4x single-call latency); 3 is interpolated to ~1.7x, so we predict
-  `latency.p50_ms` climbs from ~1030 ms to ~1100 ms in exchange for
-  the drop rate halving.
-
-**Success criteria for the next 1-2 h soak (read against this section's
-Step 4 numbers):**
-
-| Metric | Step 4 baseline | Target | Concern threshold |
-|---|---|---|---|
-| `dropped / attempts` | 9.3% | ≤ 5% | > 8% means `max_concurrent=3` didn't help — back off |
-| `fires_per_track` 10+ bucket | 16% | ≤ 8% (vehicles redistribute up) | unchanged means cap wasn't the limiter |
-| `pipeline_budget_exhausted / pipeline_fires` | 1.88 | ≤ 1.0 | unchanged means cap is still dominant — try 20 |
-| `latency.p50_ms` | ~1030 | ≤ 1150 | > 1300 means 3-concurrent overloaded the Reolink |
-| `latency.max_ms` | 2375.6 | ≤ 2600 | > 3000 means tail latency is degrading |
-| ≥3 caps coverage | 71% | ≥ 75% | < 71% means a regression — investigate |
-
-Read with the standard recipe:
+The session JSON is only written at session shutdown, so to read mid-soak:
 
 ```bash
 ssh streettracker@orin "sudo -n systemctl stop streettracker.service && \
@@ -463,58 +416,76 @@ ssh streettracker@orin "sudo -n systemctl stop streettracker.service && \
   sudo -n systemctl start streettracker.service"
 ```
 
-The session label to compare against in `events.jsonl` distributions
-is `session_20260523_125127` for the heaviest sample (220 vehicles).
-Use the same shell pipeline:
+(Stopping triggers the runtime's graceful drain → final `_meta.json`
+write, then we restart for the next session.)
 
-```bash
-jq -r "(.main_snaps | length)" session_*_events.jsonl \
-  | sort -n | uniq -c | awk "{print \"  \" \$2 \" caps: \" \$1 \" tracks\"}"
-```
+### Step 3 (parked — wrong knob in pipeline mode): tune
 
-### Trigger-shift recipe (deferred)
+**Parked 2026-05-25 after the soak.** This recipe assumes the dominant
+capture mechanism is trigger-based fires at fixed t' positions. In
+pipeline mode (see [Pipeline mode](#pipeline-mode-the-dominant-capture-mechanism)
+above) trigger fires are a small minority of total fires — perfect t'
+placement won't change coverage materially. Recipe is preserved here
+for any future trigger-only deployment (`pipeline_interval_ms: 0`),
+and also as the reference math if pipeline mode is ever swapped out.
 
-The Step 2 analysis showed a pure trigger-placement edit can't recover
-all six operator-traced triggers from 630 ms of camera latency — F1
-and R1 get pushed out of the `[0, 1]` usable band. With pipelining
-now producing 6+ caps for 49% of vehicles, the importance of those
-specific trigger positions is much reduced. The recipe is preserved
-here in case ANPR's residual gaps after the Step 5 tuning soak warrant
-revisiting it.
+A worked example against the soak's numbers: at `p50_ms = 688`,
+median speeds 77 / 87 px/s, principal-axis usable length ≈ 456
+sub-stream px, the formula produces shifts of **+0.116 t'** (L→R) and
+**−0.132 t'** (R→L). Applied mechanically that would push the
+outermost trigger on each side off the usable band, dropping from 6
+triggers to 4 — net negative on coverage. So even in a trigger-only
+config this loop wants a sanity check after computing the shift.
 
-1. Read `snap_stats.latency.p50_ms` from the soaked `_meta.json`.
-2. Median traffic speed in sub-stream pixels per ms ≈ 0.05–0.07
-   (47–69 px/s observed). Call this `v`. Use 0.069 (fast / R→L) for
-   forward triggers, 0.047 (slow / L→R) for reverse.
-3. Polygon usable-band axis length in sub-stream pixels is 456.5 for
-   the current install (computed from `.claude/triggers_proposal.json`
-   `t_min/t_max/t_usable_orig/main_axis_xy` plus the 1200×668→896×512
-   scale). Call it `L`.
-4. t'-unit shift = `(p50_ms × v) / L`.
+The actual analogue for pipeline mode is **`t_usable_frac` band
+trimming** (shorten the band on the exit edge by the same px-offset
+so pipeline fires can't land outside the polygon) and/or raising
+`pipeline_interval_ms` to reduce budget pressure. Neither is needed
+right now — coverage is saturated.
+
+Read `snap_stats.latency.p50_ms` from the soaked `_meta.json`. Convert
+to a t'-unit trigger offset:
+
+1. Median traffic speed in sub-stream pixels per ms ≈ 0.05–0.07 px/ms
+   (47–69 px/s observed). Call this `v`.
+2. Pixel offset during latency = `p50_ms × v` (typically 15-30 px in
+   the 896-wide sub-stream).
+3. Polygon principal-axis length in sub-stream pixels. The local
+   `.claude/triggers_proposal.json` doesn't ship `axis_endpoints_orig`
+   directly; derive it from `t_min`, `t_max`, `main_axis_xy`, and
+   `centroid_frac` (scale endpoints from the 1200×668 sketch space
+   into the 896×512 sub-stream — separate x and y scale factors
+   because the aspect ratios don't match exactly). Call it `L`.
+4. t'-unit shift = `(p50_ms × v) / L`. Typically 0.02–0.05.
 5. **Forward triggers** (R→L approach, low t' values): *subtract* the
-   shift.
-6. **Reverse triggers** (L→R depart, high t' values): *add* the shift.
+   shift — fire earlier so the snap lands at the readable position.
+6. **Reverse triggers** (L→R depart, high t' values): *add* the shift
+   — same logic, motion sign is opposite.
 
-Apply via the existing recipe in
+If `blur_skipped_frames` is ≳ 20% of (`attempts` + `blur_skipped_frames`),
+also drop `snapshot.min_sharpness` from 100.0 toward 50 or 30. A
+borderline-blurry cap feeds ALPR better than no cap.
+
+Apply changes via the existing recipe in
 [Adjusting triggers without re-sketching](#adjusting-triggers-without-re-sketching):
 edit `triggers_tprime` → render overlay → regenerate `snap_gate.json`
 → scp to Orin → restart unit.
 
-If `blur_skipped_frames` is ≳ 20% of (`attempts` + `blur_skipped_frames`),
-also drop `snapshot.min_sharpness` from 100.0 toward 50 or 30. (Current
-data: 1 blur skip in 3 h 50 min of pipelined fires. Non-binding.)
+### Step 4 (parked): re-soak ~1 h + diff against baseline
 
-### Open question: trigger direction convention
+Contingent on Step 3 producing a config change worth validating.
+Parked alongside Step 3 — see the soak completion table above for
+the actual baseline-vs-soak diff.
 
-CLAUDE.md's [snap-gate section](#snap-gate-road-polygon--axis-triggers)
-says R→L = front plate, L→R = rear plate. The original assessment's
-visual spot-check on track 153 (L→R, rear plate visible) was
-consistent, but track 516's plate was hard to call from the
-downsampled frame. With pipelining producing 5–7 captures per
-direction, this is now easy to verify: pick a recent vehicle from
-`events.jsonl`, open its `vehicle_<id>_main_*.jpg` files, and confirm
-the plate is on the side the convention predicts. Worth doing once
-the Step 5 soak finishes.
+### Resolved (was open question): trigger direction convention
+
+The convention in the snap-gate section — R→L = front plate, L→R =
+rear plate — is **visually confirmed** in the soak's 4K snaps. Median
+L→R cars (e.g. track 498) show a readable rear yellow plate near
+camera; median R→L cars (e.g. track 294) show the front grille +
+plate in mid-frame. The asymmetric trigger placement (3 forward in
+the approach half, 3 reverse in the depart half) is therefore aimed
+at the correct plates by direction.
 
 ## Fresh deployment procedure
 
@@ -561,16 +532,6 @@ sudo chmod 440 /etc/sudoers.d/streettracker-svc
 `streettracker` user can't run `journalctl -u streettracker.service`
 on their own service (silent permission denial; the output of
 `journalctl` looks empty rather than erroring).
-
-**Already-deployed box missing the group?** If `journalctl -u
-streettracker.service` as the `streettracker` user returns *"No
-journal files were opened due to insufficient permissions"*, run
-`sudo usermod -aG systemd-journal streettracker` from an admin
-account, then have the streettracker user log out + back in (or
-`newgrp systemd-journal`) for new sessions. The scoped sudoers entry
-above only covers `systemctl * streettracker.service`, so the
-streettracker user can't self-remediate. The live Orin hit this on
-2026-05-23 — it was deployed before this recipe existed.
 
 ### Repo + venv setup
 
@@ -680,7 +641,7 @@ camera physically moves.
 | `.claude/road_polygon_user.json` | Polygon vertices extracted from the magenta sketch (`{source_size, vertices_frac}`). Fractional coords, resolution-independent. |
 | `.claude/triggers_proposal.json` | Full trigger spec: polygon vertices, principal axis, centroid, raw t-range, **`t_usable_orig`** (the band of the polygon to actually use — trims the distant tip and Z2/near zone), **`triggers_tprime`** (list of t' values in `[0, 1]` over the usable band where snaps fire), and optionally **`trigger_directions`** (parallel list of `"forward"` / `"reverse"` / `"both"`; omitted = all `"both"`). |
 | `.claude/triggers_proposal.jpg` | Visual overlay of the proposal on the live frame — yellow road outline, dimmed excluded regions, coloured trigger lines + circles. **Reference this image when discussing zone adjustments with the operator.** Re-render via `uv run python .claude/_render_triggers_overlay.py`. |
-| `.claude/snap_gate.json` | Subset of `triggers_proposal.json` shipped to `~/NanoTracker/camera_config.json` on the Nano under `snapshot.snap_gate`. Format: `{polygon_frac, trigger_t_prime, t_usable_frac, trigger_directions?}` (the last field is optional and defaults to all `"both"`). |
+| `.claude/snap_gate.json` | Subset of `triggers_proposal.json` shipped to `~/streettracker/configs/camera.json` on the Orin under `snapshot.snap_gate`. Format: `{polygon_frac, trigger_t_prime, t_usable_frac, trigger_directions?, pipeline_interval_ms?, pipeline_max_per_track?}`. `trigger_directions` defaults to all `"both"` if absent. The two `pipeline_*` fields are required to enable [pipeline mode](#pipeline-mode-the-dominant-capture-mechanism) — the live deployment has them set (`400`, `15` respectively) but the local artifact currently doesn't; the artifact predates the pipeline-mode rollout. |
 
 ### Adjusting triggers without re-sketching
 
@@ -697,9 +658,13 @@ values to change.
 3. Regenerate `.claude/snap_gate.json` from the JSON
    (`polygon_frac=vertices_frac`, `trigger_t_prime=triggers_tprime`,
    `t_usable_frac=t_usable_orig`, and `trigger_directions` if used).
-4. `scp .claude/snap_gate.json claude@nano:~/NanoTracker/`, then merge
-   into `camera_config.json` under `snapshot.snap_gate` and restart
-   the tracker process. Keep the prior config as a timestamped backup.
+4. `scp .claude/snap_gate.json streettracker@orin:/tmp/`, then merge
+   into `~/streettracker/configs/camera.json` under `snapshot.snap_gate`
+   (preserving the live `pipeline_interval_ms` / `pipeline_max_per_track`
+   fields if the local artifact still lacks them — see the [Pipeline
+   mode](#pipeline-mode-the-dominant-capture-mechanism) note above) and
+   `sudo -n systemctl restart streettracker.service`. Keep the prior
+   config as a timestamped backup.
 
 ### Re-sketching the road (camera moved, new view)
 
@@ -722,13 +687,14 @@ values to change.
 
 | `SnapPlannerConfig.road_gate` | Mode | Notes |
 |---|---|---|
-| `None`, `right_half_only=True` | Right-half zone-thirds | Pre-polygon fallback. Not used on the live Nano. |
+| `None`, `right_half_only=True` | Right-half zone-thirds | Pre-polygon fallback. Not used in the live deployment. |
 | `None`, `right_half_only=False` | Legacy peak/decay | Benchmark only. |
-| `RoadGateConfig(...)` | Road polygon + axis triggers | **Live deployment mode.** Crossing semantics: each frame compares the bbox-centre's t' with the previous frame's; a not-yet-fired trigger between them fires *if its direction tag matches the motion sign* (`"forward"` = t' increasing = camera-approach side, `"reverse"` = t' decreasing = departure side, `"both"` = default). After a fire, `prev_t_prime` is advanced to the trigger's t' (not to `cur_tp`) so subsequent triggers in the same forward motion remain detectable one-per-frame. Asymmetric triggers let R→L (front plate) and L→R (rear plate) tracks each have their own early-capture trigger without one direction consuming the other's. |
+| `RoadGateConfig(...)` w/ `pipeline_interval_ms = 0` | Road polygon + axis triggers, trigger-only | Crossing semantics: each frame compares the bbox-centre's t' with the previous frame's; a not-yet-fired trigger between them fires *if its direction tag matches the motion sign* (`"forward"` = t' increasing = camera-approach side, `"reverse"` = t' decreasing = departure side, `"both"` = default). After a fire, `prev_t_prime` is advanced to the trigger's t' (not to `cur_tp`) so subsequent triggers in the same forward motion remain detectable one-per-frame. Asymmetric triggers let R→L (front plate) and L→R (rear plate) tracks each have their own early-capture trigger without one direction consuming the other's. This was the 2026-05-22 baseline configuration. |
+| `RoadGateConfig(...)` w/ `pipeline_interval_ms > 0` | Road polygon + axis triggers + **pipeline mode** | **Live deployment mode since 2026-05-23.** Trigger crossings still fire as above. *Additionally*, while a track sits inside the `t_usable` band, the planner fires a snap every `pipeline_interval_ms` of wall-clock time, capped at `pipeline_max_per_track`. Pipeline fires use a separate per-track counter (`pipeline_fires`) but share the snapshotter's `max_concurrent` HTTP semaphore with trigger fires. Pipeline fires dominate trigger fires in volume by roughly an order of magnitude at the current settings (`400` ms / `15` cap). Documented in `snap_planner.py` `consider_pipeline`. |
 
 Phase 7 cutover is operationally complete (Orin live since
 2026-05-22); the remaining tail is repo archival on GitHub
 (VehicleTracker + NanoTracker) after ~a week of clean operation.
 Active work is in the [ANPR tuning loop](#anpr-tuning-loop) section
-above — currently in Step 5 (post-PR-#18 tuning soak with
-`pipeline_max_per_track=15` and `max_concurrent=3`).
+above — coverage objective is now met; current focus is the ALPR
+read-rate measurement against the 2026-05-25 soak's 4522 4K snaps.
