@@ -58,8 +58,13 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--bespoke-model", type=Path, default=DEFAULT_BESPOKE_MODEL)
     ap.add_argument(
         "--detector-model",
-        default="yolo-v9-t-384-license-plate-end2end",
-        help="open-image-models alias for the preferred pipeline detector.",
+        default="yolo-v9-t-640-license-plate-end2end",
+        help=(
+            "open-image-models alias for the preferred pipeline detector. "
+            "Default bumped 2026-05-25 from yolo-v9-t-384 (which finds 0%% "
+            "of plates on full 4K snaps -- after the detector's internal "
+            "10x downscale a 100 px plate becomes ~10 px, sub-detection)."
+        ),
     )
     ap.add_argument(
         "--ocr-model",
@@ -74,6 +79,28 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Process only the first N images (0 = all).",
+    )
+    ap.add_argument(
+        "--pre-crop",
+        action="store_true",
+        help=(
+            "Pre-crop the largest vehicle bbox (ultralytics YOLOv8n on COCO "
+            "classes car/bus/truck) before feeding the plate detector. "
+            "Recovers near-100%% of the no-read tracks from the 2026-05-25 "
+            "soak's diagnostic sample, at the cost of ~+30%% per-image "
+            "runtime. See "
+            "src/streettracker/analysis/alpr/precrop.py for the docstring "
+            "with the empirical comparison."
+        ),
+    )
+    ap.add_argument(
+        "--vehicle-model",
+        default="yolov8n.pt",
+        help=(
+            "Ultralytics YOLO model used for the pre-crop vehicle stage. "
+            "Defaults to yolov8n (auto-downloads on first use). Ignored "
+            "without --pre-crop."
+        ),
     )
     return ap
 
@@ -145,6 +172,21 @@ def _build_pipelines(args: argparse.Namespace) -> list[PipelineRunner]:
     if not bespoke_model.is_absolute():
         bespoke_model = Path.cwd() / bespoke_model
 
+    # Optional vehicle pre-crop wrapper. Shared across pipelines so the
+    # ultralytics YOLO weights load once.
+    def _wrap(detector, suffix: str):
+        if not args.pre_crop:
+            return detector
+        from streettracker.analysis.alpr.precrop import PreCropDetector
+
+        wrapped = PreCropDetector(
+            plate_detector=detector,
+            vehicle_model=args.vehicle_model,
+        )
+        # Override the wrapper name so pipeline labels stay terse.
+        wrapped.name = f"precrop-{suffix}"
+        return wrapped
+
     bespoke_det = None
     if args.pipeline in ("both", "bespoke") or args.ablation:
         from streettracker.analysis.alpr.bespoke import (
@@ -156,7 +198,7 @@ def _build_pipelines(args: argparse.Namespace) -> list[PipelineRunner]:
         if args.pipeline in ("both", "bespoke"):
             pipelines.append(PipelineRunner(
                 name="bespoke",
-                detector=bespoke_det,
+                detector=_wrap(bespoke_det, "bespoke"),
                 recognizer=EasyOcrRecognizer(use_gpu=args.gpu),
             ))
 
@@ -170,7 +212,7 @@ def _build_pipelines(args: argparse.Namespace) -> list[PipelineRunner]:
         if args.pipeline in ("both", "preferred"):
             pipelines.append(PipelineRunner(
                 name="preferred",
-                detector=oim_det,
+                detector=_wrap(oim_det, "preferred"),
                 recognizer=FastPlateOcrRecognizer(args.ocr_model),
             ))
 
@@ -179,7 +221,7 @@ def _build_pipelines(args: argparse.Namespace) -> list[PipelineRunner]:
 
         pipelines.append(PipelineRunner(
             name="ablation_bespokedet_fastocr",
-            detector=bespoke_det,
+            detector=_wrap(bespoke_det, "ablation_bespokedet_fastocr"),
             recognizer=FastPlateOcrRecognizer(args.ocr_model),
         ))
 
