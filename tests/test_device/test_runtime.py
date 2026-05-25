@@ -32,7 +32,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -47,8 +47,10 @@ from streettracker.device.runtime import (
     _bbox_center_sharpness,
     _close_open_ir_period,
     _consumer_loop,
-    _output_main_snap_path,
+    _fire_snap,
+    _main_snap_path,
     _produce_frames,
+    _rename_snap_file,
     build_session_meta,
     finalize_track,
     install_signal_handlers,
@@ -167,19 +169,159 @@ def test_bbox_center_sharpness_clamps_to_frame() -> None:
     assert score is not None
 
 
-def test_output_main_snap_path_includes_prefix_and_index(tmp_path: Path) -> None:
-    ctx = _build_ctx(tmp_path)
-    tr = BufferedTrack(id=7, class_id=2)  # vehicle
-    p = _output_main_snap_path(ctx, tr, 3)
+def test_main_snap_path_includes_prefix_and_index(tmp_path: Path) -> None:
+    p = _main_snap_path(tmp_path, "vehicle", 7, 3)
     assert p.name == "vehicle_7_main_3.jpg"
-    assert p.parent == ctx.output_dir
+    assert p.parent == tmp_path
 
 
-def test_output_main_snap_path_uses_person_prefix(tmp_path: Path) -> None:
-    ctx = _build_ctx(tmp_path)
-    tr = BufferedTrack(id=99, class_id=0)  # person
-    p = _output_main_snap_path(ctx, tr, 1)
+def test_main_snap_path_uses_person_prefix(tmp_path: Path) -> None:
+    p = _main_snap_path(tmp_path, "person", 99, 1)
     assert p.name == "person_99_main_1.jpg"
+
+
+# ----------------------------------------------------------------------
+# Class-flip rename: BotSORT can reassign a track's class mid-life, so
+# the 4K snap path (built at fire time) may disagree with the record's
+# asset_prefix (built at finalize time). _rename_snap_file + the
+# finalize-time sweep in finalize_track reconcile this.
+
+
+def test_rename_snap_file_renames_when_destination_free(tmp_path: Path) -> None:
+    src = tmp_path / "person_4463_main_1.jpg"
+    src.write_bytes(b"fake-jpeg")
+    assert _rename_snap_file(tmp_path, 4463, 1, "person", "vehicle") is True
+    assert not src.exists()
+    assert (tmp_path / "vehicle_4463_main_1.jpg").exists()
+
+
+def test_rename_snap_file_noops_when_source_missing(tmp_path: Path) -> None:
+    assert _rename_snap_file(tmp_path, 1, 1, "person", "vehicle") is False
+
+
+def test_rename_snap_file_refuses_to_overwrite(tmp_path: Path) -> None:
+    src = tmp_path / "person_1_main_1.jpg"
+    src.write_bytes(b"old")
+    dst = tmp_path / "vehicle_1_main_1.jpg"
+    dst.write_bytes(b"new")
+    assert _rename_snap_file(tmp_path, 1, 1, "person", "vehicle") is False
+    assert src.read_bytes() == b"old"
+    assert dst.read_bytes() == b"new"
+
+
+def _moving_track_with_id(track_id: int, class_id: int) -> BufferedTrack:
+    tr = BufferedTrack(id=track_id, class_id=class_id)
+    for i, (t, cx) in enumerate([(0.0, 100.0), (1.0, 300.0), (2.0, 500.0)]):
+        tr.points.append(
+            MotionPoint(
+                frame_idx=i,
+                t=t,
+                cx=cx,
+                cy=200.0,
+                x1=cx - 50,
+                y1=150,
+                x2=cx + 50,
+                y2=250,
+                score=0.9,
+            )
+        )
+    return tr
+
+
+def test_finalize_renames_snaps_fired_under_old_class(tmp_path: Path) -> None:
+    """Track fires snaps as person, then converges to vehicle.
+    Saved files must be renamed at finalize so the record's asset_prefix
+    matches the on-disk names."""
+    ctx = _build_ctx(tmp_path)
+    ctx.frame_h = _FRAME_H
+    tr = _moving_track_with_id(4463, class_id=2)  # finalizes as vehicle
+    # Simulate two successful snap fires from when the track was still
+    # classed as person, plus one in-flight (not yet saved).
+    tr.snap_fire_prefixes[1] = "person"
+    tr.snap_fire_prefixes[2] = "person"
+    tr.snap_fire_prefixes[3] = "person"
+    tr.snap_saved_indexes.update({1, 2})  # 3 is still in flight
+    for n in (1, 2):
+        (ctx.output_dir / f"person_4463_main_{n}.jpg").write_bytes(b"x")
+
+    finalize_track(ctx, tr)
+
+    # Saved snaps are now under vehicle_*; in-flight one is untouched
+    # (the snap _on_done callback handles it when the write completes).
+    assert (ctx.output_dir / "vehicle_4463_main_1.jpg").exists()
+    assert (ctx.output_dir / "vehicle_4463_main_2.jpg").exists()
+    assert not (ctx.output_dir / "person_4463_main_1.jpg").exists()
+    assert not (ctx.output_dir / "person_4463_main_2.jpg").exists()
+    # Track has final_prefix locked so a late _on_done can self-rename.
+    assert tr.final_prefix == "vehicle"
+    # Record reflects vehicle prefix -- aligns with the renamed files.
+    assert len(ctx.records) == 1
+    assert ctx.records[0].asset_prefix == "vehicle"
+
+
+def test_finalize_skips_rename_when_no_class_flip(tmp_path: Path) -> None:
+    ctx = _build_ctx(tmp_path)
+    ctx.frame_h = _FRAME_H
+    tr = _moving_track_with_id(1, class_id=2)
+    tr.snap_fire_prefixes[1] = "vehicle"
+    tr.snap_saved_indexes.add(1)
+    (ctx.output_dir / "vehicle_1_main_1.jpg").write_bytes(b"x")
+
+    finalize_track(ctx, tr)
+
+    assert (ctx.output_dir / "vehicle_1_main_1.jpg").exists()
+    assert tr.final_prefix == "vehicle"
+
+
+def test_fire_snap_callback_renames_late_arrival(tmp_path: Path) -> None:
+    """An in-flight snap that completes after finalize must rename
+    itself when it lands (the synchronous sweep in finalize couldn't see
+    it because it wasn't in snap_saved_indexes yet)."""
+
+    class _StubTask:
+        def __init__(self, result: bool) -> None:
+            self._result = result
+            self._callbacks: list[Any] = []
+
+        def add_done_callback(self, cb: Any) -> None:
+            self._callbacks.append(cb)
+
+        def result(self) -> bool:
+            return self._result
+
+        def fire_done(self) -> None:
+            for cb in self._callbacks:
+                cb(self)
+
+    class _StubSnapshotter:
+        def __init__(self, task: _StubTask) -> None:
+            self._task = task
+
+        def submit(self, _path: Path) -> _StubTask:
+            return self._task
+
+    ctx = _build_ctx(tmp_path)
+    tr = BufferedTrack(id=99, class_id=0)  # firing while still classed as person
+    task = _StubTask(result=True)
+    ctx.snapshotter = cast("Any", _StubSnapshotter(task))
+
+    _fire_snap(ctx, tr, 1)
+    # Path was built with the (current) person prefix.
+    assert tr.snap_fire_prefixes[1] == "person"
+    fired_path = ctx.output_dir / "person_99_main_1.jpg"
+    fired_path.write_bytes(b"jpeg-bytes")  # snapshotter "writes" the file
+
+    # Finalize would have run while the snap was still in flight, so the
+    # synchronous sweep didn't touch it. The track's final_prefix is now
+    # locked to vehicle.
+    tr.final_prefix = "vehicle"
+
+    # Now the snap task completes -- the _on_done callback must rename.
+    task.fire_done()
+
+    assert not fired_path.exists()
+    assert (ctx.output_dir / "vehicle_99_main_1.jpg").exists()
+    assert 1 in tr.snap_saved_indexes
 
 
 # ----------------------------------------------------------------------

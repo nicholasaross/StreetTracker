@@ -371,27 +371,74 @@ def _bbox_center_sharpness(
     return sharpness_score(frame[cy1:cy2, cx1:cx2])
 
 
-def _output_main_snap_path(ctx: SessionContext, track: BufferedTrack, snap_index: int) -> Path:
+def _main_snap_path(output_dir: Path, prefix: str, track_id: int, snap_index: int) -> Path:
     """``{output_dir}/{prefix}_{id}_main_{N}.jpg`` path for a fire."""
-    from streettracker.common.schema import asset_prefix_for_class
+    return output_dir / f"{prefix}_{track_id}_main_{snap_index}.jpg"
 
-    prefix = asset_prefix_for_class(track.class_id)
-    return ctx.output_dir / f"{prefix}_{track.id}_main_{snap_index}.jpg"
+
+def _rename_snap_file(
+    output_dir: Path,
+    track_id: int,
+    snap_index: int,
+    old_prefix: str,
+    new_prefix: str,
+) -> bool:
+    """Rename a saved ``_main_N.jpg`` from ``old_prefix`` to ``new_prefix``.
+
+    Called when a track's class flips between fire and finalize (BotSORT
+    can reassign a track's class as evidence accumulates). Best-effort:
+    a missing source file or an existing destination is logged and
+    swallowed -- the alternative is a crashing finalize for a cosmetic
+    issue.
+    """
+    old = _main_snap_path(output_dir, old_prefix, track_id, snap_index)
+    new = _main_snap_path(output_dir, new_prefix, track_id, snap_index)
+    try:
+        if not old.exists():
+            return False
+        if new.exists():
+            logger.warning(
+                "[snap] cannot rename %s -> %s: destination exists",
+                old.name,
+                new.name,
+            )
+            return False
+        old.rename(new)
+        logger.info("[snap] renamed %s -> %s (class-flip)", old.name, new.name)
+        return True
+    except OSError as exc:
+        logger.warning("[snap] rename failed %s -> %s: %s", old.name, new.name, exc)
+        return False
 
 
 def _fire_snap(ctx: SessionContext, track: BufferedTrack, snap_index: int) -> None:
     """Submit a snapshotter fire and mark the index on the track."""
     if ctx.snapshotter is None:
         return
-    out_path = _output_main_snap_path(ctx, track, snap_index)
+    from streettracker.common.schema import asset_prefix_for_class
+
+    fire_prefix = asset_prefix_for_class(track.class_id)
+    out_path = _main_snap_path(ctx.output_dir, fire_prefix, track.id, snap_index)
     task = ctx.snapshotter.submit(out_path)
     if task is None:
         return  # snapshotter dropped (concurrency cap)
+    track.snap_fire_prefixes[snap_index] = fire_prefix
+    output_dir = ctx.output_dir
 
     def _on_done(t: asyncio.Task[bool]) -> None:
         with contextlib.suppress(Exception):
-            if t.result():
-                track.snap_saved_indexes.add(snap_index)
+            if not t.result():
+                return
+            track.snap_saved_indexes.add(snap_index)
+            # If finalize has already locked a different prefix (the
+            # snap landed after the track expired), rename now. The
+            # synchronous sweep in finalize_track skipped this index
+            # because it wasn't in snap_saved_indexes yet.
+            final_prefix = track.final_prefix
+            if final_prefix is not None and final_prefix != fire_prefix:
+                _rename_snap_file(
+                    output_dir, track.id, snap_index, fire_prefix, final_prefix
+                )
 
     task.add_done_callback(_on_done)
     track.snap_count = snap_index
@@ -431,6 +478,24 @@ def finalize_track(ctx: SessionContext, track: BufferedTrack) -> None:
                 ctx.per_track_time_in_band_ms.append(float(stats["time_in_band_ms"]))
         ctx.planner.forget(track.id)
 
+    # 1b. Lock the asset prefix and reconcile already-saved 4K snaps
+    # whose fire-time prefix differs from the final class. BotSORT can
+    # flip a track's class mid-life (person <-> vehicle), so a track may
+    # have fired its first snaps under one prefix and finalize under
+    # the other. Without this rename the on-disk filenames disagree
+    # with ``record.asset_prefix`` and downstream consumers
+    # (summary HTML, ALPR runner) treat the files as orphans.
+    from streettracker.common.schema import asset_prefix_for_class
+
+    final_prefix = asset_prefix_for_class(track.class_id)
+    track.final_prefix = final_prefix
+    for snap_index in sorted(track.snap_saved_indexes):
+        fire_prefix = track.snap_fire_prefixes.get(snap_index)
+        if fire_prefix is not None and fire_prefix != final_prefix:
+            _rename_snap_file(
+                ctx.output_dir, track.id, snap_index, fire_prefix, final_prefix
+            )
+
     # 2. Color vote.
     color = "unknown"
     if track.crops:
@@ -443,18 +508,15 @@ def finalize_track(ctx: SessionContext, track: BufferedTrack) -> None:
         )
         color = vote_color(best.crop)
 
-    # 3. Thumbnails.
+    # 3. Thumbnails (reuse the prefix locked in step 1b).
     if ctx.config.output.save_thumbnails and track.crops:
-        from streettracker.common.schema import asset_prefix_for_class
-
-        prefix = asset_prefix_for_class(track.class_id)
         midpoint_t = 0.5 * (track.points[0].t + track.points[-1].t)
         mid_crop = min(track.crops, key=lambda c: abs(c.t - midpoint_t)).crop
-        save_thumbnail(mid_crop, ctx.output_dir / f"{prefix}_{track.id}.jpg")
+        save_thumbnail(mid_crop, ctx.output_dir / f"{final_prefix}_{track.id}.jpg")
         if track.hq_best_crop is not None:
             save_thumbnail(
                 track.hq_best_crop,
-                ctx.output_dir / f"{prefix}_{track.id}_hq.jpg",
+                ctx.output_dir / f"{final_prefix}_{track.id}_hq.jpg",
                 quality=95,
             )
 
