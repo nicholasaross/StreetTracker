@@ -27,24 +27,24 @@ MP4 (NVDEC on Orin)┘                  (BotSORT integrated)
                                  ▶ on demand ▶ Reolink 4K HTTP snapshot
 ```
 
-## Compatibility rules
-
-- **Python 3.11 today, 3.12 the JP7 target.** `.python-version` is
-  pinned to `3.11`, inside `pyproject.toml`'s `requires-python =
-  ">=3.10,<3.13"` band. The bump from 3.10 → 3.11 landed on 2026-05-25
-  because the `alpr` extra's `onnxruntime-gpu>=1.18` has no Python
-  3.10 wheels at recent versions. The eventual move to 3.12 is bundled
-  with the JetPack 7 flash — see
-  [JetPack 7 upgrade plan](#jetpack-7-upgrade-plan). uv installs
-  whichever interpreter `.python-version` names; tests pass on 3.11.
-- **Orin redeploys after the 3.10 → 3.11 bump** need a `uv sync` to
-  rebuild the venv at 3.11. The systemd unit passes `--no-sync` so
-  the running service won't auto-rebuild on `git pull`; do it
-  explicitly during the next deploy window. Verify the Jetson torch
-  wheel index
-  (`https://pypi.jetson-ai-lab.io/jp6/cu126/+simple/`) actually has
-  3.11 wheels before the first 3.11 deploy, since JP6 ships 3.10
-  natively and the index may not stock 3.11.
+- **Python 3.10 today, 3.12 the JP7 target.** `.python-version` is
+  pinned to `3.10`, inside `pyproject.toml`'s `requires-python =
+  ">=3.10,<3.13"` band. We briefly bumped to 3.11 on 2026-05-25 to
+  unblock the `alpr` extra; the deploy to the Orin
+  **failed** because the Jetson torch wheel index
+  (`https://pypi.jetson-ai-lab.io/jp6/cu126/+simple/`) only stocks
+  `cp310` wheels for `torch` on the JP6 channel. We reverted, and
+  pinned `onnxruntime-gpu<1.20` in the `alpr` extra so it resolves
+  on 3.10 instead. The move to 3.12 stays bundled with the JetPack
+  7 flash — see [JetPack 7 upgrade plan](#jetpack-7-upgrade-plan).
+- **Never bump `.python-version` past 3.10 without first verifying
+  the Jetson torch wheel index has matching `cpXY` wheels.** Check
+  `https://pypi.jetson-ai-lab.io/jp6/cu126/+simple/torch/` directly
+  before changing the pin. The systemd unit on the Orin uses
+  `--no-sync` so a transient `uv` flap can't reinstall PyPI torch
+  on top of the Jetson wheel — but a manual `uv sync` after a
+  `git pull` *will* rebuild the venv at the new pin and is fatal
+  if torch can't resolve.
 - **No Python 3.6 hacks.** sys.path reorder, NamedTuple-for-dataclass,
   `# type:` comments — all gone. Use `@dataclass(slots=True)` and PEP-604
   unions (`X | None`).
@@ -136,7 +136,7 @@ systemd unit on the Orin, decommission the old Nano).
 | 6 | (opt) original Nano archive role | not started |
 | 7 | cutover: enable systemd on Orin + decommission Nano + archive old repos | **mostly done** — Orin live since 2026-05-22; only the `VehicleTracker` + `NanoTracker` repo archival on GitHub is outstanding. See [Cutover status](#cutover-status) and [Fresh deployment procedure](#fresh-deployment-procedure). |
 
-Tests at HEAD: **396 passing on Python 3.11, ruff clean.**
+Tests at HEAD: **396 passing on Python 3.10, ruff clean.**
 
 Verify locally:
 
@@ -336,9 +336,11 @@ entirely (legacy trigger-only behaviour).
 Ran `streettracker alpr-run --pipeline both` against the soak's 4K
 snaps on 2026-05-25. Setup:
 
-1. `.python-version` bumped 3.10 → 3.11 (the `alpr` extra's
-   `onnxruntime-gpu>=1.18` has no 3.10 wheels at recent versions).
-   See [Compatibility rules](#compatibility-rules).
+1. `alpr` extra updated to constrain `onnxruntime-gpu>=1.18,<1.20`
+   so it resolves on Python 3.10 (the project's `.python-version`).
+   Originally bumped `.python-version` to 3.11 instead; that broke
+   the Orin (no `cp311` torch wheel on the Jetson index) and was
+   reverted. See [Compatibility rules](#compatibility-rules).
 2. Session pulled to dev box via `tar | scp` (~6.9 GB; `rsync` is not
    on Git Bash for Windows).
 3. `uv sync --extra alpr --extra dev`.
@@ -480,7 +482,7 @@ either a heuristic guardrail at finalize (e.g. cross-check
 `class_name` against `speed_px_s` + bbox aspect ratio) or a
 detector retrain.
 
-Tests: 396 passing on 3.11 (was 394; +3 new vote tests, −1 obsolete
+Tests: 396 passing on 3.10 (was 394; +3 new vote tests, −1 obsolete
 "most-recent wins" assertion).
 
 ### Assessment baseline (2026-05-22, `session_20260522_154224`, ~1h12m of live traffic) — historical
@@ -718,7 +720,7 @@ at `uv sync`:
 
 | What | Where | Current (JP6) | JP7 target |
 |---|---|---|---|
-| Python pin | `.python-version` | `3.11` (bumped from `3.10` on 2026-05-25 to unblock the `alpr` extra) | `3.12` (matches OS native; uv still honours either, but matching avoids a redundant uv-installed interpreter) |
+| Python pin | `.python-version` | `3.10` (briefly 3.11 on 2026-05-25; reverted — Jetson torch wheel index has no `cp311` on the JP6 channel) | `3.12` (matches OS native; uv still honours either, but matching avoids a redundant uv-installed interpreter) |
 | Jetson torch wheel index URL | `pyproject.toml` `[[tool.uv.index]] name="jetson-ai-lab-jp6-cu126"` | `https://pypi.jetson-ai-lab.io/jp6/cu126/+simple/` | `https://pypi.jetson-ai-lab.io/jp7/cu130/+simple/` (or whatever Anibali's index publishes for JP7 — confirm at the time) |
 | cuDSS dep | `pyproject.toml` dependency `nvidia-cudss-cu12` | `cu12` (CUDA 12 series) | `cu13` if JP7 ships CUDA 13.x — verify against the JP7 release notes |
 | CUDA lib path | `scripts/setup_orin.sh` `CUDA_LIB=/usr/local/cuda-12.6/lib64` | `cuda-12.6` | Auto-detect via `ls -d /usr/local/cuda-*/lib64 \| sort -V \| tail -1`, OR hardcode `cuda-13.x` after confirming |
