@@ -136,7 +136,7 @@ systemd unit on the Orin, decommission the old Nano).
 | 6 | (opt) original Nano archive role | not started |
 | 7 | cutover: enable systemd on Orin + decommission Nano + archive old repos | **mostly done** — Orin live since 2026-05-22; only the `VehicleTracker` + `NanoTracker` repo archival on GitHub is outstanding. See [Cutover status](#cutover-status) and [Fresh deployment procedure](#fresh-deployment-procedure). |
 
-Tests at HEAD: **396 passing on Python 3.10, ruff clean.**
+Tests at HEAD: **403 passing on Python 3.10, ruff clean.**
 
 Verify locally:
 
@@ -413,6 +413,60 @@ Outputs landed at:
   (per-track best read across all snaps)
 - `output/session_20260524_075630/alpr_crops/{bespoke,preferred}/`
   (cropped plate regions per detection)
+
+### Step 7 (done): B1 diagnostic + vehicle pre-crop (2026-05-25)
+
+Sampled 15 of the 137 cars that had vehicle-prefix 4K snaps but
+yielded no OCR read on either pipeline. Visual review + per-image
+alpr.json cross-reference revealed a single failure mode: **15 / 15
+failures were `det_bbox = null` on every snap on both pipelines**.
+The plates were visible to a human eye in the 4K image, but the
+detectors' internal downscale (default `yolo-v9-t-384` resamples 4K
+to 384 input) made a 100-px-wide plate ~10 px wide -- below any
+YOLO's minimum-object capability.
+
+The fix: vehicle pre-crop. A coarse vehicle detector (ultralytics
+YOLOv8n, COCO classes car / bus / truck) finds the car bbox in the
+4K image, the plate detector then runs on the cropped vehicle
+region with 15 % padding. The plate now occupies 10-30 % of the
+detector's input instead of 0.3 %.
+
+| Detector variant | Full image | Pre-cropped |
+|---|---|---|
+| `yolo-v9-t-384` (prior default) | 0 / 15 | (not tested -- now obsolete) |
+| `yolo-v9-t-640` (new default) | 4 / 15 = 27 % | **15 / 15 = 100 %** |
+| `yolo-v9-s-608` | 2 / 15 = 13 % | (not tested) |
+| Bespoke YOLOv8m (custom-trained plate detector) | 0 / 15 = 0 % | **14 / 15 = 93 %** |
+
+Implementation: [`src/streettracker/analysis/alpr/precrop.py`](src/streettracker/analysis/alpr/precrop.py)
+wraps any plate detector behind the same `detect(image) ->
+PlateDetection` protocol. Projects the plate bbox back into
+original-image coordinates so the downstream OCR-crop in
+`PipelineRunner` works unchanged. Lazy-loads ultralytics so module
+import is cheap. Falls back to full-image detection if no vehicle
+is found, and again if all vehicle crops yield no plate.
+
+Two CLI changes in `streettracker alpr-run`:
+- Default `--detector-model` bumped `yolo-v9-t-384` → `yolo-v9-t-640`
+- New `--pre-crop` flag (opt-in; not on by default yet because of
+  the wrong-car aliasing caveat below)
+
+Known caveat: the largest-vehicle-bbox heuristic sometimes picks a
+parked car in the foreground over the BotSORT-tracked car when both
+are in frame. Spot-checked on track 1006's smoke output: two distinct
+plate strings (`WV64ZSW`, `FD51PVX/FD61PVX`) across 7 snaps means
+the wrapper sometimes locked onto a parked neighbour. The by-track
+best-of-N picker mitigates this in aggregate but doesn't eliminate
+it. Proper fix: persist BotSORT's bbox at snap-fire time in a per-snap
+sidecar JSON so the wrapper can target the exact tracked vehicle.
+That's a runtime change (snap_planner + snapshotter, write the
+sub-stream bbox alongside the 4K filename in `_meta.json`) -- a
+follow-up if the aggregate accuracy after the soak re-run looks
+worse than the pre-pre-crop baseline.
+
+Full re-run with `--pipeline both --pre-crop` on the soak's 2391
+vehicle snaps is in flight as of this write; population-level numbers
+to be filled in once it completes.
 
 ### Known issue surfaced during the soak: asset_prefix split-flip — fixed in [#21](https://github.com/nicholasaross/StreetTracker/pull/21)
 
