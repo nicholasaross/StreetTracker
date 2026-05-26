@@ -747,6 +747,63 @@ reads both the Step 9 backup (`*_alpr.step9.json`) and the current
 Step 10 output and prints the table above. Run with
 `uv run python .claude/aggregate_step10.py`.
 
+### Step 11 (done): snap_gate t_usable_frac trim (2026-05-26)
+
+Step 10's mask correctly returns "no plate" for snaps inside the
+parked-car zone, but the snap budget still gets spent firing into
+that zone. Trimming the snap_gate's near-camera edge stops those
+fires at the source -- the freed budget redistributes into the
+clean mid-band where readable plate captures actually live.
+
+**Data-driven trim point.** Computed the t_norm distribution of
+every Step 10 snap, split by direction and read state:
+
+| Direction | CLEAN reads p90 t_norm | GHOST reads p10 t_norm | FD61PVX t_norm |
+|---|---|---|---|
+| R→L | 0.32 | 0.46 | 0.593 |
+| L→R | 0.40 | 0.55 | 0.593 |
+
+There's a clean gap between the CLEAN-read p90 and the GHOST-read
+p10 in both directions, so any cut in `[0.40, 0.46]` keeps essentially
+all CLEAN reads and excludes essentially all GHOST reads. Set
+`t_usable_frac = [0.10, 0.45]` -- comfortably above L→R CLEAN p90.
+
+**Deployment.**
+
+* Edited `.claude/triggers_proposal.json` (`t_usable_orig`) and
+  `.claude/snap_gate.json` (`t_usable_frac`) to `[0.1, 0.45]`.
+* Re-rendered `.claude/triggers_proposal.jpg` via
+  `_render_triggers_overlay.py`.
+* Pulled live `~/streettracker/configs/camera.json` from Orin,
+  built a proposed config preserving everything else (especially
+  `pipeline_interval_ms=400` + `pipeline_max_per_track=15` which
+  are not in the local artifact -- see [Pipeline mode](#pipeline-mode-the-dominant-capture-mechanism)).
+* Backed up the live config as `camera.json.bak.20260526T114655Z`,
+  `scp`'d the new one, restarted `streettracker.service`. Restart
+  was clean; new session `session_20260526_124704` started 12:47 BST.
+
+**Note on trigger semantics under the new band.** Per
+`snap_planner.py` (lines 116-118), `trigger_t_prime` values are
+in `[0, 1]` along the *usable* portion -- so they automatically
+shrink with the band. The three "reverse" triggers (originally
+placed at the L→R entry side at usable-band t'=0.65, 0.80, 0.95)
+now fire at absolute t_norm = 0.33, 0.38, 0.43 instead of 0.47,
+0.56, 0.65. This moves the L→R entry-side fires *out of* the
+FD61PVX zone (t_norm=0.593) which is the intended secondary benefit:
+even with the mask, fewer wasted-snap fires in that zone means
+more snap budget for the readable mid-band.
+
+**Validation plan.** Wait ~6-12h for a soak with the new band,
+then re-run [the runbook]( #step-9-done-bbox-pipe-re-soak-2026-05-26)
+to measure the lift vs the 78.9% Step 10 floor. Predicted lift
+range: +3-10 pp (the snap budget freed from the masked zone
+gives more chances per track in the readable zone, but the
+upper bound is capped at how many cars genuinely have a
+plate-readable moment within `[t_norm 0.10, 0.45]`). If the
+lift is below ~85% per-car aliasing-free, the next move is
+likely a snapshot trigger angle issue (front vs rear plate
+visibility), not snap geometry.
+
 ### Known issue surfaced during the soak: asset_prefix split-flip — fixed in [#21](https://github.com/nicholasaross/StreetTracker/pull/21)
 
 On at least one track (`track_id=4463` in this session), the dashboard
@@ -1171,14 +1228,10 @@ Phase 7 cutover is operationally complete (Orin live since
 (VehicleTracker + NanoTracker) after ~a week of clean operation.
 The [ANPR tuning loop](#anpr-tuning-loop) section above lifted the
 per-car high-confidence read rate from a 59 % floor (Step 6) through
-91.5 % aliased (Step 7) to a verified **78.9 % aliasing-free**,
-top-read-correct per-car read after the ghost-mask + padding-cap
-landing ([Step 10](#step-10-done-ghost-mask--padding-cap-2026-05-26)).
-The bbox-pipe (Step 8) predicted ≥ 95 % did not materialise --
-the parked `FD61PVX` car spatially overlapped the tracked BotSORT
-bbox in late R→L snaps. Step 10 masks the parked-car region at
-ALPR time before any detector sees it; this eliminated all ghost
-plates (5 → 0) and lifted the strict per-car aliasing-free rate
-from 55 % → 79 %. The remaining 21 % gap is concentrated in R→L
-late-track snaps; lifting it needs the snap_gate `t_usable_frac`
-trim (Step 9 option 1) to move R→L captures earlier in the track.
+91.5 % aliased (Step 7) to a verified **78.9 % aliasing-free**
+([Step 10](#step-10-done-ghost-mask--padding-cap-2026-05-26)), then
+deployed [Step 11](#step-11-done-snap_gate-t_usable_frac-trim-2026-05-26)
+to free the snap budget from the now-masked parked-car zone.
+The Orin is live with `t_usable_frac=[0.10, 0.45]` since session
+`session_20260526_124704`; validation soak pending (~6-12 h) to
+measure the predicted +3-10 pp lift over 78.9 %.
