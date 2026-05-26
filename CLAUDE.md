@@ -270,9 +270,14 @@ solved (Step 10), per-image quality lifted (Step 11). The
 per-car 78 % aliasing-free rate is the **intrinsic floor of this
 camera + scene** -- the gap is occluded / motion-blurred / oblique
 captures, not snap geometry. Further snap-budget tuning cannot move
-it. The next valuable work is dataset-level analysis (re-id within
-session, recolor on HQ thumbnails, make/model on 4K crops) which
-enriches the existing 78 % read pool without needing more captures.
+it.
+
+**Dataset-level pivot in progress.** First piece landed:
+`streettracker vehicles <session>` is the plate-anchored aggregator
+([Step 12](#step-12-done-plate-anchored-vehicle-aggregation-2026-05-26))
+that folds the 78 % plated reads into a per-vehicle view with
+recurring-visit detection. Make/model on 4K crops, learned recolor,
+and visual re-id are the next pieces.
 
 ### Soak completion (2026-05-25, `session_20260524_075630`, 27.3h, 880 tracks)
 
@@ -842,6 +847,63 @@ Aggregation: [.claude/aggregate_step11.py](.claude/aggregate_step11.py)
 reads both sessions and prints the comparison table above. Run with
 `uv run python .claude/aggregate_step11.py`.
 
+### Step 12 (done): plate-anchored vehicle aggregation (2026-05-26)
+
+First piece of the pivot landed. `streettracker vehicles
+<session_dir>` folds per-track records + per-track best ALPR reads
+into a per-vehicle view keyed by plate string; recurring vehicles
+(`n_visits >= 2`) become a one-line lookup instead of needing a
+manual cross-reference of `data.json` and `alpr_by_track.json`.
+
+**What it adds:**
+
+* `src/streettracker/analysis/vehicles.py` -- `build_vehicles(session_dir)`
+  groups tracks by canonical plate (high-conf preferred-pipeline
+  read >= 0.9 by default), emits `Vehicle` records with `n_visits`,
+  `track_ids`, `first_seen` / `last_seen`, `gap_minutes_max/min`,
+  per-visit `directions` / `colors` histograms, and an inline
+  `visits` array carrying each visit's TrackRecord fields plus the
+  best-read snap filename. Unread tracks fall under `plate=None`
+  Vehicles (single-visit) when `--include-unread` is on (default).
+* `streettracker vehicles <session>` -- writes
+  `<session>_vehicles.json` to the session directory and prints
+  headline counts + top-5 recurring plates.
+* Tests: +11 (7 in `test_vehicles.py` cover grouping / unread /
+  threshold / persons / sorting / missing-rollup; 4 in
+  `test_vehicles_dispatch.py` cover CLI registration + end-to-end
+  dispatch).
+
+**Initial findings on the existing two sessions:**
+
+| Session | Hours | Cars | Vehicles | Plated | Recurring | Most-recurrent |
+|---|---|---|---|---|---|---|
+| `session_20260525_200916` (Step 10) | 15 | 251 | 248 | 195 (78 %) | 3 | `L350W2`, `L35052`, `1350` -- all R→L both times |
+| `session_20260526_124704` (Step 11) | 5.5 | 309 | 303 | 236 (76 %) | 6 | `HX18MYJ` R→L then L→R 105 min later (clean "left and returned" pattern); plus 5 same-direction repeat passes |
+
+The plated counts agree exactly with Step 10 / 11's aliasing-free
+per-car rates -- aggregation is consistent with the upstream metric.
+Total tests at HEAD: **427 passing on 3.10, ruff clean.**
+
+**Known limitation / next refinement.** Plate equality is currently
+strict-string; OCR misreads of the same physical plate land as
+distinct vehicles. The Step 11 sample shows visible candidates --
+`2X7711` and `LX7711` differ only on the first character. A small
+edit-distance grouping pass (e.g. `rapidfuzz.fuzz.ratio >= 90` and
+matching length) would collapse those, lifting the recurring count
+without false merges. Saved as a follow-up.
+
+**Next pivot pieces (still to do):**
+
+1. **Make / model on 4K crops.** Adds a per-vehicle make/model field
+   to the Vehicle record; visually verifiable; needs a pre-trained or
+   fine-tuned classifier.
+2. **Recolor upgrade.** Replace the HSV vote with a learned
+   classifier validated against plate-anchored groups (multiple snaps
+   of the same vehicle should agree on color).
+3. **Re-id within session.** Visual matching for unread-plate cars to
+   merge anonymous-plate Vehicles where the same car appears twice
+   without a high-conf read. Needs an ONNX re-id model + embeddings.
+
 ### Known issue surfaced during the soak: asset_prefix split-flip — fixed in [#21](https://github.com/nicholasaross/StreetTracker/pull/21)
 
 On at least one track (`track_id=4463` in this session), the dashboard
@@ -1268,12 +1330,10 @@ The [ANPR tuning loop](#anpr-tuning-loop) section above lifted the
 per-car high-confidence read rate from a 59 % floor (Step 6) through
 91.5 % aliased (Step 7) to a verified **~78 % aliasing-free** across
 two sessions ([Step 10](#step-10-done-ghost-mask--padding-cap-2026-05-26)
-+ [Step 11 validation](#step-11-done-snap_gate-t_usable_frac-trim-2026-05-26)).
-The Step 11 trim (`t_usable_frac=[0.10, 0.45]`) lifted per-image
-high-conf reads 13 pp (L→R alone +17 pp) and freed 30 % of the snap
-budget but did NOT lift the per-car floor -- those cars were already
-saturated. **78 % is the intrinsic floor of this camera + scene**;
-the gap is occlusion / motion blur / oblique angle, not snap
-geometry. ANPR tuning loop concluded; next valuable work is
-dataset-level analysis (re-id, recolor, make/model) on the existing
-read pool.
++ [Step 11 validation](#step-11-done-snap_gate-t_usable_frac-trim-2026-05-26)),
+which is the intrinsic floor of this camera + scene. Dataset-level
+pivot now in progress: [Step 12](#step-12-done-plate-anchored-vehicle-aggregation-2026-05-26)
+landed the plate-anchored aggregator (`streettracker vehicles`)
+that turns the 78 % read pool into per-vehicle records with
+recurring-visit detection. Make/model on 4K crops, learned recolor,
+and visual re-id are the remaining pieces.
