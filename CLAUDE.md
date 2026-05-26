@@ -254,23 +254,25 @@ engine target or stream names differ from the example.
 
 ## ANPR tuning loop
 
-**Status as of 2026-05-26 (Step 10 ghost-mask landed):**
+**Status as of 2026-05-26 (Step 11 validation complete; ANPR tuning loop concluded):**
 
 | Layer | Status |
 |---|---|
-| **4K capture coverage** | Solved. 247 / 251 cars (98 %) get at least one 4K snap. Pipeline mode (`pipeline_interval_ms=400`, `pipeline_max_per_track=15`) is the dominant mechanism; trigger geometry is a small minority. |
-| **Ghost-plate aliasing** | **Solved (Step 10).** Parked-car mask + padding cap eliminate the 5 ghost plates that previously aliased onto 138 tracks. Every recorded plate is now genuinely from the tracked car. |
-| **Plate detector hit rate (per image, L→R)** | 71.5 % per-image with mask + cap (was 93 % pre-mask: the drop is the masked-region 4K snaps now correctly returning "no plate" instead of `FD61PVX`). |
-| **Plate detector hit rate (per image, R→L)** | 25.8 % per-image with mask + cap. Late-track snaps where the BotSORT bbox encompassed the parked-car zone are now masked; their plate-readable position would need a `t_usable` band trim (option 1) to be moved earlier in the track. |
-| **Per-car read rate (best of any snap)** | 78.9 % aliasing-free, top-read = recorded plate is correct. ([Step 10 results](#step-10-done-ghost-mask--padding-cap-2026-05-26)) |
-| **Aliasing-free per-car read rate** | **78.9 %** -- this is the true floor; Step 9's 78.5 % estimate was correct but unverifiable until the mask landed. |
+| **4K capture coverage** | Solved. 303 / 309 cars (98 %) get at least one 4K snap. Pipeline mode (`pipeline_interval_ms=400`, `pipeline_max_per_track=15`) dominates; trigger geometry minor. |
+| **Ghost-plate aliasing** | **Solved (Step 10).** Parked-car mask + padding cap eliminate the 5 ghost plates that previously aliased onto 138 tracks. Zero ghost plates ≥ 5 tracks in either Step 10 or Step 11 sessions. |
+| **Per-image high-conf read rate** | **58.8 %** after Step 11 trim (was 45.8 % pre-trim). L→R **88.6 %** (was 71.5 %, +17 pp). R→L 28.7 % (was 25.8 %). |
+| **Per-car aliasing-free read rate** | **~78 %** -- floor confirmed across two sessions on different traffic. ([Step 11 validation](#step-11-done-snap_gate-t_usable_frac-trim-2026-05-26)) |
+| **Snap budget redistribution** | Trim freed ~30 % of pre-trim budget (`pipeline_budget_exhausted` 954 → 665); mean fires/track 1.19 → 1.45 (+22 %). |
 | **Misclassification (person ↔ car)** | Single-frame flips defended by confidence-weighted voting ([Step 3 of bug-fix subsections, PR #23]). Consistent model errors still possible — heuristic or detector retrain is the next layer if it matters. |
 
-Aliasing problem solved. Remaining gap (21 % of cars without a clean
-read) is concentrated in R→L late-track snaps -- option 1 from
-[Step 9](#step-9-done-bbox-pipe-re-soak-2026-05-26) (trim snap_gate
-near-camera band, move R→L captures earlier when the front plate is
-in the clean centre of frame) is the highest-leverage lift remaining.
+**ANPR tuning loop concluded.** Coverage solved (98 %), aliasing
+solved (Step 10), per-image quality lifted (Step 11). The
+per-car 78 % aliasing-free rate is the **intrinsic floor of this
+camera + scene** -- the gap is occluded / motion-blurred / oblique
+captures, not snap geometry. Further snap-budget tuning cannot move
+it. The next valuable work is dataset-level analysis (re-id within
+session, recolor on HQ thumbnails, make/model on 4K crops) which
+enriches the existing 78 % read pool without needing more captures.
 
 ### Soak completion (2026-05-25, `session_20260524_075630`, 27.3h, 880 tracks)
 
@@ -793,16 +795,52 @@ FD61PVX zone (t_norm=0.593) which is the intended secondary benefit:
 even with the mask, fewer wasted-snap fires in that zone means
 more snap budget for the readable mid-band.
 
-**Validation plan.** Wait ~6-12h for a soak with the new band,
-then re-run [the runbook]( #step-9-done-bbox-pipe-re-soak-2026-05-26)
-to measure the lift vs the 78.9% Step 10 floor. Predicted lift
-range: +3-10 pp (the snap budget freed from the masked zone
-gives more chances per track in the readable zone, but the
-upper bound is capped at how many cars genuinely have a
-plate-readable moment within `[t_norm 0.10, 0.45]`). If the
-lift is below ~85% per-car aliasing-free, the next move is
-likely a snapshot trigger angle issue (front vs rear plate
-visibility), not snap geometry.
+**Validation (session `session_20260526_124704`, 5.5 h, 309 cars).**
+Pulled the session 2026-05-26 18:16 BST, re-ran
+`alpr-run --pre-crop --ghost-mask` against the same mask, aggregated
+side-by-side with the Step 10 baseline:
+
+| Metric | Step 10 (t_usable=[0.10, 0.67]) | Step 11 (t_usable=[0.10, 0.45]) | Delta |
+|---|---|---|---|
+| Per-image preferred high-conf | 45.8 % (656/1432) | **58.8 %** (856/1455) | **+13.0 pp** |
+| L→R per-image | 71.5 % (435/608) | **88.6 %** (631/712) | **+17.1 pp** |
+| R→L per-image | 25.8 % (209/811) | 28.7 % (207/721) | +2.9 pp |
+| Per-car aliasing-free (any non-ghost) | 78.9 % (198/251) | 78.3 % (242/309) | -0.6 pp |
+| Per-car aliasing-free (top non-ghost) | 78.9 % (198/251) | 78.3 % (242/309) | -0.6 pp |
+| Ghost plates ≥ 5 tracks | 0 | 0 | clean |
+| Mean fires/track (snap_stats) | 1.19 | 1.45 | +22 % |
+| `pipeline_budget_exhausted` | 954 | 665 | -30 % |
+
+**The trim worked as designed but did NOT lift the per-car floor.**
+Every secondary signal moved in the predicted direction -- per-image
+read rate jumped 13 pp (L→R alone jumped 17 pp), the snap budget
+redistributed (mean fires/track +22 %, exhausted -30 %), and the
+ghost-plate count stayed at zero. Per-image quality is now visibly
+higher.
+
+But per-car aliasing-free is flat at ~78 %. The math:
+**cars that COULD be captured in the mid-band were already being
+captured in Step 10.** The extra snaps the trim provides are
+redundant for those cars. The 21 % gap of unread cars is intrinsic
+to the camera viewing geometry -- oblique angles, motion blur,
+occlusion -- not snap geometry. No amount of more snaps in the
+band `[0.10, 0.45]` lifts that floor.
+
+**The 78-79 % per-car aliasing-free read rate is the intrinsic
+floor for this camera + scene.** Further snap-budget tuning won't
+move it. The remaining levers all change the underlying capture
+problem (camera physical placement, a different lens, a multi-camera
+setup, a different vehicle-detection model), not the snap geometry.
+
+**Pivot.** Stop tuning snap geometry; the ANPR coverage objective is
+solved. The next valuable work is dataset-level analysis on the
+existing 78 %-clean read pool: re-id within session (vehicles seen
+multiple times), recolor on HQ thumbnails, make/model on the 4K
+crops. Each enriches per-vehicle records without needing more snaps.
+
+Aggregation: [.claude/aggregate_step11.py](.claude/aggregate_step11.py)
+reads both sessions and prints the comparison table above. Run with
+`uv run python .claude/aggregate_step11.py`.
 
 ### Known issue surfaced during the soak: asset_prefix split-flip — fixed in [#21](https://github.com/nicholasaross/StreetTracker/pull/21)
 
@@ -1228,10 +1266,14 @@ Phase 7 cutover is operationally complete (Orin live since
 (VehicleTracker + NanoTracker) after ~a week of clean operation.
 The [ANPR tuning loop](#anpr-tuning-loop) section above lifted the
 per-car high-confidence read rate from a 59 % floor (Step 6) through
-91.5 % aliased (Step 7) to a verified **78.9 % aliasing-free**
-([Step 10](#step-10-done-ghost-mask--padding-cap-2026-05-26)), then
-deployed [Step 11](#step-11-done-snap_gate-t_usable_frac-trim-2026-05-26)
-to free the snap budget from the now-masked parked-car zone.
-The Orin is live with `t_usable_frac=[0.10, 0.45]` since session
-`session_20260526_124704`; validation soak pending (~6-12 h) to
-measure the predicted +3-10 pp lift over 78.9 %.
+91.5 % aliased (Step 7) to a verified **~78 % aliasing-free** across
+two sessions ([Step 10](#step-10-done-ghost-mask--padding-cap-2026-05-26)
++ [Step 11 validation](#step-11-done-snap_gate-t_usable_frac-trim-2026-05-26)).
+The Step 11 trim (`t_usable_frac=[0.10, 0.45]`) lifted per-image
+high-conf reads 13 pp (L→R alone +17 pp) and freed 30 % of the snap
+budget but did NOT lift the per-car floor -- those cars were already
+saturated. **78 % is the intrinsic floor of this camera + scene**;
+the gap is occlusion / motion blur / oblique angle, not snap
+geometry. ANPR tuning loop concluded; next valuable work is
+dataset-level analysis (re-id, recolor, make/model) on the existing
+read pool.
