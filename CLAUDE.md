@@ -254,20 +254,23 @@ engine target or stream names differ from the example.
 
 ## ANPR tuning loop
 
-**Status as of end-of-day 2026-05-25:**
+**Status as of 2026-05-26 (Step 10 ghost-mask landed):**
 
 | Layer | Status |
 |---|---|
-| **4K capture coverage** | Solved. 97 % of cars get at least one 4K snap. Pipeline mode (`pipeline_interval_ms=400`, `pipeline_max_per_track=15`) is the dominant mechanism; trigger geometry is a small minority. |
-| **Plate detector hit rate** | Solved. Pre-crop wrapper + `yolo-v9-t-640` lifts per-image detection from 16 % to 99 %. ([Step 7](#step-7-done-b1-diagnostic--vehicle-pre-crop-2026-05-25)) |
-| **Per-car read rate (best of any snap)** | 91.5 % (with aliasing), measured 2026-05-25. ([Step 7 results](#step-7-done-b1-diagnostic--vehicle-pre-crop-2026-05-25)) |
-| **Aliasing-free per-car read rate** | Awaiting a fresh session — bbox-pipe fix landed end-of-day 2026-05-25 but the live deployment hasn't yet recorded enough traffic with it. See [Tomorrow's analysis runbook](#tomorrows-analysis-runbook-2026-05-26). |
+| **4K capture coverage** | Solved. 247 / 251 cars (98 %) get at least one 4K snap. Pipeline mode (`pipeline_interval_ms=400`, `pipeline_max_per_track=15`) is the dominant mechanism; trigger geometry is a small minority. |
+| **Ghost-plate aliasing** | **Solved (Step 10).** Parked-car mask + padding cap eliminate the 5 ghost plates that previously aliased onto 138 tracks. Every recorded plate is now genuinely from the tracked car. |
+| **Plate detector hit rate (per image, L→R)** | 71.5 % per-image with mask + cap (was 93 % pre-mask: the drop is the masked-region 4K snaps now correctly returning "no plate" instead of `FD61PVX`). |
+| **Plate detector hit rate (per image, R→L)** | 25.8 % per-image with mask + cap. Late-track snaps where the BotSORT bbox encompassed the parked-car zone are now masked; their plate-readable position would need a `t_usable` band trim (option 1) to be moved earlier in the track. |
+| **Per-car read rate (best of any snap)** | 78.9 % aliasing-free, top-read = recorded plate is correct. ([Step 10 results](#step-10-done-ghost-mask--padding-cap-2026-05-26)) |
+| **Aliasing-free per-car read rate** | **78.9 %** -- this is the true floor; Step 9's 78.5 % estimate was correct but unverifiable until the mask landed. |
 | **Misclassification (person ↔ car)** | Single-frame flips defended by confidence-weighted voting ([Step 3 of bug-fix subsections, PR #23]). Consistent model errors still possible — heuristic or detector retrain is the next layer if it matters. |
 
-Coverage objective is met; readability gap is the remaining frontier.
-Best-known per-car read rate is 91.5 % (with aliasing); the
-aliasing-free number is expected to land ~95 %+ after tomorrow's
-re-run. See the runbook below for the exact procedure.
+Aliasing problem solved. Remaining gap (21 % of cars without a clean
+read) is concentrated in R→L late-track snaps -- option 1 from
+[Step 9](#step-9-done-bbox-pipe-re-soak-2026-05-26) (trim snap_gate
+near-camera band, move R→L captures earlier when the front plate is
+in the clean centre of frame) is the highest-leverage lift remaining.
 
 ### Soak completion (2026-05-25, `session_20260524_075630`, 27.3h, 880 tracks)
 
@@ -553,81 +556,196 @@ Tests: 413 passing on 3.10 (+10 new for this PR). Ruff clean.
 
 **Expected lift vs the 91.5 % aliased baseline:** the
 `(track_id, snap_index)` hint targets the exact BotSORT-tracked
-vehicle, so the `FD61PVX`-style ghost plates can't enter a
-non-`FD61PVX` track's read pool. Predicted per-car high-conf rate
-≥ 95 % after [Tomorrow's analysis](#tomorrows-analysis-runbook-2026-05-26).
-Will be measured then.
+vehicle, so the `FD61PVX`-style ghost plates were expected to be
+unable to enter a non-`FD61PVX` track's read pool. Predicted per-car
+high-conf rate ≥ 95 %. **The prediction did not hold** -- measured
+~90 % raw / ~79 % aliasing-free. See [Step 9 results](#step-9-done-bbox-pipe-re-soak-2026-05-26)
+for the diagnostic.
 
-### Tomorrow's analysis runbook (2026-05-26)
+### Step 9 (done): bbox-pipe re-soak (2026-05-26)
 
-The bbox-pipe (Step 8) is live but no fresh session has
-accumulated enough vehicle activity overnight to validate the
-predicted ≥ 95 % aliasing-free read rate. Do this in the morning
-once a few hours of traffic have rolled past the camera:
+Soak session `session_20260525_200916` ran 15 h on the bbox-pipe
+build (live since PR #28 deployed 2026-05-25 20:09 BST). 251 car
+tracks, 247 with `main_snap_bboxes` populated, 1432 vehicle 4K
+snaps. Service stopped 2026-05-26 11:22 BST to flush
+`data.json` + `meta.json`. `alpr-run --pipeline both --pre-crop`
+re-run on the dev box; bbox-pipe confirmed firing (`[alpr] loaded
+2721 per-snap bboxes (sub-stream (896, 512)); pre-crop hints
+active`).
 
-```bash
-# 1. Stop the live service to flush the current session's data.json
-#    + meta.json. The runtime only writes those at session shutdown;
-#    in-flight sessions only have events.jsonl populated.
-ssh streettracker@orin "sudo -n systemctl stop streettracker.service"
+**Headline result: the predicted ≥ 95 % aliasing-free per-car read
+rate did NOT materialise.** Measured numbers:
 
-# 2. Pick the most recent session that has the bbox-pipe data (any
-#    session with a start time after 2026-05-25 20:09 BST).
-ssh streettracker@orin "ls -1dt ~/streettracker/output/session_* | head -3"
-# Likely candidates: session_20260526_HHMMSS
+| Metric | Step 7 (no bbox hint) | Step 9 (bbox-pipe) |
+|---|---|---|
+| Per-image preferred-pipeline detection | 99 % (2391 snaps) | 65 % (1432 snaps) |
+| Per-image preferred-pipeline detection, **L→R only** | not broken out | **93.3 %** (567 / 608) |
+| Per-image preferred-pipeline detection, **R→L only** | not broken out | **43.3 %** (351 / 811) |
+| Per-car read at conf ≥ 0.9 (with aliasing) | 91.5 % | **90.4 %** (227 / 251) |
+| Per-car read at conf ≥ 0.9, ghost-filtered (Step 7 method: any non-ghost read) | 91.5 % | **78.5 %** (197 / 251) |
+| Per-car read at conf ≥ 0.9, ghost-filtered (strict: best read non-ghost) | not computed | 55.4 % (139 / 251) |
+| Worst ghost plate: `FD61PVX` track count | 363 / 410 (88.5 %) | **106 / 247** (42.9 %) -- raw co-occurrence reduced ~3×, but still dominant |
+| Ghost plates at ≥ 5 tracks | 7 | 5 (`FD61PVX`, `FD61PWX`, `FD51PVX`, `FD61PYX`, `FD61PXX`) |
 
-# 3. Smoke-check that the new session actually carries the new
-#    fields before pulling it. If frame_size is None or
-#    main_snap_bboxes is absent on every car, the runtime didn't
-#    pick up PR #28 -- abort and check the deploy.
-SESSION=session_20260526_<fill_in>
-ssh streettracker@orin "jq '.frame_size' ~/streettracker/output/$SESSION/${SESSION}_meta.json && jq '[.[] | select(.class_name==\"car\") | .main_snap_bboxes] | map(. != null) | {n: length, with_bboxes: (map(select(.)) | length)}' ~/streettracker/output/$SESSION/${SESSION}_data.json"
+snap_stats from this session: 2774 / 2774 / 0 HTTP attempts, p50 / p90
+682 / 925 ms, `blur_skipped_frames = 0`, `pipeline_fires = 3180`.
 
-# 4. Restart the service so we don't lose ongoing traffic.
-ssh streettracker@orin "sudo -n systemctl start streettracker.service"
+**Root cause of the prediction miss.** The bbox-pipe is doing
+exactly what it was designed to do -- the hint targets the
+BotSORT-tracked car, not the largest-vehicle-by-area. But the
+parked `FD61PVX` car is **spatially adjacent** to the road's
+near-camera edge, where every tracked car ends (or begins) its
+in-frame life:
 
-# 5. Tar + scp the new session down to the dev box.
-ssh streettracker@orin "tar -cf /tmp/${SESSION}.tar -C ~/streettracker/output ${SESSION}"
-scp streettracker@orin:/tmp/${SESSION}.tar D:/Projects/StreetTracker/output/
-cd D:/Projects/StreetTracker/output && tar -xf ${SESSION}.tar && rm ${SESSION}.tar
+* L→R direction (rear plate, exits to the right): first snap is at
+  the left edge (parked `FD61PVX` zone), then the car moves into
+  the clean middle / right of frame. Most snaps land in the clean
+  zone -> 93.3 % per-image high-conf reads.
+* R→L direction (front plate, exits to the left): first snap is on
+  the right (clean), but every subsequent snap moves the car closer
+  to the parked `FD61PVX`. By the late snaps the BotSORT bbox is
+  100-300 px wide in the sub-stream and **physically encompasses
+  the parked car**, plus 15 % pre-crop padding extends it further.
+  The plate detector then finds `FD61PVX` *inside an otherwise
+  correctly-targeted crop* -> 43.3 % per-image high-conf reads.
 
-# 6. Re-run alpr-run with --pre-crop. The CLI will log
-#    "loaded N per-snap bboxes (sub-stream (896, 512)); pre-crop
-#    hints active" -- that's the new path firing.
-cd D:/Projects/StreetTracker
-uv run streettracker alpr-run output/${SESSION} --pipeline both --pre-crop
+Sample track bboxes (sub-stream coords) illustrating the late-R→L
+overlap pattern:
 
-# 7. Aggregate the new numbers. Compare to the 91.5 % baseline from
-#    Step 7. Specifically check the ghost-plate count -- if the bbox
-#    pipe worked, no single plate should appear in >2-3 distinct
-#    tracks.
-uv run python -c "
-import json
-from collections import Counter
-d = json.load(open('output/${SESSION}/${SESSION}_alpr.json'))
-plate_track_count = Counter()
-for r in d:
-    if r['pipeline'] != 'preferred': continue
-    if r.get('ocr_text') and (r.get('ocr_conf') or 0) >= 0.9:
-        plate_track_count[(r['ocr_text'], r['track_id'])] = 1
-top = Counter()
-for (txt, tid) in plate_track_count:
-    top[txt] += 1
-print('top 10 plate strings by track count (ghost-detector):')
-for s, n in top.most_common(10):
-    print(f'  {s:<10}  {n} tracks')
-"
-```
+| Track | Dir | Speed | Late-snap bbox (sub) | OCR |
+|---|---|---|---|---|
+| 4007 | R→L | 84 px/s | `[76, 127, 378, 373]` snap 6 | `FD61PVX` 0.98 |
+| 4809 | R→L | 92 px/s | `[95, 112, 401, 367]` snap 6 | `FD61PVX` 0.99 |
+| 4398 | R→L | 111 px/s | `[78, 139, 372, 379]` snap 5 | `FD61PVX` 0.98 |
+| 4525 | L→R | 97 px/s | `[30, 150, 295, 340]` snap 1 (entry) | `FD61PVX` 0.99 |
 
-If the ghost count for the top string is < 5 tracks, the bbox pipe
-is working as expected. If it's still in the dozens or hundreds,
-something is wrong -- check that the per-snap bboxes loaded
-correctly (look for `loaded N per-snap bboxes` in the alpr-run log).
+So the bbox-pipe **fixed the case where the wrong-area heuristic
+picked the wrong car** (the original Step 7 failure mode) but
+**cannot fix the case where the tracked car's true bbox spatially
+overlaps the parked car** (the new failure mode). Net per-car
+high-conf rate moved from 91.5 % (aliased, optimistic) to 78.5 %
+(genuinely aliasing-free).
 
-After confirming aliasing is fixed, update the status table at the
-top of [ANPR tuning loop](#anpr-tuning-loop) with the actual
-aliasing-free read rate, then decide whether to move on to
-dataset-level analysis (re-id, recolor, make/model) or keep tuning.
+The aggregation script for re-running this on a future session lives
+at [.claude/aggregate_step8.py](.claude/aggregate_step8.py). Sample
+diagnostic prints (FD61PVX-aliased tracks + per-direction breakdown)
+were produced ad-hoc; not committed.
+
+**Paths forward** (non-mutually-exclusive; the 78.5 % floor is
+already enough to start dataset-level analysis if the operator
+prefers):
+
+1. **Trim the snap_gate's near-camera band** so pipeline fires stop
+   before the BotSORT bbox grows into the parked-car zone. Look at
+   the R→L tracks' last-snap bbox x-coords (most are ≤ 100 px in
+   the sub-stream) and pull `t_usable_frac`'s near-edge in to
+   exclude that band. Trades some R→L coverage for read quality;
+   probably worth it since those late snaps almost never carry the
+   right plate anyway.
+2. **Mask the parked-car region at ALPR time.** Hard-code a
+   sub-stream rect covering the `FD61PVX` car position, project to
+   each snap's 4K coords, reject any plate detection whose bbox IoU
+   with the masked region is > some threshold (say 0.3). One-time
+   manual config; effective because the parked car is in the same
+   position frame-to-frame.
+3. **Tighten or shrink the pre-crop padding** (currently 15 %) for
+   bboxes that are already wide -- a 300 px-wide BotSORT bbox does
+   not need another 45 px of padding to find a plate. Cheap and
+   may help marginally without polygon edits.
+4. **Move on.** 78.5 % aliasing-free per-car high-conf read is a
+   strong floor. Re-id, recolor on HQ thumbnails, make/model on 4K
+   crops can all start now -- C1-C3 in the prior options menu.
+
+### Step 10 (done): ghost-mask + padding cap (2026-05-26)
+
+Implemented options A + B from Step 9 (mask the parked-car region
+at ALPR time + cap pre-crop padding). Re-ran `alpr-run --pre-crop
+--ghost-mask` against the same Step 9 session
+(`session_20260525_200916`, 1432 vehicle snaps) and validated that
+the predicted aliasing-cleanup actually happens.
+
+**Code changes:**
+
+* `streettracker alpr-run --ghost-mask <json>` (new flag) loads
+  parked-car rects from a per-install JSON. Schema:
+  `{"source_size": [w, h], "rects_4k": [[x1, y1, x2, y2], ...]}`.
+  Each rect is interpreted in `source_size` pixel coords and
+  scaled to the actual snap dimensions at apply time, so a
+  Reolink firmware change that moves the main-stream resolution
+  doesn't invalidate the mask. The live mask is at
+  [.claude/ghost_mask.json](.claude/ghost_mask.json).
+* `PipelineRunner.run(..., ghost_rects, ghost_source_size)` zero-fills
+  the rect on the image immediately after `cv2.imread`, before any
+  detector runs. The plate detector cannot see the masked plate.
+* `PreCropDetector(..., pad_max_px=30)` caps per-side padding so a
+  wide BotSORT bbox doesn't spill `pad_frac * dim` pixels into a
+  neighbouring vehicle. Default cap is 30 px; existing tests that
+  asserted uncapped behaviour opt out with `pad_max_px=999`.
+* Tests: 416 passing on 3.10 (+2 over PR #28: padding-cap +
+  ghost-rects-zero-image-before-detect + raw-coords-when-no-source-size).
+
+**Bug landed during validation** -- the first `--ghost-mask` run
+showed zero change. Reolink snaps on this install are **4512×2512**,
+not the colloquial "4K" 3840×2160 hardcoded as the scaling
+denominator in an early draft of the runner. The mask was being
+scaled by `w_img / 3840 = 1.175`, shifting the rect off the
+FD61PVX plate position. Fixed by reading `source_size` from the
+mask JSON and scaling by `w_img / source_size[0]`. The
+[live mask](.claude/ghost_mask.json) declares
+`"source_size": [4512, 2512]` accordingly. If the Reolink firmware
+ever changes the main-stream resolution, only the `source_size`
+needs updating; the rect coords stay.
+
+**Measured lift vs Step 9** (preferred pipeline; bespoke skipped
+because Step 6 established it contributes no useful signal):
+
+| Metric | Step 9 (bbox-pipe only) | Step 10 (+ mask + cap) | Delta |
+|---|---|---|---|
+| Per-image preferred high-conf | 65.0 % (931/1432) | 45.8 % (656/1432) | -19.2 pp |
+| L→R per-image | 93.3 % (567/608) | 71.5 % (435/608) | -21.8 pp |
+| R→L per-image | 43.3 % (351/811) | 25.8 % (209/811) | -17.5 pp |
+| Per-car high-conf (aliased) | 90.4 % (227/251) | 78.9 % (198/251) | -11.5 pp |
+| Per-car aliasing-free (any non-ghost) | 78.5 % (197/251) | **78.9 %** (198/251) | +0.4 pp |
+| Per-car aliasing-free (top non-ghost) | 55.4 % (139/251) | **78.9 %** (198/251) | **+23.5 pp** |
+| Ghost plates (≥ 5 tracks) | 5 (`FD61PVX`+4 OCR-variants, 138 tracks total) | **0** | clean |
+
+**How to read this:**
+
+The per-image and per-car-aliased rates are **down** because the
+mask is doing its job -- snaps whose only plate detection was the
+parked `FD61PVX` (or an OCR-variant misread of the same physical
+plate) are now correctly returning "no read" instead of returning
+the wrong plate at conf ≥ 0.99. Step 9's 90.4 % per-car-aliased
+number was inflated by counting cars whose only high-conf read was
+ghost.
+
+The metric that actually matters is **per-car aliasing-free
+(top non-ghost): every car with a recorded plate gets the
+*correct* plate**. That jumped 55.4 % → 78.9 %, a 23.5 pp lift.
+The "any non-ghost" metric barely moved because the bbox-pipe was
+already enabling those reads in Step 9 -- the mask just makes
+them the dominant (top-conf) reads per car.
+
+The padding cap (option B) contributes marginally on its own;
+visible mostly as the absence of new edge-of-bbox ghost
+detections that wider crops could have introduced. The mask
+(option A) is doing the heavy lifting.
+
+**The 78.9 % is the true aliasing-free floor.** Step 9's 78.5 %
+estimate was correct, just unverifiable until the mask actually
+proved it. The 21 % gap (53 cars without a clean high-conf read)
+is dominated by R→L tracks whose late-snap plates were always
+either polluted by the parked car (now masked) or genuinely
+not-captured by the detector at the readable angle. Lifting
+this floor needs option 1 from Step 9 -- trim `t_usable_frac`
+on the near-camera edge so the snap_gate fires R→L captures
+*earlier* in the track, when the front plate is in the clean
+centre of frame.
+
+Aggregation: [.claude/aggregate_step10.py](.claude/aggregate_step10.py)
+reads both the Step 9 backup (`*_alpr.step9.json`) and the current
+Step 10 output and prints the table above. Run with
+`uv run python .claude/aggregate_step10.py`.
 
 ### Known issue surfaced during the soak: asset_prefix split-flip — fixed in [#21](https://github.com/nicholasaross/StreetTracker/pull/21)
 
@@ -1053,9 +1171,14 @@ Phase 7 cutover is operationally complete (Orin live since
 (VehicleTracker + NanoTracker) after ~a week of clean operation.
 The [ANPR tuning loop](#anpr-tuning-loop) section above lifted the
 per-car high-confidence read rate from a 59 % floor (Step 6) through
-91.5 % (Step 7, with parked-car aliasing) and is now blocked on
-fresh-data validation of the bbox-pipe fix (Step 8 -- predicted
-≥ 95 % aliasing-free). The
-[tomorrow's analysis runbook](#tomorrows-analysis-runbook-2026-05-26)
-documents the exact sequence to measure that number once a few
-hours of vehicle activity have accumulated on the live deployment.
+91.5 % aliased (Step 7) to a verified **78.9 % aliasing-free**,
+top-read-correct per-car read after the ghost-mask + padding-cap
+landing ([Step 10](#step-10-done-ghost-mask--padding-cap-2026-05-26)).
+The bbox-pipe (Step 8) predicted ≥ 95 % did not materialise --
+the parked `FD61PVX` car spatially overlapped the tracked BotSORT
+bbox in late R→L snaps. Step 10 masks the parked-car region at
+ALPR time before any detector sees it; this eliminated all ghost
+plates (5 → 0) and lifted the strict per-car aliasing-free rate
+from 55 % → 79 %. The remaining 21 % gap is concentrated in R→L
+late-track snaps; lifting it needs the snap_gate `t_usable_frac`
+trim (Step 9 option 1) to move R→L captures earlier in the track.
