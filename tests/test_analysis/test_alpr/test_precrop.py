@@ -177,11 +177,12 @@ def test_pre_crop_iterates_vehicles_largest_first() -> None:
 
 def test_pre_crop_padding_adds_margin_around_bbox() -> None:
     """pad_frac=0.10 on a 1000x800 vehicle bbox should expand to
-    1200x960 (100 px on each side x, 80 px y) before the crop."""
+    1200x960 (100 px on each side x, 80 px y) before the crop. The
+    cap is set high to isolate fractional behaviour from the cap."""
     plate = _FakePlateDetector(
         detection=PlateDetection(bbox=(0, 0, 50, 20), det_confidence=0.5)
     )
-    pre = PreCropDetector(plate_detector=plate, pad_frac=0.10)
+    pre = PreCropDetector(plate_detector=plate, pad_frac=0.10, pad_max_px=999)
     _inject_fake_yolo(pre, np.array([[1000.0, 800.0, 2000.0, 1600.0]]))
 
     pre.detect(_make_image())
@@ -191,13 +192,31 @@ def test_pre_crop_padding_adds_margin_around_bbox() -> None:
     assert plate.last_input_shape == (960, 1200)
 
 
+def test_pre_crop_padding_capped_for_wide_bboxes() -> None:
+    """pad_max_px caps per-side padding regardless of pad_frac. A
+    1000x800 bbox with pad_frac=0.15 would naturally pad 150/120 px,
+    but with pad_max_px=30 the actual padding is 30 px each side.
+    This prevents wide BotSORT bboxes from spilling into neighbouring
+    cars (Step 10 of CLAUDE.md ANPR tuning loop)."""
+    plate = _FakePlateDetector(
+        detection=PlateDetection(bbox=(0, 0, 50, 20), det_confidence=0.5)
+    )
+    pre = PreCropDetector(plate_detector=plate, pad_frac=0.15, pad_max_px=30)
+    _inject_fake_yolo(pre, np.array([[1000.0, 800.0, 2000.0, 1600.0]]))
+
+    pre.detect(_make_image())
+
+    # 1000 wide + 30 each side = 1060.  800 tall + 30 each side = 860.
+    assert plate.last_input_shape == (860, 1060)
+
+
 def test_pre_crop_clamps_padded_crop_to_image_bounds() -> None:
     """Padding past the image edge must clamp rather than producing
     negative indices."""
     plate = _FakePlateDetector(
         detection=PlateDetection(bbox=(0, 0, 50, 20), det_confidence=0.5)
     )
-    pre = PreCropDetector(plate_detector=plate, pad_frac=0.50)
+    pre = PreCropDetector(plate_detector=plate, pad_frac=0.50, pad_max_px=999)
     # Vehicle bbox right at the top-left corner -- padding would push
     # the crop to negative coords without the clamp.
     _inject_fake_yolo(pre, np.array([[0.0, 0.0, 100.0, 100.0]]))
@@ -257,7 +276,7 @@ def test_pre_crop_hint_applies_padding() -> None:
     plate = _FakePlateDetector(
         detection=PlateDetection(bbox=(0, 0, 30, 10), det_confidence=0.5)
     )
-    pre = PreCropDetector(plate_detector=plate, pad_frac=0.10)
+    pre = PreCropDetector(plate_detector=plate, pad_frac=0.10, pad_max_px=999)
 
     pre.detect(_make_image(), bbox_hint=(1000, 800, 2000, 1600))
 
@@ -271,7 +290,7 @@ def test_pre_crop_hint_clamps_to_image_bounds() -> None:
     plate = _FakePlateDetector(
         detection=PlateDetection(bbox=(0, 0, 30, 10), det_confidence=0.5)
     )
-    pre = PreCropDetector(plate_detector=plate, pad_frac=0.50)
+    pre = PreCropDetector(plate_detector=plate, pad_frac=0.50, pad_max_px=999)
 
     pre.detect(_make_image(h=500, w=500), bbox_hint=(0, 0, 100, 100))
 

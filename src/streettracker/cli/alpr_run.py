@@ -102,6 +102,20 @@ def _build_parser() -> argparse.ArgumentParser:
             "without --pre-crop."
         ),
     )
+    ap.add_argument(
+        "--ghost-mask",
+        type=Path,
+        default=None,
+        help=(
+            "Path to a JSON file with parked-car/no-go rects in 4K snap "
+            "coords. Schema: {\"source_size\": [w, h], \"rects_4k\": "
+            "[[x1, y1, x2, y2], ...]}. Each rect is zero-filled on the "
+            "image before detection so the plate detector cannot see "
+            "stationary plates that aren't from passing traffic. "
+            "Eliminates the parked-car aliasing surfaced by Step 9 of "
+            "the ANPR tuning loop in CLAUDE.md."
+        ),
+    )
     return ap
 
 
@@ -143,6 +157,13 @@ def main(argv: list[str] | None = None) -> int:
             "use the YOLO largest-vehicle-bbox fallback (older session?)"
         )
 
+    ghost_rects, ghost_src = _load_ghost_mask(args.ghost_mask)
+    if ghost_rects:
+        print(
+            f"[alpr] ghost mask: {len(ghost_rects)} rect(s) loaded "
+            f"(source_size={ghost_src})"
+        )
+
     all_records: list[dict] = []
     crops_root = session_dir / "alpr_crops"
     for runner in pipelines:
@@ -153,6 +174,8 @@ def main(argv: list[str] | None = None) -> int:
             result = runner.run(
                 image_path, tid, snap_index, cls, crop_dir,
                 bbox_hint=hint,
+                ghost_rects=ghost_rects,
+                ghost_source_size=ghost_src,
             )
             all_records.append(result.to_json())
             if i % 10 == 0 or i == len(snaps):
@@ -236,6 +259,50 @@ def _load_bbox_index(
                 sub_size = None
 
     return bbox_index, sub_size
+
+
+def _load_ghost_mask(
+    path: Path | None,
+) -> tuple[list[tuple[int, int, int, int]], tuple[int, int] | None]:
+    """Load parked-car/no-go rects from a per-install JSON file.
+
+    Schema: ``{"source_size": [w, h], "rects_4k": [[x1,y1,x2,y2], ...]}``.
+    ``source_size`` is the pixel resolution the rect coords were
+    captured in (typically the actual snap dimensions at the time of
+    capture). The runner scales each rect to the current snap's
+    dimensions at apply time, so the mask survives resolution changes
+    (e.g. Reolink firmware that changes the main-stream resolution).
+    Reolink snaps on this install are 4512x2512 despite the colloquial
+    "4K" label, so ``source_size`` for the live mask is [4512, 2512],
+    not [3840, 2160]. Empty / missing returns ``([], None)``.
+    """
+    if path is None:
+        return [], None
+    if not path.exists():
+        print(f"[alpr] --ghost-mask {path}: not found, ignoring", file=sys.stderr)
+        return [], None
+    try:
+        spec = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"[alpr] --ghost-mask {path}: parse error ({e}), ignoring", file=sys.stderr)
+        return [], None
+    rects = spec.get("rects_4k") or []
+    out: list[tuple[int, int, int, int]] = []
+    for r in rects:
+        try:
+            x1, y1, x2, y2 = (int(v) for v in r)
+        except (TypeError, ValueError):
+            continue
+        if x2 > x1 and y2 > y1:
+            out.append((x1, y1, x2, y2))
+    src = spec.get("source_size")
+    src_size: tuple[int, int] | None = None
+    if isinstance(src, list) and len(src) == 2:
+        try:
+            src_size = (int(src[0]), int(src[1]))
+        except (TypeError, ValueError):
+            src_size = None
+    return out, src_size
 
 
 def _resolve_bbox_hint(

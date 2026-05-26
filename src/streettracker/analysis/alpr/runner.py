@@ -67,6 +67,8 @@ class PipelineRunner:
         crop_out_dir: Path,
         *,
         bbox_hint: tuple[int, int, int, int] | None = None,
+        ghost_rects: list[tuple[int, int, int, int]] | None = None,
+        ghost_source_size: tuple[int, int] | None = None,
     ) -> PlateResult:
         import cv2  # deferred — pipelines can import this module without cv2
 
@@ -81,6 +83,29 @@ class PipelineRunner:
                         pipeline=self.name, detection=None, read=None, crop_path=None,
                         pipeline_ms=0.0, error="imread_failed",
                     )
+
+                # Zero out parked-car / no-go regions before any detection
+                # runs. Rects are in the operator-supplied source_size
+                # coord system; scale to the actual snap dims (a Reolink
+                # firmware change could move from 4512x2512 to a different
+                # resolution without invalidating the mask). When
+                # source_size is unknown, assume the rects are already in
+                # snap pixel coords.
+                if ghost_rects:
+                    h_img, w_img = image.shape[:2]
+                    if ghost_source_size:
+                        src_w, src_h = ghost_source_size
+                        sx = w_img / src_w if src_w > 0 else 1.0
+                        sy = h_img / src_h if src_h > 0 else 1.0
+                    else:
+                        sx = sy = 1.0
+                    for x1, y1, x2, y2 in ghost_rects:
+                        rx1 = max(0, min(int(x1 * sx), w_img))
+                        ry1 = max(0, min(int(y1 * sy), h_img))
+                        rx2 = max(0, min(int(x2 * sx), w_img))
+                        ry2 = max(0, min(int(y2 * sy), h_img))
+                        if rx2 > rx1 and ry2 > ry1:
+                            image[ry1:ry2, rx1:rx2] = 0
 
                 detection = self._detector.detect(image, bbox_hint=bbox_hint)
                 if detection is None:
