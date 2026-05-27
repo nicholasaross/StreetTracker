@@ -60,6 +60,20 @@ from typing import Any
 
 CONF_THRESHOLD = 0.9
 
+# Default Levenshtein similarity (rapidfuzz) threshold for collapsing
+# OCR variants of the same physical plate. Only same-length plates
+# are eligible.
+#
+# 85 catches 1-character OCR diffs on 7-char UK plates (ratio 85.7)
+# but NOT on 6-char plates (ratio 83.3). Deliberately conservative:
+# on this scene, dropping the threshold to 80 over-merges across UK
+# regional prefixes (e.g. an LX7751 cluster absorbed 8 distinct
+# Newcastle-area plates whose 4th-6th chars happened to be close).
+# False merges are operationally worse than missed merges; pass
+# ``--fuzzy-ratio 80`` to opt in to the looser threshold for a session
+# where the LX/LD/L4 prefix density is known to be low.
+FUZZY_RATIO_DEFAULT = 85
+
 
 @dataclass(slots=True)
 class VehicleVisit:
@@ -99,12 +113,128 @@ class Vehicle:
     directions: dict[str, int] = field(default_factory=dict)
     colors: dict[str, int] = field(default_factory=dict)
     visits: list[VehicleVisit] = field(default_factory=list)
+    # When fuzzy plate clustering merged OCR variants into one
+    # vehicle, ``plate_variants`` lists the alternate strings (each
+    # with its max OCR confidence across the merged visits).
+    # ``plate`` is the highest-conf variant. Empty list when no
+    # clustering happened (either disabled or no near-neighbours).
+    plate_variants: list[tuple[str, float]] = field(default_factory=list)
 
     def to_json_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["visits"] = [v.to_json_dict() if isinstance(v, VehicleVisit) else v
                        for v in d["visits"]]
+        # asdict turns tuples into tuples; JSON encoder accepts those
+        # but for explicit shape we normalise to [plate, conf] lists.
+        d["plate_variants"] = [[p, c] for p, c in d.get("plate_variants", [])]
         return d
+
+
+def _intervals_overlap(
+    a_start: float, a_end: float, b_start: float, b_end: float
+) -> bool:
+    """Half-open interval overlap, [start, end)."""
+    return a_start < b_end and b_start < a_end
+
+
+def _eject_temporal_overlaps(
+    canonical: dict[str, str],
+    strict_groups: dict[str | None, list[tuple[dict, dict | None]]],
+) -> None:
+    """Post-cluster check: split clusters whose member plates have
+    temporally overlapping tracks.
+
+    ``canonical`` maps strict plate -> cluster seed; mutated in place
+    so plates with overlap-conflicting tracks get re-pointed to
+    themselves (becoming their own cluster).
+
+    A merge of plate A and plate B is rejected if ANY track of A
+    overlaps ANY track of B in wall-clock time. Same vehicle can't be
+    in two places at once; an overlap proves the fuzzy match was
+    coincidental.
+    """
+    # Build cluster -> [(strict_plate, [(t_start, t_end), ...])].
+    cluster_members: dict[str, list[tuple[str, list[tuple[float, float]]]]] = {}
+    for plate, can in canonical.items():
+        if plate is None:
+            continue
+        items = strict_groups.get(plate, [])
+        intervals = [
+            (r["time_start_unix"], r["time_end_unix"])
+            for r, _b in items
+        ]
+        cluster_members.setdefault(can, []).append((plate, intervals))
+
+    for can, members in cluster_members.items():
+        if len(members) <= 1:
+            continue
+        # Greedy: keep the seed (canonical plate), check each other
+        # member for overlap against the union of so-far-kept members.
+        # First entry sorted to seed position.
+        members.sort(key=lambda x: 0 if x[0] == can else 1)
+        kept_intervals = list(members[0][1])
+        for plate, intervals in members[1:]:
+            conflicts = any(
+                _intervals_overlap(a_s, a_e, b_s, b_e)
+                for (a_s, a_e) in intervals
+                for (b_s, b_e) in kept_intervals
+            )
+            if conflicts:
+                # Eject -- this plate becomes its own cluster.
+                canonical[plate] = plate
+            else:
+                kept_intervals.extend(intervals)
+
+
+def _cluster_plates_by_similarity(
+    plates_with_conf: list[tuple[str, float]],
+    *,
+    ratio: int,
+) -> dict[str, str]:
+    """Cluster plate strings by Levenshtein similarity.
+
+    ``plates_with_conf`` is the list of distinct plate strings with
+    their max OCR confidence (across all tracks the plate appears in).
+    ``ratio`` is the rapidfuzz similarity floor (0-100); pairs at or
+    above this AND of equal length are merged.
+
+    Returns a map ``{plate -> canonical_plate}``. The canonical for a
+    cluster is the highest-conf plate in it; tie-broken by the
+    alphabetically-first string for determinism.
+
+    Greedy seed-and-grow: process plates highest-conf first. For each
+    plate, check if it matches any existing cluster's seed at >= ratio
+    (with same length); if yes, attach; otherwise start a new cluster.
+    This biases toward the high-conf plate being canonical, which is
+    what downstream wants.
+    """
+    if not plates_with_conf or ratio is None:
+        return {p: p for p, _c in plates_with_conf}
+
+    # Lazy import so the module loads on Python without rapidfuzz.
+    from rapidfuzz import fuzz
+
+    # Sort by (-conf, plate) so canonical seeds are highest-conf,
+    # alphabetical tie-break for determinism.
+    ordered = sorted(plates_with_conf, key=lambda x: (-x[1], x[0]))
+    canonical: dict[str, str] = {}  # plate -> canonical
+    seeds: list[str] = []           # cluster seeds (canonical plates)
+
+    for plate, _conf in ordered:
+        matched_seed: str | None = None
+        for seed in seeds:
+            if len(seed) != len(plate):
+                continue
+            if fuzz.ratio(seed, plate) >= ratio:
+                matched_seed = seed
+                break
+        if matched_seed is None:
+            seeds.append(plate)
+            canonical[plate] = plate
+        else:
+            canonical[plate] = matched_seed
+
+    return canonical
 
 
 def build_vehicles(
@@ -112,6 +242,7 @@ def build_vehicles(
     *,
     conf_threshold: float = CONF_THRESHOLD,
     include_unread: bool = True,
+    fuzzy_ratio: int | None = FUZZY_RATIO_DEFAULT,
 ) -> list[Vehicle]:
     """Build per-vehicle aggregations from a closed session's outputs.
 
@@ -122,6 +253,14 @@ def build_vehicles(
     ``include_unread`` controls whether tracks without an anchor read
     are emitted as plate=None vehicles. Set False to focus on the
     plate-anchored subset only.
+
+    ``fuzzy_ratio`` controls plate clustering. When set (default 85),
+    OCR variants of the same physical plate (same length, Levenshtein
+    similarity >= ``fuzzy_ratio``) collapse into one Vehicle. The
+    highest-conf plate string becomes canonical; lower-conf variants
+    are recorded under ``Vehicle.plate_variants``. Set to ``None`` to
+    disable clustering (strict-string equality only, legacy
+    behaviour).
 
     Cars only -- ``class_name == "car"`` tracks. Person tracks are
     skipped (snaps are anatomically wrong for ALPR).
@@ -166,30 +305,78 @@ def build_vehicles(
             anchor.setdefault("snap_index", consensus.get("best_snap_index"))
         best_by_tid[t["track_id"]] = anchor
 
-    # Group track records by canonical plate. Tracks whose best read
-    # is below threshold (or absent) collect under ``None``.
-    tracks_by_plate: dict[str | None, list[tuple[dict, dict | None]]] = {}
+    # First pass: group by strict-string plate equality. Tracks whose
+    # best read is below threshold (or absent) collect under ``None``.
+    strict_groups: dict[str | None, list[tuple[dict, dict | None]]] = {}
     for rec in data:
         if rec.get("class_name") != "car":
             continue
         tid = rec.get("track_id")
         best = best_by_tid.get(tid)
         plate = best["ocr_text"] if best else None
-        tracks_by_plate.setdefault(plate, []).append((rec, best))
+        strict_groups.setdefault(plate, []).append((rec, best))
+
+    # Second pass: fuzzy plate clustering on the plated subset.
+    # ``canonical`` maps each strict plate to its cluster representative
+    # (the highest-conf plate in the cluster). The plate=None bucket
+    # is not eligible -- those tracks are anonymous already.
+    if fuzzy_ratio is not None:
+        plated_plates: list[tuple[str, float]] = []
+        for plate, items in strict_groups.items():
+            if plate is None:
+                continue
+            max_conf = max(
+                (b.get("ocr_conf") or 0.0) for _r, b in items if b
+            )
+            plated_plates.append((plate, max_conf))
+        canonical = _cluster_plates_by_similarity(
+            plated_plates, ratio=fuzzy_ratio
+        )
+        # Eject any plate whose tracks temporally overlap with its
+        # cluster-mates. Two visits of the SAME physical vehicle
+        # cannot coexist in the camera's frame at the same instant;
+        # an overlap proves the fuzzy-merge was wrong (the OCR
+        # captured two adjacent cars whose plates happened to be
+        # one character apart, e.g. an LD22BWG / LD22BMG pair
+        # caught simultaneously). Ejected plates become their own
+        # singleton cluster.
+        _eject_temporal_overlaps(canonical, strict_groups)
+    else:
+        canonical = {p: p for p in strict_groups if p is not None}
+
+    # Fold strict groups into clusters (by canonical plate).
+    clusters: dict[str | None, list[tuple[dict, dict | None]]] = {}
+    cluster_variants: dict[str, list[tuple[str, float]]] = {}
+    for plate, items in strict_groups.items():
+        if plate is None:
+            clusters[None] = items
+            continue
+        can = canonical.get(plate, plate)
+        clusters.setdefault(can, []).extend(items)
+        if can != plate:
+            # Record this OCR variant under the cluster's canonical.
+            variant_conf = max(
+                (b.get("ocr_conf") or 0.0) for _r, b in items if b
+            )
+            cluster_variants.setdefault(can, []).append(
+                (plate, variant_conf)
+            )
 
     out: list[Vehicle] = []
-    for plate, items in tracks_by_plate.items():
+    for plate, items in clusters.items():
         if plate is None and not include_unread:
             continue
         if plate is None:
-            # Anonymous tracks emit one Vehicle per track (no
-            # cross-track grouping is possible without a key).
             for rec, _best in items:
                 out.append(_make_single_vehicle(rec, best=None))
             continue
-        # Grouped: one Vehicle per distinct plate, with all matching
-        # tracks as visits.
-        out.append(_make_grouped_vehicle(plate, items))
+        v = _make_grouped_vehicle(plate, items)
+        variants = cluster_variants.get(plate)
+        if variants:
+            # Stable order: highest-conf variant first, alphabetical
+            # tie-break.
+            v.plate_variants = sorted(variants, key=lambda x: (-x[1], x[0]))
+        out.append(v)
 
     out.sort(key=lambda v: v.first_seen)
     return out
@@ -302,6 +489,22 @@ def _build_parser() -> argparse.ArgumentParser:
             "Default emits them as plate=None vehicles."
         ),
     )
+    ap.add_argument(
+        "--fuzzy-ratio",
+        type=int,
+        default=FUZZY_RATIO_DEFAULT,
+        help=(
+            "Levenshtein similarity floor (0-100) for collapsing OCR "
+            f"variants of the same physical plate. Default "
+            f"{FUZZY_RATIO_DEFAULT}. Only same-length plates are "
+            "eligible. Set with --no-fuzzy to disable."
+        ),
+    )
+    ap.add_argument(
+        "--no-fuzzy",
+        action="store_true",
+        help="Disable fuzzy plate clustering (strict-string only).",
+    )
     return ap
 
 
@@ -316,6 +519,7 @@ def main(argv: list[str] | None = None) -> int:
         session_dir,
         conf_threshold=args.conf,
         include_unread=not args.no_unread,
+        fuzzy_ratio=None if args.no_fuzzy else args.fuzzy_ratio,
     )
 
     session = session_dir.name
@@ -330,13 +534,22 @@ def main(argv: list[str] | None = None) -> int:
     recurring = [v for v in plated if v.n_visits >= 2]
     print(f"  plated:    {len(plated)}")
     print(f"  recurring: {len(recurring)}  (>=2 visits in session)")
+    merged = [v for v in plated if v.plate_variants]
+    if merged:
+        print(f"  fuzzy-merged: {len(merged)}  (OCR variants collapsed)")
     if recurring:
         print("  top recurring:")
         for v in sorted(recurring, key=lambda x: -x.n_visits)[:5]:
+            extras = ""
+            if v.plate_variants:
+                variant_strs = ", ".join(
+                    f"{p}@{c:.2f}" for p, c in v.plate_variants
+                )
+                extras = f"  variants=[{variant_strs}]"
             print(
                 f"    {v.plate}  n_visits={v.n_visits}  "
                 f"gap_min_max={v.gap_minutes_max:.1f}min  "
-                f"directions={dict(v.directions)}"
+                f"directions={dict(v.directions)}{extras}"
             )
 
     return 0

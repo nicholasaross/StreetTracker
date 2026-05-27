@@ -218,6 +218,227 @@ def test_build_vehicles_missing_alpr_rollup_is_tolerated(
     assert vehicles[0].plate is None
 
 
+def test_fuzzy_clustering_merges_one_char_variants(
+    tmp_path: Path, sample_track: TrackRecord
+) -> None:
+    """Two tracks whose plate strings differ by exactly one character
+    (same length) should collapse into a single Vehicle. Canonical is
+    the higher-confidence plate; lower-conf one lands in
+    plate_variants. Documented in Step 12 of CLAUDE.md as the
+    known limitation that this feature addresses."""
+    t1 = sample_track  # AB12CDE @ 0.98
+    t2 = replace(
+        sample_track,
+        track_id=99,
+        time_start_unix=sample_track.time_end_unix + 120,
+        time_end_unix=sample_track.time_end_unix + 127,
+    )
+    alpr = {
+        "tracks": [
+            {
+                "track_id": 42,
+                "best_preferred": {
+                    "track_id": 42, "snap_index": 1,
+                    "image": "vehicle_42_main_1.jpg",
+                    "ocr_text": "AB12CDE", "ocr_conf": 0.98,
+                    "det_conf": 0.85,
+                },
+            },
+            {
+                "track_id": 99,
+                "best_preferred": {
+                    "track_id": 99, "snap_index": 1,
+                    "image": "vehicle_99_main_1.jpg",
+                    "ocr_text": "AB12CXE",  # one-char diff at position 5
+                    "ocr_conf": 0.93,
+                    "det_conf": 0.81,
+                },
+            },
+        ],
+    }
+    session = _write_session(tmp_path, [t1, t2], alpr)
+
+    vehicles = build_vehicles(session)
+    plated = [v for v in vehicles if v.plate is not None]
+    assert len(plated) == 1
+    v = plated[0]
+    assert v.plate == "AB12CDE"  # higher conf wins canonical
+    assert v.n_visits == 2
+    assert v.track_ids == [42, 99]
+    assert v.plate_variants == [("AB12CXE", pytest.approx(0.93))]
+
+
+def test_fuzzy_clustering_does_not_merge_different_lengths(
+    tmp_path: Path, sample_track: TrackRecord
+) -> None:
+    """Plates of different lengths must NOT cluster -- a length
+    difference suggests an OCR truncation / dropped char that is
+    visually too risky to collapse without manual review. Documented
+    as a deliberate conservative choice in vehicles.py."""
+    t1 = sample_track
+    t2 = replace(sample_track, track_id=99,
+                 time_start_unix=sample_track.time_end_unix + 60)
+    alpr = {
+        "tracks": [
+            {
+                "track_id": 42,
+                "best_preferred": {
+                    "track_id": 42, "snap_index": 1,
+                    "image": "vehicle_42_main_1.jpg",
+                    "ocr_text": "AB12CDE", "ocr_conf": 0.98,  # len 7
+                    "det_conf": 0.85,
+                },
+            },
+            {
+                "track_id": 99,
+                "best_preferred": {
+                    "track_id": 99, "snap_index": 1,
+                    "image": "vehicle_99_main_1.jpg",
+                    "ocr_text": "B12CDE",  # len 6, ratio is high but
+                                            # length differs -- skip
+                    "ocr_conf": 0.93,
+                    "det_conf": 0.81,
+                },
+            },
+        ],
+    }
+    session = _write_session(tmp_path, [t1, t2], alpr)
+
+    vehicles = build_vehicles(session)
+    plates = sorted([v.plate for v in vehicles if v.plate is not None])
+    assert plates == ["AB12CDE", "B12CDE"]
+
+
+def test_fuzzy_clustering_disabled_keeps_strict_string_equality(
+    tmp_path: Path, sample_track: TrackRecord
+) -> None:
+    """fuzzy_ratio=None preserves the strict-string grouping (legacy
+    behaviour). The two near-variants stay separate."""
+    t1 = sample_track
+    t2 = replace(sample_track, track_id=99,
+                 time_start_unix=sample_track.time_end_unix + 60)
+    alpr = {
+        "tracks": [
+            {
+                "track_id": 42,
+                "best_preferred": {
+                    "track_id": 42, "snap_index": 1,
+                    "image": "vehicle_42_main_1.jpg",
+                    "ocr_text": "AB12CDE", "ocr_conf": 0.98,
+                    "det_conf": 0.85,
+                },
+            },
+            {
+                "track_id": 99,
+                "best_preferred": {
+                    "track_id": 99, "snap_index": 1,
+                    "image": "vehicle_99_main_1.jpg",
+                    "ocr_text": "AB12CXE", "ocr_conf": 0.93,
+                    "det_conf": 0.81,
+                },
+            },
+        ],
+    }
+    session = _write_session(tmp_path, [t1, t2], alpr)
+
+    vehicles = build_vehicles(session, fuzzy_ratio=None)
+    plated = sorted([v.plate for v in vehicles if v.plate is not None])
+    assert plated == ["AB12CDE", "AB12CXE"]
+
+
+def test_fuzzy_clustering_rejects_temporally_overlapping_merges(
+    tmp_path: Path, sample_track: TrackRecord
+) -> None:
+    """Two plates that fuzzy-match by string but whose tracks overlap
+    in wall-clock time must NOT collapse -- the same physical car
+    can't be in frame twice at the same instant. Real example: a
+    Step 11 session had LD22BWG and LD22BMG merge with negative
+    gap_minutes; this guard rejects that."""
+    t1 = sample_track  # 14:32:05 -> 14:32:11
+    # t2 overlaps t1 in time (starts mid-t1) -- impossible for same car.
+    t2 = replace(
+        sample_track,
+        track_id=99,
+        time_start="2026-05-17T14:32:08+01:00",
+        time_end="2026-05-17T14:32:15+01:00",
+        time_start_unix=sample_track.time_start_unix + 3,
+        time_end_unix=sample_track.time_end_unix + 4,
+    )
+    alpr = {
+        "tracks": [
+            {
+                "track_id": 42,
+                "best_preferred": {
+                    "track_id": 42, "snap_index": 1,
+                    "image": "vehicle_42_main_1.jpg",
+                    "ocr_text": "LD22BWG", "ocr_conf": 0.98,
+                    "det_conf": 0.85,
+                },
+            },
+            {
+                "track_id": 99,
+                "best_preferred": {
+                    "track_id": 99, "snap_index": 1,
+                    "image": "vehicle_99_main_1.jpg",
+                    "ocr_text": "LD22BMG",  # 1-char diff, ratio 85.7
+                    "ocr_conf": 0.93,
+                    "det_conf": 0.81,
+                },
+            },
+        ],
+    }
+    session = _write_session(tmp_path, [t1, t2], alpr)
+
+    vehicles = build_vehicles(session)
+    plated = sorted(
+        (v.plate for v in vehicles if v.plate is not None),
+        key=str,
+    )
+    # Two separate vehicles; the temporal-overlap guard rejected the
+    # otherwise-eligible fuzzy merge.
+    assert plated == ["LD22BMG", "LD22BWG"]
+
+
+def test_fuzzy_clustering_high_threshold_does_not_merge_distant_plates(
+    tmp_path: Path, sample_track: TrackRecord
+) -> None:
+    """Two plates differing by 3+ chars on a 7-char plate fall below
+    the default 85 threshold and stay separate, even though same
+    length. Guards against false positives on visually-similar but
+    distinct plates."""
+    t1 = sample_track  # AB12CDE
+    t2 = replace(sample_track, track_id=99,
+                 time_start_unix=sample_track.time_end_unix + 60)
+    alpr = {
+        "tracks": [
+            {
+                "track_id": 42,
+                "best_preferred": {
+                    "track_id": 42, "snap_index": 1,
+                    "image": "vehicle_42_main_1.jpg",
+                    "ocr_text": "AB12CDE", "ocr_conf": 0.98,
+                    "det_conf": 0.85,
+                },
+            },
+            {
+                "track_id": 99,
+                "best_preferred": {
+                    "track_id": 99, "snap_index": 1,
+                    "image": "vehicle_99_main_1.jpg",
+                    "ocr_text": "XY99CFG",  # 4-char diff, ratio < 50
+                    "ocr_conf": 0.93,
+                    "det_conf": 0.81,
+                },
+            },
+        ],
+    }
+    session = _write_session(tmp_path, [t1, t2], alpr)
+
+    vehicles = build_vehicles(session)  # default fuzzy_ratio=85
+    plated = sorted([v.plate for v in vehicles if v.plate is not None])
+    assert plated == ["AB12CDE", "XY99CFG"]
+
+
 def test_build_vehicles_sorted_by_first_seen(
     tmp_path: Path, sample_track: TrackRecord
 ) -> None:
