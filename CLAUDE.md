@@ -279,6 +279,17 @@ that folds the 78 % plated reads into a per-vehicle view with
 recurring-visit detection. Make/model on 4K crops, learned recolor,
 and visual re-id are the next pieces.
 
+**Additional throttling + consensus follow-ups** ([Step 13](#step-13-done-direction-aware-throttling--plate-consensus-2026-05-26))
+landed two more levers beyond geometry: direction-aware
+`pipeline_interval_ms` (implemented + tested, deploy pending operator
+approval) lets R→L burn snaps faster in its narrow clean-read
+window; multi-frame plate consensus (implemented + tested + measured)
+turned out to be a **negative result on this scene** -- the per-image
+reads of a single track frequently capture different physical
+plates, so confidence-weighted character voting dilutes rather than
+boosts. The consensus primitive is kept as infrastructure for
+deployments with cleaner per-image reads.
+
 ### Soak completion (2026-05-25, `session_20260524_075630`, 27.3h, 880 tracks)
 
 | Metric | Value | Read |
@@ -903,6 +914,106 @@ without false merges. Saved as a follow-up.
 3. **Re-id within session.** Visual matching for unread-plate cars to
    merge anonymous-plate Vehicles where the same car appears twice
    without a high-conf read. Needs an ONNX re-id model + embeddings.
+
+### Step 13 (done): direction-aware throttling + plate consensus (2026-05-26)
+
+Two follow-ups to Step 11's "78 % is the intrinsic floor" finding.
+Both implemented + tested; one deployed, one measured + held.
+
+**13a. Direction-aware `pipeline_interval_ms` (implemented; deploy pending operator approval).**
+
+`RoadGateConfig.pipeline_interval_ms_by_direction: dict[str, int] | None`
+lets a deployment override the snap-fire interval per motion direction.
+Keys: `"forward"` (t' increasing, R→L) and `"reverse"` (t' decreasing,
+L→R); either may be absent. The planner falls back to the base
+`pipeline_interval_ms` on the first in-band frame (no direction known
+yet) and for any direction whose override is missing or non-positive.
+Backward-compatible: configs without the new field load and run
+unchanged. New tests (+5) cover the helper and the throttle interaction.
+
+Rationale: Step 11 showed L→R is saturated (94.8 % per-car) but R→L
+is gated by detector quality (62.2 %). R→L CLEAN reads cluster
+tightly in `t_norm = [0.10, 0.30]`. Firing faster in that window
+(e.g. `{"forward": 200, "reverse": 400}`) gives R→L tracks more
+independent detector attempts in the band where the detector does
+succeed, without touching the already-saturated L→R direction.
+
+**Not deployed yet** -- it's a change to the live snap-fire cadence
+and warrants an operator-confirmed soak. See the deploy
+question at the end of this section.
+
+**13b. Multi-frame plate consensus (implemented; measured; negative result on this scene).**
+
+`analysis/alpr/consensus.py::consensus_plate(reads)` does
+confidence-weighted character voting across a track's per-image
+reads, dropping reads of off-mode length, and returns a consensus
+text + geo-mean vote-share confidence. Wired into
+`cli/alpr_run.py::_rollup_by_track` so `alpr_by_track.json` now
+carries both `best_<pipeline>` (single max-conf read, legacy) and
+`consensus_<pipeline>` (new). Tests +9.
+
+`vehicles.py` uses best-of-N as the anchor by default and substitutes
+consensus only when (a) consensus and best agree on plate text and
+(b) consensus has higher confidence -- otherwise consensus's vote-share
+metric dilutes the signal of a strong single read.
+
+**Measured lift on the existing sessions:**
+
+| Session | Cars | best ≥ 0.9 | consensus ≥ 0.9 | consensus ≥ 0.7 |
+|---|---|---|---|---|
+| Step 10 | 251 | 78.9 % | 35.9 % | 50.2 % |
+| Step 11 | 309 | 78.3 % | 26.2 % | 48.9 % |
+
+**Negative result.** Consensus underperforms best-of-N on this
+dataset at the same threshold (~ -43 pp at 0.9). Root cause from
+spot-checking the LOST tracks (best ≥ 0.9 but consensus < 0.9):
+**the per-image reads of a single track frequently capture
+completely different plates** (parked vehicles in some snaps, the
+tracked vehicle in others, post-mask leakage in late R→L snaps).
+Example -- track 4099 across 4 snaps: `AJ14JFE` (0.985), `AA03NI`
+(0.975), `B41145` (0.951), `KXHX87` (0.954). These are four
+different physical plates. The consensus combines them and gets a
+meaningless string; best-of-N at least picks one real plate (the
+correct one in this case).
+
+So consensus's "many low-conf agreeing reads boost confidence"
+benefit doesn't apply here -- the reads aren't agreeing because
+they're independently identifying different vehicles. The 78 %
+floor stands, and the explanation is now structural: the snap-bbox
+crops contain multiple vehicles often enough that voting across
+snaps doesn't recover the tracked-car identity.
+
+The consensus primitive is still useful infrastructure for a
+deployment with cleaner per-image reads (e.g. a narrower snap
+crop, a better-anchored detector pre-crop). It's wired into the
+rollup so it costs nothing in this deployment and is ready for any
+future scene change.
+
+Measurement: [.claude/measure_consensus.py](.claude/measure_consensus.py).
+
+**Open question for the operator: deploy 13a?**
+
+Proposed direction-aware throttling for `~/streettracker/configs/camera.json`:
+
+```jsonc
+"snap_gate": {
+  ...,
+  "pipeline_interval_ms": 400,
+  "pipeline_max_per_track": 15,
+  "pipeline_interval_ms_by_direction": {
+    "forward": 200,        // R→L: fire 2× faster in clean-read window
+    "reverse": 400         // L→R: unchanged (already saturated)
+  }
+}
+```
+
+Expected effect: ~2× snap budget for R→L cars in the same band.
+If the detector failures on R→L are independent (which we can't
+verify a priori), expected R→L per-car lift from 62 % toward
+80-90 %. If detector failures are correlated (e.g. always blurry
+at a given motion speed), the lift could be much smaller. A 6-12 h
+soak with the new config + the existing mask + the existing trim
+is enough to measure.
 
 ### Known issue surfaced during the soak: asset_prefix split-flip — fixed in [#21](https://github.com/nicholasaross/StreetTracker/pull/21)
 
