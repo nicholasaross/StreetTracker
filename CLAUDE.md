@@ -5,11 +5,8 @@ Guidance for Claude Code when working in StreetTracker.
 ## Project overview
 
 StreetTracker unifies VehicleTracker (dev-box, file input) and NanoTracker
-(Jetson Nano original, live RTSP) onto a single Python 3.12 + Ultralytics
-+ TensorRT stack, targeting Jetson Orin Nano 8GB Super as the primary
-device.
-
-Pipeline:
+(original Jetson Nano, live RTSP) onto one Python 3.10 + Ultralytics +
+TensorRT stack, targeting Jetson Orin Nano 8GB Super as the primary device.
 
 ```
 RTSP H.264/H.265   ┐
@@ -27,29 +24,21 @@ MP4 (NVDEC on Orin)┘                  (BotSORT integrated)
                                  ▶ on demand ▶ Reolink 4K HTTP snapshot
 ```
 
-- **Python 3.10 today, 3.12 the JP7 target.** `.python-version` is
-  pinned to `3.10`, inside `pyproject.toml`'s `requires-python =
-  ">=3.10,<3.13"` band. We briefly bumped to 3.11 on 2026-05-25 to
-  unblock the `alpr` extra; the deploy to the Orin
-  **failed** because the Jetson torch wheel index
-  (`https://pypi.jetson-ai-lab.io/jp6/cu126/+simple/`) only stocks
-  `cp310` wheels for `torch` on the JP6 channel. We reverted, and
-  pinned `onnxruntime-gpu<1.20` in the `alpr` extra so it resolves
-  on 3.10 instead. The move to 3.12 stays bundled with the JetPack
-  7 flash — see [JetPack 7 upgrade plan](#jetpack-7-upgrade-plan).
-- **Never bump `.python-version` past 3.10 without first verifying
-  the Jetson torch wheel index has matching `cpXY` wheels.** Check
-  `https://pypi.jetson-ai-lab.io/jp6/cu126/+simple/torch/` directly
-  before changing the pin. The systemd unit on the Orin uses
-  `--no-sync` so a transient `uv` flap can't reinstall PyPI torch
-  on top of the Jetson wheel — but a manual `uv sync` after a
-  `git pull` *will* rebuild the venv at the new pin and is fatal
-  if torch can't resolve.
-- **No Python 3.6 hacks.** sys.path reorder, NamedTuple-for-dataclass,
-  `# type:` comments — all gone. Use `@dataclass(slots=True)` and PEP-604
-  unions (`X | None`).
+### Compatibility rules
+
+- **Python 3.10 today, 3.12 the JP7 target.** `.python-version` is pinned
+  to `3.10`. Bumping past 3.10 broke the Orin on 2026-05-25 (no `cp311`
+  torch wheel on `https://pypi.jetson-ai-lab.io/jp6/cu126/+simple/`).
+  Always verify wheel availability before changing the pin. The systemd
+  unit passes `--no-sync` so transient `uv` flaps can't reinstall PyPI
+  torch on top of the Jetson wheel — but a manual `uv sync` after `git
+  pull` *will* rebuild at the new pin and is fatal if torch won't
+  resolve. The 3.10 → 3.12 move bundles with the JP7 flash.
+- **No Python 3.6 hacks.** Use `@dataclass(slots=True)` and PEP-604
+  unions (`X | None`); the sys.path reorder / NamedTuple-for-dataclass /
+  `# type:` comments are gone.
 - **TRT engines are not portable** across GPU architectures. Always
-  build engines ON the target device (Orin or dev-box-with-matching-GPU).
+  build engines ON the target device.
 
 ## Architecture
 
@@ -58,31 +47,31 @@ src/streettracker/
 ├── common/                 # shared across runtime + analysis
 │   ├── schema.py           # TrackRecord, SessionMeta @dataclass
 │   ├── color.py            # COLOR_RANGES + vote_color()
+│   ├── config.py           # frozen-dataclass strict JSON loader
 │   ├── summary.py          # HTML dashboard generation
 │   ├── hourly.py           # build_hourly_rollup()
 │   └── output.py           # EventLog, save_json, file-path helpers
 ├── inference/              # YOLO + BotSORT via Ultralytics
 ├── sources/                # RTSP (FFmpeg), file (NVDEC on Orin)
 ├── device/                 # Orin-only: live runtime, snapshotter, dashboard, IR
-├── analysis/               # off-device: ALPR, recolor, make/model, re-id
+├── analysis/               # off-device: ALPR, recolor, vehicles, debug-color
 └── cli/                    # `streettracker` entry + subcommands
 ```
 
 Single import root: `from streettracker.common.schema import TrackRecord`.
 
-## Device runtime notes (Orin Nano 8GB Super)
+### Device runtime notes (Orin Nano 8GB Super)
 
-- JetPack 6.x ships Ubuntu 22.04 / Python 3.10 → install Python 3.12 via
-  `uv python install 3.12`. JetPack 7.x ships Ubuntu 24.04 / Python 3.12
-  natively. uv handles both transparently.
+- JP6 ships Ubuntu 22.04 + Py 3.10; JP7 ships Ubuntu 24.04 + Py 3.12
+  natively. uv handles both via `.python-version`.
 - Ultralytics' built-in TRT path (`YOLO('best.engine')`) replaces
-  NanoTracker's hand-rolled `trt_engine.py` (manual YOLOv8 decode + numpy
-  NMS) and bespoke IoU tracker.
-- Live RTSP from Reolink: same FFmpeg-backend workaround as NanoTracker
-  (`cv2.CAP_FFMPEG` + `OPENCV_FFMPEG_CAPTURE_OPTIONS=rtsp_transport;tcp`).
-  Don't try GStreamer for live RTSP — it stalls on Reolink keyframes.
-- MP4 input on Orin uses GStreamer + `nvv4l2decoder` (NVDEC). Works fine
-  for file input; only the live-RTSP case is broken with cv2-GStreamer.
+  NanoTracker's hand-rolled YOLOv8 decode + numpy NMS + bespoke IoU
+  tracker.
+- Live RTSP from Reolink: use FFmpeg backend (`cv2.CAP_FFMPEG` +
+  `OPENCV_FFMPEG_CAPTURE_OPTIONS=rtsp_transport;tcp`). GStreamer stalls
+  on Reolink keyframes.
+- MP4 input on Orin uses GStreamer + `nvv4l2decoder` (NVDEC); only the
+  live-RTSP case is broken with cv2-GStreamer.
 
 ## Output schema (preserved from NanoTracker)
 
@@ -94,1227 +83,292 @@ Per finalized track:
 | `{prefix}_{id}_hq.jpg` | q=95, ~250px | quick color/silhouette |
 | `{prefix}_{id}_main_{N}.jpg` | 4K Reolink HTTP | ALPR / make-model |
 
-`{prefix}` is `vehicle` or `person`. `N` is 1..max_snaps_per_track.
+`{prefix}` is `vehicle` or `person`. `N` is `1..max_snaps_per_track`.
 
 Session files:
 - `{session}_events.jsonl` — appended line-per-track (crash-safe)
 - `{session}_data.json` — array of records, written at session end
-- `{session}_meta.json` — session-level metadata + IR periods
+- `{session}_meta.json` — session-level metadata + IR periods + snap_stats
 - `{session}_hourly.json` — per-hour rollup
-- `{session}_summary.html` — dashboard
-- `index.html` — auto-redirect to latest summary
+- `{session}_summary.html` + `index.html` — dashboard + auto-redirect
+- `{session}_alpr.json` + `{session}_alpr_by_track.json` — per-image
+  + per-track ALPR rollup (after running `alpr-run`)
+- `{session}_vehicles.json` — per-vehicle plate-anchored aggregation
+  (after running `vehicles`)
 
-JSON record fields: see `common/schema.py` (`TrackRecord`).
+JSON record fields: see `common/schema.py` (`TrackRecord`, `SessionMeta`).
 
 ## Common tasks
 
-- Run tests: `uv run pytest`
-- Lint: `uv run ruff check src/ tests/`
-- Format: `uv run ruff format src/ tests/`
-- Type check: `uv run mypy src/`
-- Batch on dev box: `uv run streettracker batch sample.mp4`
-- Build TRT engine on device: `uv run streettracker export-engine yolov8m.pt`
-
-## Migration status
-
-This repo is a clean-slate replacement for VehicleTracker + NanoTracker.
-Source-of-truth scaffolding was developed in NanoTracker's
-`claude/nano-orin-setup-plan-CCWUD` branch under `streettracker/` and
-mirrored here phase by phase. All phases are code-complete; the
-remaining cutover step is an operator hand-off (install + enable the
-systemd unit on the Orin, decommission the old Nano).
-
-| Phase | Scope | Status |
-|---|---|---|
-| 0 | repo init + pyproject + CI + configs | **done** |
-| 1 | `common/`: schema, color, output, hourly, summary | **done** |
-| 2 | `inference/` (Ultralytics runner) + `sources/` (RTSP, file) | **done** |
-| 4a | `analysis/`: recolor + debug-color | **done** |
-| 5 | CLI: `pull`, `export-engine`, `setup_orin.sh`, systemd | **done** |
-| 4b | `analysis/alpr/` wholesale port | **done** |
-| 3 | `device/`: live runtime, snapshotter, dashboard, IR | **done** — see [Phase 3 progress](#phase-3-progress) below |
-| 6 | (opt) original Nano archive role | not started |
-| 7 | cutover: enable systemd on Orin + decommission Nano + archive old repos | **mostly done** — Orin live since 2026-05-22; only the `VehicleTracker` + `NanoTracker` repo archival on GitHub is outstanding. See [Cutover status](#cutover-status) and [Fresh deployment procedure](#fresh-deployment-procedure). |
-
-Tests at HEAD: **413 passing on Python 3.10, ruff clean.**
-
-Verify locally:
-
 ```bash
-uv sync
-uv run pytest
-uv run ruff check src/ tests/
+uv run pytest                                            # tests
+uv run ruff check src/ tests/                            # lint
+uv run ruff format src/ tests/                           # format
+uv run mypy src/                                         # type-check
+uv run streettracker batch sample.mp4                    # batch dev-box
+uv run streettracker export-engine yolov8m.pt            # build TRT on device
+uv run streettracker alpr-run output/<session>           # offline ALPR
+uv run streettracker vehicles output/<session>           # per-vehicle aggregation
 ```
-
-CLI smoke:
-
-```bash
-uv run streettracker --help
-uv run streettracker --version
-uv run streettracker recolor --help
-uv run streettracker debug-color --help
-```
-
-All subcommands are wired: `run` / `batch` go through the asyncio
-runtime, `pull` / `export-engine` ship sessions and build engines,
-and `alpr-run` / `alpr-score` / `alpr-label` / `alpr-report` are
-available under the `alpr` extra (`uv sync --extra alpr`). Place the
-bespoke detector at
-`src/streettracker/analysis/alpr/models/license_plate_detector.pt`
-(gitignored). `scripts/setup_orin.sh` and
-`scripts/systemd/streettracker.service` are in place for device
-install; see [Cutover](#cutover) for the install commands.
 
 **Windows + Git Bash gotcha for `streettracker pull`**: MSYS rewrites
 POSIX-looking arguments (`/home/...`) into Windows paths before Python
-sees them, mangling `--remote-parent` and `--key`. Either run from
-PowerShell / cmd, or prefix the invocation with `MSYS_NO_PATHCONV=1`
-and pass `--key` as a Windows-style path.
+sees them. Either run from PowerShell / cmd, or prefix with
+`MSYS_NO_PATHCONV=1` and pass `--key` as a Windows-style path.
 
-## Phase 3 progress
+## Migration status
 
-Phase 3 (`device/`: live runtime, snapshotter, dashboard, IR) shipped
-across six PRs landing on top of the Orin deploy hardening. The
-architectural decisions below are locked in; re-deciding them
-mid-stream caused churn during scoping, and they remain the contract
-the runtime upholds.
+Clean-slate replacement for VehicleTracker + NanoTracker. All phases
+code-complete; the only remaining tail is repo archival on GitHub.
 
-### Decisions locked in
+| Phase | Scope | Status |
+|---|---|---|
+| 0 | repo init + pyproject + CI + configs | done |
+| 1 | `common/`: schema, color, output, hourly, summary | done |
+| 2 | `inference/` (Ultralytics) + `sources/` (RTSP, file) | done |
+| 3 | `device/`: live runtime, snapshotter, dashboard, IR | done — PRs #7/#8/#10/#11/#12/#13 |
+| 4a | `analysis/`: recolor + debug-color | done |
+| 4b | `analysis/alpr/` wholesale port | done |
+| 5 | CLI: `pull`, `export-engine`, `setup_orin.sh`, systemd | done |
+| 6 | (opt) Nano archive role | not started |
+| 7 | cutover: enable systemd on Orin + decommission Nano + archive old repos | **mostly done** — Orin live since 2026-05-22; only `VehicleTracker` + `NanoTracker` repo archival on GitHub outstanding |
+
+Tests at HEAD: **447 passing on Python 3.10, ruff clean.**
+
+All subcommands wired: `run`/`batch` go through the asyncio runtime,
+`pull`/`export-engine` ship sessions and build engines,
+`alpr-run`/`alpr-score`/`alpr-label`/`alpr-report` available under the
+`alpr` extra (`uv sync --extra alpr`), `vehicles` runs the
+plate-anchored aggregator. Place the bespoke detector at
+`src/streettracker/analysis/alpr/models/license_plate_detector.pt`
+(gitignored).
+
+### Phase 3 architectural decisions (locked in)
 
 - **Asyncio throughout.** Entry is `asyncio.run(run_session(config))`.
-  Blocking sources (`cv2.VideoCapture.read()`) go to a background
-  thread that pushes into an `asyncio.Queue`. Blocking inference goes
-  to `loop.run_in_executor`. HTTP is `aiohttp`. The systemd unit
-  passes `--no-sync` so a transient `uv` resolver flap can't reinstall
-  PyPI torch on top of the Jetson wheel.
-- **Frozen dataclasses + strict JSON loader.** `common/config.py`
-  rejects unknown keys with a JSON-path error. `from __future__ import
-  annotations` + `typing.get_type_hints()` resolves string annotations
-  at load time; that pattern is required because dataclasses store
-  `f.type` as a string under PEP 563.
-- **Graceful shutdown via `loop.add_signal_handler(SIGTERM, ...)`.**
-  Bounded by a 30s timeout (configurable) so systemd won't SIGKILL
-  mid-write. Stop the source first, drain active tracks through
-  finalize, write summary HTML + data.json + meta.json + hourly.json,
-  then `loop.stop()`.
-- **Heavy unit tests + manual Orin smoke for the runtime loop.** No
-  recorded-frames integration test in CI (would balloon the repo and
-  CI deliberately skips torch / ultralytics). End-to-end validation
-  happens by ssh'ing into the Orin against the live Reolink.
-
-### Shipped manifest
-
-| PR | What | Landed |
-|---|---|---|
-| 3a | `common/config.py` (frozen dataclasses, strict JSON loader) + aiohttp dep | [#7](https://github.com/nicholasaross/StreetTracker/pull/7) |
-| 3b | `device/snapshotter.py` (aiohttp Reolink client, semaphore, retries, keep_days cleanup task) | [#8](https://github.com/nicholasaross/StreetTracker/pull/8) |
-| 3c | `device/ir_detector.py` (R/G/B channel-diff + hysteresis → `IRPeriod` emission on day-resume) | [#10](https://github.com/nicholasaross/StreetTracker/pull/10) |
-| 3d | `device/dashboard.py` (aiohttp.web static server + lifecycle helpers) | [#11](https://github.com/nicholasaross/StreetTracker/pull/11) |
-| 3e | `device/runtime.py` + `device/track_buffer.py` + `cli/run.py` (asyncio loop integrating sources / inference / planner / snapshotter / finalize / EventLog / signal handlers / RTSP reconnect / idle HTML regen) | [#12](https://github.com/nicholasaross/StreetTracker/pull/12) |
-| 3f | `cli/batch.py` + `enable_snapshotter` / `enable_dashboard` kwargs on `run_session` (file-source variant, no live-only subsystems) | [#13](https://github.com/nicholasaross/StreetTracker/pull/13) |
-
-### Reference points in NanoTracker
-
-The original Python 3.6 implementation that informed the port. Kept
-here for cross-checking semantics if the runtime ever drifts:
-
-- `nano_tracker.py:295-314` — `is_ir_frame()` + constants (PR 3c source)
-- `nano_tracker.py:537-660` — `ReolinkSnapshotter` (PR 3b source)
-- `nano_tracker.py:989-1037` — `start_http_server()` (PR 3d source)
-- `nano_tracker.py:1250-1392` — config unpacking + finalize closure (PR 3e source)
-- `nano_tracker.py:1394-1578` — `process_frame()` body (PR 3e source)
-- `nano_tracker.py:1580-1673` — outer reconnect loop + shutdown `finally:` (PR 3e source)
+  Blocking sources (`cv2.VideoCapture.read()`) go to a background thread
+  pushing into an `asyncio.Queue`. Blocking inference goes to
+  `loop.run_in_executor`. HTTP is `aiohttp`.
+- **Frozen dataclasses + strict JSON loader.** `common/config.py` rejects
+  unknown keys with a JSON-path error (catches typos and forces
+  schema-additive config changes through the proper deploy order — see
+  [Schema-additive config changes](#schema-additive-config-changes)).
+- **Graceful shutdown via `loop.add_signal_handler(SIGTERM, ...)`,**
+  bounded by a 30s timeout so systemd won't SIGKILL mid-write. Stop the
+  source first, drain active tracks through finalize, write
+  summary HTML + data.json + meta.json + hourly.json, then `loop.stop()`.
+- **Heavy unit tests + manual Orin smoke.** No recorded-frames
+  integration test (would balloon the repo + CI skips torch /
+  ultralytics). End-to-end validation by ssh against the live Reolink.
 
 ## Cutover status
 
-Phase 7 cutover happened **2026-05-22**:
+Phase 7 cutover happened **2026-05-22**. Orin `streettracker.service`
+active since 15:42 BST; old Jetson Nano `nano_tracker.py` SIGTERM'd
+cleanly after 986,619 frames over 27.6h. **Repo archival on GitHub
+(VehicleTracker + NanoTracker) pending** — wait ~a week of clean
+operation, then Settings → Archive with a "Superseded by StreetTracker
+as of `<date>`; read-only" CLAUDE.md one-liner on each.
 
-| Step | Status |
-|---|---|
-| Orin: streettracker.service enabled + live | ✅ Active since 2026-05-22T15:42 BST |
-| Old Jetson Nano: `nano_tracker.py` SIGTERM'd | ✅ Clean shutdown after 986,619 frames over 27.6h; in-flight session's final outputs flushed |
-| Repo archival on GitHub (`VehicleTracker` + `NanoTracker`) | pending — wait ~a week of clean operation, then Settings → Archive on both repos with a "Superseded by StreetTracker as of `<date>`; this repo is read-only" one-liner on each CLAUDE.md |
+Two config-mismatch bugs surfaced + hardened in PR #15:
 
-Two config-mismatch bugs surfaced during the live cutover and were
-hardened in [#15](https://github.com/nicholasaross/StreetTracker/pull/15):
-
-1. **Stream-name lookup is now forgiving.** `cli/run.py` falls back to
-   matching `stream.quality` when `nano.preferred_stream` doesn't
-   match a `stream.name`. Matters for configs migrated from NanoTracker
-   that carry descriptive stream names but the legacy `"sub"` /
-   `"main"` token in `preferred_stream`.
+1. **Stream-name lookup is forgiving.** `cli/run.py` falls back to
+   matching `stream.quality` when `nano.preferred_stream` doesn't match
+   any `stream.name`. Matters for configs migrated from NanoTracker.
 2. **`engine_path` validated at config load.** Missing engine file
-   now surfaces as `ConfigError: $.inference.engine_path: file ... does
-   not exist (resolved to <abs>)` at startup instead of a Python
-   traceback from inside Ultralytics after ~5s of engine-load attempts.
+   surfaces as `ConfigError: $.inference.engine_path: file ... does not
+   exist (resolved to <abs>)` at startup instead of a 5s-later
+   Ultralytics traceback.
 
-These mean a fresh deploy where you scp the live `configs/camera.json`
-back into place will Just Work without manual edits even if your
-engine target or stream names differ from the example.
+A fresh deploy where you scp the live `configs/camera.json` back into
+place Just Works without manual edits even if engine target or stream
+names differ from the example.
 
 ## ANPR tuning loop
 
-**Status as of 2026-05-26 (Step 11 validation complete; ANPR tuning loop concluded):**
+**Current status (2026-05-27, after Step 13a deploy + fuzzy plate clustering):**
 
 | Layer | Status |
 |---|---|
-| **4K capture coverage** | Solved. 303 / 309 cars (98 %) get at least one 4K snap. Pipeline mode (`pipeline_interval_ms=400`, `pipeline_max_per_track=15`) dominates; trigger geometry minor. |
-| **Ghost-plate aliasing** | **Solved (Step 10).** Parked-car mask + padding cap eliminate the 5 ghost plates that previously aliased onto 138 tracks. Zero ghost plates ≥ 5 tracks in either Step 10 or Step 11 sessions. |
-| **Per-image high-conf read rate** | **58.8 %** after Step 11 trim (was 45.8 % pre-trim). L→R **88.6 %** (was 71.5 %, +17 pp). R→L 28.7 % (was 25.8 %). |
-| **Per-car aliasing-free read rate** | **~78 %** -- floor confirmed across two sessions on different traffic. ([Step 11 validation](#step-11-done-snap_gate-t_usable_frac-trim-2026-05-26)) |
-| **Snap budget redistribution** | Trim freed ~30 % of pre-trim budget (`pipeline_budget_exhausted` 954 → 665); mean fires/track 1.19 → 1.45 (+22 %). |
-| **Misclassification (person ↔ car)** | Single-frame flips defended by confidence-weighted voting ([Step 3 of bug-fix subsections, PR #23]). Consistent model errors still possible — heuristic or detector retrain is the next layer if it matters. |
+| 4K capture coverage | Solved. 98 % cars get ≥1 snap. Pipeline mode dominates (`pipeline_interval_ms=400`, `pipeline_max_per_track=15`); trigger geometry is minor. |
+| Ghost-plate aliasing | Solved (Step 10). Parked-car mask + padding cap eliminate all 5 ghost plates (138 tracks). |
+| Per-image high-conf | 58.8 % (L→R 88.6 %, R→L 28.7 %) — after Step 11 trim. R→L gated by detector quality, not geometry. |
+| Per-car aliasing-free | **~78 %** — intrinsic floor of camera + scene, verified across two sessions. Further snap-budget tuning will not move it. |
+| Misclassification | Confidence-weighted class voting (PR #23) defends single-frame flips; consistent model errors still possible. |
+| Direction-aware throttling | Deployed 2026-05-27 (`pipeline_interval_ms_by_direction={forward:300, reverse:400}`). Validation soak pending. |
+| Dataset-level pivot | `streettracker vehicles` aggregator landed (Step 12); fuzzy plate clustering landed (Step 14). Make/model, learned recolor, visual re-id still to do. |
 
-**ANPR tuning loop concluded.** Coverage solved (98 %), aliasing
-solved (Step 10), per-image quality lifted (Step 11). The
-per-car 78 % aliasing-free rate is the **intrinsic floor of this
-camera + scene** -- the gap is occluded / motion-blurred / oblique
-captures, not snap geometry. Further snap-budget tuning cannot move
-it.
+**Conclusion:** ANPR coverage objective is met. The 78 % aliasing-free
+floor is camera-geometry-bound (oblique angles, motion blur, occlusion),
+not solvable by more snaps. Pivoted to dataset-level enrichment.
 
-**Dataset-level pivot in progress.** First piece landed:
-`streettracker vehicles <session>` is the plate-anchored aggregator
-([Step 12](#step-12-done-plate-anchored-vehicle-aggregation-2026-05-26))
-that folds the 78 % plated reads into a per-vehicle view with
-recurring-visit detection. Make/model on 4K crops, learned recolor,
-and visual re-id are the next pieces.
+### Step trajectory
 
-**Additional throttling + consensus follow-ups** ([Step 13](#step-13-done-direction-aware-throttling--plate-consensus-2026-05-26))
-landed two more levers beyond geometry: direction-aware
-`pipeline_interval_ms` (implemented + tested, deploy pending operator
-approval) lets R→L burn snaps faster in its narrow clean-read
-window; multi-frame plate consensus (implemented + tested + measured)
-turned out to be a **negative result on this scene** -- the per-image
-reads of a single track frequently capture different physical
-plates, so confidence-weighted character voting dilutes rather than
-boosts. The consensus primitive is kept as infrastructure for
-deployments with cleaner per-image reads.
+| # | Date | What | Headline result | Source |
+|---|---|---|---|---|
+| 1 | 05-22 | Observability — `snap_stats` in `_meta.json` (latency p50/p90/p99, blur skips, HTTP counters) | enabled tuning | PR #16 |
+| 6 | 05-25 | First ALPR measurement on 27.3h soak (880 tracks) | 59 % per-car @ conf≥0.95 (preferred pipeline). **Bespoke pipeline contributes no useful signal — disagreements with preferred at 98/108 cases; preferred is conf ≥0.99 clean UK plates, bespoke is truncated/garbled.** | — |
+| 7 | 05-25 | Vehicle pre-crop wrapper (`PreCropDetector` + `--pre-crop` flag, detector default bumped `yolo-v9-t-384` → `yolo-v9-t-640`) | 59 → **91.5 %** per-car ghost-filtered. **Aliasing new bottleneck:** `FD61PVX` parked car aliased onto 363/410 tracks via largest-vehicle heuristic. | PR (in repo) |
+| 8 | 05-25 | BotSORT bbox pipe — runtime persists per-snap sub-stream bbox in `TrackRecord.main_snap_bboxes`; `alpr-run` reads it back as `bbox_hint` for `PreCropDetector` | Predicted ≥ 95 %; actual **~78.5 %**. Bbox correctly targets tracked car, but in late R→L snaps the bbox grows wide enough to physically encompass the adjacent parked `FD61PVX` car. | PR #28 |
+| 9 | 05-26 | Re-soak measurement on 15h Step-8 build | 78.5 % verified. `FD61PVX` still in 106/247 tracks. **Asymmetric by direction:** L→R 93 %, R→L 43 % per-image. | — |
+| 10 | 05-26 | Ghost mask (zero-fill parked-car rect before any detector sees pixels) + `PreCropDetector(pad_max_px=30)` cap on padding | All 5 ghost plates eliminated. Strict per-car aliasing-free (top read is correct) **55.4 → 78.9 %** (+23.5 pp). The 78.9 % is the **true** aliasing-free floor — Step 9's 78.5 % estimate was correct but unverifiable until the mask proved it. | — |
+| 11 | 05-26 | `t_usable_frac` trim `[0.10, 0.67] → [0.10, 0.45]` (snap-firing band shrunk past `FD61PVX` zone) | Per-image **+13 pp** (L→R +17 pp, R→L +3 pp). Snap budget redistributed (mean fires/track 1.19 → 1.45, `pipeline_budget_exhausted` 954 → 665). **Per-car aliasing-free flat at ~78 %** — confirms intrinsic floor; cars that *could* be captured in mid-band already were. | — |
+| 12 | 05-26 | `streettracker vehicles` plate-anchored aggregator — folds `data.json` + `alpr_by_track.json` into per-vehicle records with `n_visits`, `gap_minutes_max/min`, direction + color histograms, inline visit list | Step 10 session: 3 recurring. Step 11 session: 6 recurring including `HX18MYJ` going R→L then L→R 105 min later. | — |
+| 13a | 05-27 | Direction-aware `pipeline_interval_ms_by_direction` runtime — fire faster in one direction's narrow clean-read window | Deployed `{forward:300, reverse:400}` (R→L 1.33× rate, L→R unchanged). Validation soak pending. | PRs #30/#31 |
+| 13b | 05-27 | Multi-frame plate consensus (`analysis/alpr/consensus.py`) — confidence-weighted character voting across a track's reads | **Negative result on this scene** (-43 pp vs best-of-N at conf 0.9). Per-image reads of one track frequently capture DIFFERENT physical plates (parked cars vs tracked car vs mask leakage), so voting dilutes. Primitive kept as infra. | — |
+| 14 | 05-27 | Fuzzy plate clustering in `vehicles.py` (rapidfuzz, ratio default 85, same-length only); no temporal-overlap rejection | `LD22BWG`/`LD22BMG` correctly merged (BotSORT ID-switch on same silver hatchback); Step 11 recurring 6 → 8. | PRs #33/#34 |
 
-### Soak completion (2026-05-25, `session_20260524_075630`, 27.3h, 880 tracks)
-
-| Metric | Value | Read |
-|---|---|---|
-| HTTP attempts / successes / failures | 4522 / 4522 / 0 | Reolink endpoint solid. |
-| Latency p50 / p90 / p99 / max | 688 / 937 / 1211 / 2423 ms | The "magic number" from Step 3 — real but no longer the binding constraint. |
-| `blur_skipped_frames` | **2** | `min_sharpness=100.0` is essentially never tripping; do not lower. |
-| `pipeline_throttled` / `pipeline_budget_exhausted` | 14850 / 2484 | Snap budget *is* binding, but coverage is still saturated. |
-| Cars L→R any cap | 179 / 182 = **98 %** | Up from baseline's 29 %. |
-| Cars L→R 3+ caps | 177 / 182 = **97 %** | Up from baseline's 4 %. |
-| Cars R→L any cap | 215 / 218 = **99 %** | Up from baseline's 37 %. |
-| Cars R→L 3+ caps | 208 / 218 = **95 %** | Up from baseline's 2 %. |
-
-Visual review of six representative cars (slow/median/fast in each
-direction) confirmed:
-
-- **Every observed car has at least one plate-readable 4K snap.** ANPR
-  coverage objective is met.
-- The *first* snap in each track's sequence is consistently the gold
-  capture for both directions. Later snaps either catch a receding /
-  distant vehicle (L→R) or an empty frame post-exit / a wrong-angle
-  close-up (R→L) — the 688 ms p50 latency landing pipeline fires
-  outside the plate-readable window.
-- The L→R = rear plate, R→L = front plate convention is visually
-  correct (this resolves the original "open question" carried under
-  Step 4 below).
-
-Samples used for the inspection are at `.claude/soak_samples/` (52
-files, ~65 MB; not committed).
+Aggregation scripts that re-produce each measurement table live at
+`.claude/aggregate_step{8,10,11}.py` and `.claude/measure_consensus.py`.
 
 ### Pipeline mode (the dominant capture mechanism)
 
-The 2026-05-22 baseline reflects a **trigger-only** snap_gate (6
-triggers at fixed t' positions on the polygon principal axis, max ~3
-fires per car). At some point on 2026-05-23 (Orin
-`configs/camera.json` mtime `21:49 BST`) two extra fields were added
-to the deployed `snap_gate` block:
+Trigger fires alone cap at ~3 per car. Since 2026-05-23 the live config
+also runs **pipeline mode**: while a track sits inside the polygon's
+`t_usable` band, fire a 4K snap every `pipeline_interval_ms` of
+wall-clock time, capped at `pipeline_max_per_track`. Pipeline fires
+have their own per-track counter (`pipeline_fires`) but share the
+snapshotter's `max_concurrent` HTTP semaphore with trigger fires.
+Pipeline fires dominate trigger fires by ~10× at the current settings
+(400 ms / 15-cap).
 
-```json
-"pipeline_interval_ms": 400,
-"pipeline_max_per_track": 15
-```
+`pipeline_interval_ms: 0` (the default in `RoadGateConfig`) disables
+pipeline mode entirely. Don't blindly re-deploy the local
+`.claude/snap_gate.json` artifact without preserving the live config's
+`pipeline_interval_ms` / `pipeline_max_per_track` / `pipeline_interval_ms_by_direction`
+fields — see [Snap-gate config layout](#snap-gate-config-layout).
 
-Behaviour (verified in `src/streettracker/device/snap_planner.py` near
-the `consider_pipeline` method): while a track is inside the
-polygon's `t_usable` band, fire a 4K snap every
-`pipeline_interval_ms` of wall-clock time, capped at
-`pipeline_max_per_track` per track. Pipeline fires share the
-snapshotter's `max_concurrent` HTTP semaphore but have their own
-per-track counter (`pipeline_fires`) separate from the trigger pool
-(`fires_committed`).
+### Latest snap_stats (Step 11 soak, `session_20260526_124704`, 5.5h)
 
-The local artifact at `.claude/snap_gate.json` represents the
-*pre-pipeline-mode* config (same polygon + same 6 triggers, but no
-`pipeline_*` fields). The two configs match on geometry; they diverge
-only on whether pipeline mode is enabled. Don't blindly re-deploy the
-local artifact without preserving the pipeline fields, or the gate
-will silently fall back to trigger-only and coverage will collapse.
-
-`pipeline_interval_ms: 0` is the default and disables pipeline mode
-entirely (legacy trigger-only behaviour).
-
-### Step 6 (done): ALPR read-rate measurement
-
-Ran `streettracker alpr-run --pipeline both` against the soak's 4K
-snaps on 2026-05-25. Setup:
-
-1. `alpr` extra updated to constrain `onnxruntime-gpu>=1.18,<1.20`
-   so it resolves on Python 3.10 (the project's `.python-version`).
-   Originally bumped `.python-version` to 3.11 instead; that broke
-   the Orin (no `cp311` torch wheel on the Jetson index) and was
-   reverted. See [Compatibility rules](#compatibility-rules).
-2. Session pulled to dev box via `tar | scp` (~6.9 GB; `rsync` is not
-   on Git Bash for Windows).
-3. `uv sync --extra alpr --extra dev`.
-4. `uv run streettracker alpr-run output/session_20260524_075630
-   --pipeline both` — CPU fallback for ONNX (TensorRT/CUDA libs not
-   present locally), but throughput is fine; full run finished in
-   under an hour.
-
-**Floor against the 400-car soak population:**
-
-| Read criterion | Count | Rate |
-|---|---|---|
-| Any OCR text from either pipeline | 267 / 400 | **66.8 %** |
-| Preferred-pipeline read ≥ 0.95 conf | 236 / 400 | **59.0 %** |
-| Bespoke-pipeline read ≥ 0.50 conf | 65 / 400 | 16.3 % |
-
-Per-image rates (2391 vehicle-prefix 4K snaps processed):
-
-| Pipeline | Any OCR | Conf ≥ 0.5 |
-|---|---|---|
-| bespoke (custom YOLO + EasyOCR) | 206 / 2391 = 8.6 % | 76 / 2391 = 3.2 % |
-| preferred (open-image-models + fast-plate-ocr) | 380 / 2391 = 15.9 % | 380 / 2391 = 15.9 % |
-
-**Pipeline comparison.** When both pipelines produce a read on the
-same image (108 cases), they *disagree on the plate string 98 times
-out of 108*. Spot-checking the disagreements (track 184: bespoke
-`LGSRXH` vs preferred `LG15RXH`; track 294: bespoke `GXIGHXT` vs
-preferred `G419HXT`; track 301: bespoke `HBY` vs preferred `LY05WBY`)
-shows the preferred pipeline produces clean UK plates at conf ≥0.99,
-while bespoke output is typically truncated or garbled at much lower
-confidence. The bespoke pipeline as currently configured is not
-contributing useful signal — likely retrain or replace as a separate
-piece of work; for now treat preferred as the read-rate authority.
-
-**Caveats on the 66.8 % / 59.0 % numbers.**
-
-- 13 of the 400 cars have no vehicle-prefix 4K snaps on disk at all
-  — 7 because the [asset_prefix split-flip bug](#known-issue-surfaced-during-the-soak-asset_prefix-split-flip--fixed-in-21)
-  put their snaps under `person_<id>_main_*.jpg`, 6 because they had
-  zero captures recorded. These are invisible to `alpr-run`'s
-  glob-and-prefix discovery. If the 7 orphan-prefix tracks were
-  rescued (one-off rename script suggested in PR #21 notes), they'd
-  contribute up to 7 more reads, lifting the upper bound by ≤ 2 pp.
-- 120 of the 387 cars with vehicle-prefix snaps yielded *zero* reads
-  on either pipeline. Worth a follow-up sample: are they
-  predominantly fast tracks with motion-blurred plates, oblique
-  close-ups past the readable angle, or genuinely no-plate frames
-  (delivery vans with rear obstructions, etc.)?
-
-**Interpretation.** 59 % high-confidence read-rate per car is a
-respectable baseline floor for a non-ANPR-purpose-built RTSP camera
-running on a residential street. The plate-existence problem is
-solved (97 % of cars had a 4K snap available); the *plate-readability*
-gap is now the bottleneck. Two non-mutually-exclusive paths:
-
-1. **Move on to dataset-level analysis.** ~59 % high-confidence plate
-   reads across 400 cars in 27 h is enough data to start meaningful
-   per-vehicle aggregation: re-id within session, recolor on the
-   readable plates' HQ thumbnails, make/model on the 4K crops.
-2. **Investigate the 30 % of cars with snaps but no reads** to see
-   if a snap_planner tweak (later trim of `t_usable_frac`, raising
-   `min_sharpness`) would convert any of them into readable snaps,
-   or whether the gap is intrinsic to camera placement / vehicle
-   types.
-
-Outputs landed at:
-- `output/session_20260524_075630/session_20260524_075630_alpr.json`
-  (per-image detections; ~4782 entries: 2391 images × 2 pipelines)
-- `output/session_20260524_075630/session_20260524_075630_alpr_by_track.json`
-  (per-track best read across all snaps)
-- `output/session_20260524_075630/alpr_crops/{bespoke,preferred}/`
-  (cropped plate regions per detection)
-
-### Step 7 (done): B1 diagnostic + vehicle pre-crop (2026-05-25)
-
-Sampled 15 of the 137 cars that had vehicle-prefix 4K snaps but
-yielded no OCR read on either pipeline. Visual review + per-image
-alpr.json cross-reference revealed a single failure mode: **15 / 15
-failures were `det_bbox = null` on every snap on both pipelines**.
-The plates were visible to a human eye in the 4K image, but the
-detectors' internal downscale (default `yolo-v9-t-384` resamples 4K
-to 384 input) made a 100-px-wide plate ~10 px wide -- below any
-YOLO's minimum-object capability.
-
-The fix: vehicle pre-crop. A coarse vehicle detector (ultralytics
-YOLOv8n, COCO classes car / bus / truck) finds the car bbox in the
-4K image, the plate detector then runs on the cropped vehicle
-region with 15 % padding. The plate now occupies 10-30 % of the
-detector's input instead of 0.3 %.
-
-| Detector variant | Full image | Pre-cropped |
-|---|---|---|
-| `yolo-v9-t-384` (prior default) | 0 / 15 | (not tested -- now obsolete) |
-| `yolo-v9-t-640` (new default) | 4 / 15 = 27 % | **15 / 15 = 100 %** |
-| `yolo-v9-s-608` | 2 / 15 = 13 % | (not tested) |
-| Bespoke YOLOv8m (custom-trained plate detector) | 0 / 15 = 0 % | **14 / 15 = 93 %** |
-
-Implementation: [`src/streettracker/analysis/alpr/precrop.py`](src/streettracker/analysis/alpr/precrop.py)
-wraps any plate detector behind the same `detect(image) ->
-PlateDetection` protocol. Projects the plate bbox back into
-original-image coordinates so the downstream OCR-crop in
-`PipelineRunner` works unchanged. Lazy-loads ultralytics so module
-import is cheap. Falls back to full-image detection if no vehicle
-is found, and again if all vehicle crops yield no plate.
-
-Two CLI changes in `streettracker alpr-run`:
-- Default `--detector-model` bumped `yolo-v9-t-384` → `yolo-v9-t-640`
-- New `--pre-crop` flag (opt-in; not on by default yet because of
-  the wrong-car aliasing caveat below)
-
-Known caveat: the largest-vehicle-bbox heuristic sometimes picks a
-parked car in the foreground over the BotSORT-tracked car when both
-are in frame. Spot-checked on track 1006's smoke output: two distinct
-plate strings (`WV64ZSW`, `FD51PVX/FD61PVX`) across 7 snaps means
-the wrapper sometimes locked onto a parked neighbour. The by-track
-best-of-N picker mitigates this in aggregate but doesn't eliminate
-it. Proper fix: persist BotSORT's bbox at snap-fire time in a per-snap
-sidecar JSON so the wrapper can target the exact tracked vehicle.
-That's a runtime change (snap_planner + snapshotter, write the
-sub-stream bbox alongside the 4K filename in `_meta.json`) -- a
-follow-up if the aggregate accuracy after the soak re-run looks
-worse than the pre-pre-crop baseline.
-
-Full re-run with `--pipeline both --pre-crop` against the soak's
-2391 vehicle snaps completed 2026-05-25 evening. Population-level
-results:
-
-| Metric | Baseline (pre-crop OFF, t-384) | Pre-crop ON (t-640) |
-|---|---|---|
-| Per-image detection (preferred pipeline) | 16 % | **99 %** |
-| Per-image OCR at conf ≥ 0.95 (preferred) | 16 % | **99 %** |
-| **Per-car real-plate read (conf ≥ 0.9, ghost-filtered)** | 59 % | **91.5 %** (366 / 400) |
-| Tracks with multiple distinct OCR strings (aliasing) | 4 % | 96 % |
-
-**Aliasing is the new bottleneck.** The plate string `FD61PVX`
-(clearly one parked car on the far side of the road) appeared in
-**363 of 410** tracks after the re-run -- the largest-vehicle-bbox
-heuristic locks onto it whenever the BotSORT-tracked car is small
-in the frame. Filtering plates that appear across > 5 tracks
-("ghosts") removes 7 strings and reveals the underlying real
-per-car read rate of 91.5 %.
-
-A by-track aggregation that takes the *mode* string across snaps,
-or weights by total cumulative OCR confidence, is more robust than
-the current max-conf-per-snap. But the proper fix is to **persist
-BotSORT's per-snap bbox** alongside the 4K filename so the
-PreCropDetector can target the exact tracked vehicle instead of
-guessing-by-area. That's a runtime change (snapshotter +
-snap_planner emit a per-snap bbox into either `_meta.json` or a
-new sidecar JSON; alpr-run reads it back at load time) -- next
-batch of work if the 91.5 % floor isn't enough.
-
-Headline lift: **+32.5 pp on per-car high-confidence reads** for one
-code wrapper + one CLI default change. Next-step path:
-
-1. Land the BotSORT-bbox persistence (eliminates aliasing, lifts
-   per-car reads probably another 3-8 pp toward ~95 %). **Done in
-   Step 8 below.**
-2. Move on to dataset-level analysis (C1-C3 in the next-steps
-   menu) -- 91.5 % is already a very strong floor for a residential
-   street.
-
-### Step 8 (done, awaiting fresh-data validation): BotSORT-bbox pipe — [PR #28](https://github.com/nicholasaross/StreetTracker/pull/28)
-
-Eliminates the parked-car aliasing surfaced by Step 7's re-run.
-Instead of guessing the tracked vehicle by area at analysis time,
-the runtime now persists BotSORT's per-snap sub-stream bbox into
-the session output and ``alpr-run`` reads it back as a hint to the
-pre-crop wrapper.
-
-Runtime additions (live on Orin since `session_20260525_200916`,
-2026-05-25 ~20:09 BST):
-
-* `BufferedTrack.snap_fire_bboxes: dict[int, (x1, y1, x2, y2)]` --
-  captured per snap at fire-decision time, sourced from
-  `track.last_bbox`.
-* `TrackRecord.main_snap_bboxes: list[[x1,y1,x2,y2] | None] | None` --
-  parallel to `main_snaps` at finalize. `None` per element if the
-  bbox wasn't captured (defensive); outer `None` for older sessions.
-* `SessionMeta.frame_size: [w, h]` -- sub-stream dimensions so
-  analysis can scale to the 4K snap's pixel coords. Reolink's
-  sub is 896×512 and main is 3840×2160; aspect ratios differ
-  slightly so x and y are scaled independently at load time.
-
-Analysis-pipeline additions (dev box):
-
-* `Detector` protocol gained a keyword-only `bbox_hint`. Stock
-  `BespokeDetector` / `OpenImageModelsDetector` accept-and-ignore
-  it; `PreCropDetector` uses it to bypass YOLO entirely when
-  present.
-* `PipelineRunner` pipes `bbox_hint` into `detect()`.
-* `streettracker alpr-run` CLI loads `data.json` + `_meta.json` on
-  startup, builds a `(track_id, snap_index) -> sub_stream_bbox` map,
-  and scales each hint into the snap's 4K pixel coords before
-  passing it to the detector. JPEG dimensions are read via
-  `PIL.Image.open(...).size` (lazy -- header only; PipelineRunner
-  decodes the full pixels separately moments later anyway).
-
-**Backward-compatible:** sessions recorded before this change have
-no `main_snap_bboxes` in `data.json`. `alpr-run` logs
-
-```
-[alpr] no per-snap bboxes in data.json -- pre-crop will use the YOLO
-       largest-vehicle-bbox fallback (older session?)
-```
-
-and falls back to Step 7's largest-vehicle heuristic.
-
-Tests: 413 passing on 3.10 (+10 new for this PR). Ruff clean.
-
-**Expected lift vs the 91.5 % aliased baseline:** the
-`(track_id, snap_index)` hint targets the exact BotSORT-tracked
-vehicle, so the `FD61PVX`-style ghost plates were expected to be
-unable to enter a non-`FD61PVX` track's read pool. Predicted per-car
-high-conf rate ≥ 95 %. **The prediction did not hold** -- measured
-~90 % raw / ~79 % aliasing-free. See [Step 9 results](#step-9-done-bbox-pipe-re-soak-2026-05-26)
-for the diagnostic.
-
-### Step 9 (done): bbox-pipe re-soak (2026-05-26)
-
-Soak session `session_20260525_200916` ran 15 h on the bbox-pipe
-build (live since PR #28 deployed 2026-05-25 20:09 BST). 251 car
-tracks, 247 with `main_snap_bboxes` populated, 1432 vehicle 4K
-snaps. Service stopped 2026-05-26 11:22 BST to flush
-`data.json` + `meta.json`. `alpr-run --pipeline both --pre-crop`
-re-run on the dev box; bbox-pipe confirmed firing (`[alpr] loaded
-2721 per-snap bboxes (sub-stream (896, 512)); pre-crop hints
-active`).
-
-**Headline result: the predicted ≥ 95 % aliasing-free per-car read
-rate did NOT materialise.** Measured numbers:
-
-| Metric | Step 7 (no bbox hint) | Step 9 (bbox-pipe) |
-|---|---|---|
-| Per-image preferred-pipeline detection | 99 % (2391 snaps) | 65 % (1432 snaps) |
-| Per-image preferred-pipeline detection, **L→R only** | not broken out | **93.3 %** (567 / 608) |
-| Per-image preferred-pipeline detection, **R→L only** | not broken out | **43.3 %** (351 / 811) |
-| Per-car read at conf ≥ 0.9 (with aliasing) | 91.5 % | **90.4 %** (227 / 251) |
-| Per-car read at conf ≥ 0.9, ghost-filtered (Step 7 method: any non-ghost read) | 91.5 % | **78.5 %** (197 / 251) |
-| Per-car read at conf ≥ 0.9, ghost-filtered (strict: best read non-ghost) | not computed | 55.4 % (139 / 251) |
-| Worst ghost plate: `FD61PVX` track count | 363 / 410 (88.5 %) | **106 / 247** (42.9 %) -- raw co-occurrence reduced ~3×, but still dominant |
-| Ghost plates at ≥ 5 tracks | 7 | 5 (`FD61PVX`, `FD61PWX`, `FD51PVX`, `FD61PYX`, `FD61PXX`) |
-
-snap_stats from this session: 2774 / 2774 / 0 HTTP attempts, p50 / p90
-682 / 925 ms, `blur_skipped_frames = 0`, `pipeline_fires = 3180`.
-
-**Root cause of the prediction miss.** The bbox-pipe is doing
-exactly what it was designed to do -- the hint targets the
-BotSORT-tracked car, not the largest-vehicle-by-area. But the
-parked `FD61PVX` car is **spatially adjacent** to the road's
-near-camera edge, where every tracked car ends (or begins) its
-in-frame life:
-
-* L→R direction (rear plate, exits to the right): first snap is at
-  the left edge (parked `FD61PVX` zone), then the car moves into
-  the clean middle / right of frame. Most snaps land in the clean
-  zone -> 93.3 % per-image high-conf reads.
-* R→L direction (front plate, exits to the left): first snap is on
-  the right (clean), but every subsequent snap moves the car closer
-  to the parked `FD61PVX`. By the late snaps the BotSORT bbox is
-  100-300 px wide in the sub-stream and **physically encompasses
-  the parked car**, plus 15 % pre-crop padding extends it further.
-  The plate detector then finds `FD61PVX` *inside an otherwise
-  correctly-targeted crop* -> 43.3 % per-image high-conf reads.
-
-Sample track bboxes (sub-stream coords) illustrating the late-R→L
-overlap pattern:
-
-| Track | Dir | Speed | Late-snap bbox (sub) | OCR |
+| HTTP | Latency (ms) | Blur | Pipeline | Mean fires/track |
 |---|---|---|---|---|
-| 4007 | R→L | 84 px/s | `[76, 127, 378, 373]` snap 6 | `FD61PVX` 0.98 |
-| 4809 | R→L | 92 px/s | `[95, 112, 401, 367]` snap 6 | `FD61PVX` 0.99 |
-| 4398 | R→L | 111 px/s | `[78, 139, 372, 379]` snap 5 | `FD61PVX` 0.98 |
-| 4525 | L→R | 97 px/s | `[30, 150, 295, 340]` snap 1 (entry) | `FD61PVX` 0.99 |
+| 2381 / 2381 / 0 | p50=710 p90=957 p99=1221 max=2133 | skipped=0 | fires=2921 throttled=8565 exhausted=665 | 1.45 |
 
-So the bbox-pipe **fixed the case where the wrong-area heuristic
-picked the wrong car** (the original Step 7 failure mode) but
-**cannot fix the case where the tracked car's true bbox spatially
-overlaps the parked car** (the new failure mode). Net per-car
-high-conf rate moved from 91.5 % (aliased, optimistic) to 78.5 %
-(genuinely aliasing-free).
+`min_sharpness=100.0` essentially never trips (`blur_skipped=0` in both
+recent soaks); do not lower.
 
-The aggregation script for re-running this on a future session lives
-at [.claude/aggregate_step8.py](.claude/aggregate_step8.py). Sample
-diagnostic prints (FD61PVX-aliased tracks + per-direction breakdown)
-were produced ad-hoc; not committed.
+### Bugs hardened during the tuning loop
 
-**Paths forward** (non-mutually-exclusive; the 78.5 % floor is
-already enough to start dataset-level analysis if the operator
-prefers):
+**asset_prefix split-flip** ([PR #21](https://github.com/nicholasaross/StreetTracker/pull/21)).
+BotSORT reassigns a track's class as evidence accumulates, so
+`track.class_id` can flip mid-life. The 4K snap path was built from
+`class_id` at fire time, while the TrackRecord + tile/HQ were built
+from it at finalize time. A flip between left the on-disk filenames
+disagreeing with `record.asset_prefix` (26/880 tracks ≈ 3 % in the
+soak). Fix: `BufferedTrack` records the fire-time prefix per
+`snap_index` and a `final_prefix` slot. `finalize_track` locks
+`final_prefix`, sweeps already-saved snaps whose fire prefix differs,
+and renames them; the snap `_on_done` callback handles late completions.
+Live on Orin since 2026-05-25.
 
-1. **Trim the snap_gate's near-camera band** so pipeline fires stop
-   before the BotSORT bbox grows into the parked-car zone. Look at
-   the R→L tracks' last-snap bbox x-coords (most are ≤ 100 px in
-   the sub-stream) and pull `t_usable_frac`'s near-edge in to
-   exclude that band. Trades some R→L coverage for read quality;
-   probably worth it since those late snaps almost never carry the
-   right plate anyway.
-2. **Mask the parked-car region at ALPR time.** Hard-code a
-   sub-stream rect covering the `FD61PVX` car position, project to
-   each snap's 4K coords, reject any plate detection whose bbox IoU
-   with the masked region is > some threshold (say 0.3). One-time
-   manual config; effective because the parked car is in the same
-   position frame-to-frame.
-3. **Tighten or shrink the pre-crop padding** (currently 15 %) for
-   bboxes that are already wide -- a 300 px-wide BotSORT bbox does
-   not need another 45 px of padding to find a plate. Cheap and
-   may help marginally without polygon edits.
-4. **Move on.** 78.5 % aliasing-free per-car high-conf read is a
-   strong floor. Re-id, recolor on HQ thumbnails, make/model on 4K
-   crops can all start now -- C1-C3 in the prior options menu.
+**Confidence-weighted class voting** (PR #23). PR #21 made the *file
+prefix* consistent with the *finalize-time class*, but the
+finalize-time class itself came from "most-recent-detection wins".
+A single stray YOLO frame at the end of a track could corrupt the
+entire record. Fix: `BufferedTrack.class_votes: dict[class_id ->
+sum(detection_score)]`; `class_id = argmax(class_votes)` always.
+Three new tests cover tie-break (insertion-order), majority resilience,
+and accumulated-evidence flipping. Doesn't fix the rare case where YOLO
+is *consistently* wrong on a scene (e.g. parked grey Prius+ labelled
+person) — that needs a heuristic guardrail (cross-check `class_name`
+against `speed_px_s` + bbox aspect ratio) or a detector retrain.
 
-### Step 10 (done): ghost-mask + padding cap (2026-05-26)
+### Schema-additive config changes
 
-Implemented options A + B from Step 9 (mask the parked-car region
-at ALPR time + cap pre-crop padding). Re-ran `alpr-run --pre-crop
---ghost-mask` against the same Step 9 session
-(`session_20260525_200916`, 1432 vehicle snaps) and validated that
-the predicted aliasing-cleanup actually happens.
+The strict JSON loader is intentionally fatal on unknown keys (catches
+typos). Schema-additive changes to `camera.json` (new field in
+`SnapGateSpec`, etc.) **must land on `main` and be `git pull`'d on the
+Orin BEFORE the corresponding camera.json edit**, or the service
+crash-loops. Hit this on 2026-05-27 with `pipeline_interval_ms_by_direction`
+(~60s downtime before rollback to the `camera.json.bak.<ts>` snapshot
+restored the previous config and the service came back up).
 
-**Code changes:**
-
-* `streettracker alpr-run --ghost-mask <json>` (new flag) loads
-  parked-car rects from a per-install JSON. Schema:
-  `{"source_size": [w, h], "rects_4k": [[x1, y1, x2, y2], ...]}`.
-  Each rect is interpreted in `source_size` pixel coords and
-  scaled to the actual snap dimensions at apply time, so a
-  Reolink firmware change that moves the main-stream resolution
-  doesn't invalidate the mask. The live mask is at
-  [.claude/ghost_mask.json](.claude/ghost_mask.json).
-* `PipelineRunner.run(..., ghost_rects, ghost_source_size)` zero-fills
-  the rect on the image immediately after `cv2.imread`, before any
-  detector runs. The plate detector cannot see the masked plate.
-* `PreCropDetector(..., pad_max_px=30)` caps per-side padding so a
-  wide BotSORT bbox doesn't spill `pad_frac * dim` pixels into a
-  neighbouring vehicle. Default cap is 30 px; existing tests that
-  asserted uncapped behaviour opt out with `pad_max_px=999`.
-* Tests: 416 passing on 3.10 (+2 over PR #28: padding-cap +
-  ghost-rects-zero-image-before-detect + raw-coords-when-no-source-size).
-
-**Bug landed during validation** -- the first `--ghost-mask` run
-showed zero change. Reolink snaps on this install are **4512×2512**,
-not the colloquial "4K" 3840×2160 hardcoded as the scaling
-denominator in an early draft of the runner. The mask was being
-scaled by `w_img / 3840 = 1.175`, shifting the rect off the
-FD61PVX plate position. Fixed by reading `source_size` from the
-mask JSON and scaling by `w_img / source_size[0]`. The
-[live mask](.claude/ghost_mask.json) declares
-`"source_size": [4512, 2512]` accordingly. If the Reolink firmware
-ever changes the main-stream resolution, only the `source_size`
-needs updating; the rect coords stay.
-
-**Measured lift vs Step 9** (preferred pipeline; bespoke skipped
-because Step 6 established it contributes no useful signal):
-
-| Metric | Step 9 (bbox-pipe only) | Step 10 (+ mask + cap) | Delta |
-|---|---|---|---|
-| Per-image preferred high-conf | 65.0 % (931/1432) | 45.8 % (656/1432) | -19.2 pp |
-| L→R per-image | 93.3 % (567/608) | 71.5 % (435/608) | -21.8 pp |
-| R→L per-image | 43.3 % (351/811) | 25.8 % (209/811) | -17.5 pp |
-| Per-car high-conf (aliased) | 90.4 % (227/251) | 78.9 % (198/251) | -11.5 pp |
-| Per-car aliasing-free (any non-ghost) | 78.5 % (197/251) | **78.9 %** (198/251) | +0.4 pp |
-| Per-car aliasing-free (top non-ghost) | 55.4 % (139/251) | **78.9 %** (198/251) | **+23.5 pp** |
-| Ghost plates (≥ 5 tracks) | 5 (`FD61PVX`+4 OCR-variants, 138 tracks total) | **0** | clean |
-
-**How to read this:**
-
-The per-image and per-car-aliased rates are **down** because the
-mask is doing its job -- snaps whose only plate detection was the
-parked `FD61PVX` (or an OCR-variant misread of the same physical
-plate) are now correctly returning "no read" instead of returning
-the wrong plate at conf ≥ 0.99. Step 9's 90.4 % per-car-aliased
-number was inflated by counting cars whose only high-conf read was
-ghost.
-
-The metric that actually matters is **per-car aliasing-free
-(top non-ghost): every car with a recorded plate gets the
-*correct* plate**. That jumped 55.4 % → 78.9 %, a 23.5 pp lift.
-The "any non-ghost" metric barely moved because the bbox-pipe was
-already enabling those reads in Step 9 -- the mask just makes
-them the dominant (top-conf) reads per car.
-
-The padding cap (option B) contributes marginally on its own;
-visible mostly as the absence of new edge-of-bbox ghost
-detections that wider crops could have introduced. The mask
-(option A) is doing the heavy lifting.
-
-**The 78.9 % is the true aliasing-free floor.** Step 9's 78.5 %
-estimate was correct, just unverifiable until the mask actually
-proved it. The 21 % gap (53 cars without a clean high-conf read)
-is dominated by R→L tracks whose late-snap plates were always
-either polluted by the parked car (now masked) or genuinely
-not-captured by the detector at the readable angle. Lifting
-this floor needs option 1 from Step 9 -- trim `t_usable_frac`
-on the near-camera edge so the snap_gate fires R→L captures
-*earlier* in the track, when the front plate is in the clean
-centre of frame.
-
-Aggregation: [.claude/aggregate_step10.py](.claude/aggregate_step10.py)
-reads both the Step 9 backup (`*_alpr.step9.json`) and the current
-Step 10 output and prints the table above. Run with
-`uv run python .claude/aggregate_step10.py`.
-
-### Step 11 (done): snap_gate t_usable_frac trim (2026-05-26)
-
-Step 10's mask correctly returns "no plate" for snaps inside the
-parked-car zone, but the snap budget still gets spent firing into
-that zone. Trimming the snap_gate's near-camera edge stops those
-fires at the source -- the freed budget redistributes into the
-clean mid-band where readable plate captures actually live.
-
-**Data-driven trim point.** Computed the t_norm distribution of
-every Step 10 snap, split by direction and read state:
-
-| Direction | CLEAN reads p90 t_norm | GHOST reads p10 t_norm | FD61PVX t_norm |
-|---|---|---|---|
-| R→L | 0.32 | 0.46 | 0.593 |
-| L→R | 0.40 | 0.55 | 0.593 |
-
-There's a clean gap between the CLEAN-read p90 and the GHOST-read
-p10 in both directions, so any cut in `[0.40, 0.46]` keeps essentially
-all CLEAN reads and excludes essentially all GHOST reads. Set
-`t_usable_frac = [0.10, 0.45]` -- comfortably above L→R CLEAN p90.
-
-**Deployment.**
-
-* Edited `.claude/triggers_proposal.json` (`t_usable_orig`) and
-  `.claude/snap_gate.json` (`t_usable_frac`) to `[0.1, 0.45]`.
-* Re-rendered `.claude/triggers_proposal.jpg` via
-  `_render_triggers_overlay.py`.
-* Pulled live `~/streettracker/configs/camera.json` from Orin,
-  built a proposed config preserving everything else (especially
-  `pipeline_interval_ms=400` + `pipeline_max_per_track=15` which
-  are not in the local artifact -- see [Pipeline mode](#pipeline-mode-the-dominant-capture-mechanism)).
-* Backed up the live config as `camera.json.bak.20260526T114655Z`,
-  `scp`'d the new one, restarted `streettracker.service`. Restart
-  was clean; new session `session_20260526_124704` started 12:47 BST.
-
-**Note on trigger semantics under the new band.** Per
-`snap_planner.py` (lines 116-118), `trigger_t_prime` values are
-in `[0, 1]` along the *usable* portion -- so they automatically
-shrink with the band. The three "reverse" triggers (originally
-placed at the L→R entry side at usable-band t'=0.65, 0.80, 0.95)
-now fire at absolute t_norm = 0.33, 0.38, 0.43 instead of 0.47,
-0.56, 0.65. This moves the L→R entry-side fires *out of* the
-FD61PVX zone (t_norm=0.593) which is the intended secondary benefit:
-even with the mask, fewer wasted-snap fires in that zone means
-more snap budget for the readable mid-band.
-
-**Validation (session `session_20260526_124704`, 5.5 h, 309 cars).**
-Pulled the session 2026-05-26 18:16 BST, re-ran
-`alpr-run --pre-crop --ghost-mask` against the same mask, aggregated
-side-by-side with the Step 10 baseline:
-
-| Metric | Step 10 (t_usable=[0.10, 0.67]) | Step 11 (t_usable=[0.10, 0.45]) | Delta |
-|---|---|---|---|
-| Per-image preferred high-conf | 45.8 % (656/1432) | **58.8 %** (856/1455) | **+13.0 pp** |
-| L→R per-image | 71.5 % (435/608) | **88.6 %** (631/712) | **+17.1 pp** |
-| R→L per-image | 25.8 % (209/811) | 28.7 % (207/721) | +2.9 pp |
-| Per-car aliasing-free (any non-ghost) | 78.9 % (198/251) | 78.3 % (242/309) | -0.6 pp |
-| Per-car aliasing-free (top non-ghost) | 78.9 % (198/251) | 78.3 % (242/309) | -0.6 pp |
-| Ghost plates ≥ 5 tracks | 0 | 0 | clean |
-| Mean fires/track (snap_stats) | 1.19 | 1.45 | +22 % |
-| `pipeline_budget_exhausted` | 954 | 665 | -30 % |
-
-**The trim worked as designed but did NOT lift the per-car floor.**
-Every secondary signal moved in the predicted direction -- per-image
-read rate jumped 13 pp (L→R alone jumped 17 pp), the snap budget
-redistributed (mean fires/track +22 %, exhausted -30 %), and the
-ghost-plate count stayed at zero. Per-image quality is now visibly
-higher.
-
-But per-car aliasing-free is flat at ~78 %. The math:
-**cars that COULD be captured in the mid-band were already being
-captured in Step 10.** The extra snaps the trim provides are
-redundant for those cars. The 21 % gap of unread cars is intrinsic
-to the camera viewing geometry -- oblique angles, motion blur,
-occlusion -- not snap geometry. No amount of more snaps in the
-band `[0.10, 0.45]` lifts that floor.
-
-**The 78-79 % per-car aliasing-free read rate is the intrinsic
-floor for this camera + scene.** Further snap-budget tuning won't
-move it. The remaining levers all change the underlying capture
-problem (camera physical placement, a different lens, a multi-camera
-setup, a different vehicle-detection model), not the snap geometry.
-
-**Pivot.** Stop tuning snap geometry; the ANPR coverage objective is
-solved. The next valuable work is dataset-level analysis on the
-existing 78 %-clean read pool: re-id within session (vehicles seen
-multiple times), recolor on HQ thumbnails, make/model on the 4K
-crops. Each enriches per-vehicle records without needing more snaps.
-
-Aggregation: [.claude/aggregate_step11.py](.claude/aggregate_step11.py)
-reads both sessions and prints the comparison table above. Run with
-`uv run python .claude/aggregate_step11.py`.
-
-### Step 12 (done): plate-anchored vehicle aggregation (2026-05-26)
-
-First piece of the pivot landed. `streettracker vehicles
-<session_dir>` folds per-track records + per-track best ALPR reads
-into a per-vehicle view keyed by plate string; recurring vehicles
-(`n_visits >= 2`) become a one-line lookup instead of needing a
-manual cross-reference of `data.json` and `alpr_by_track.json`.
-
-**What it adds:**
-
-* `src/streettracker/analysis/vehicles.py` -- `build_vehicles(session_dir)`
-  groups tracks by canonical plate (high-conf preferred-pipeline
-  read >= 0.9 by default), emits `Vehicle` records with `n_visits`,
-  `track_ids`, `first_seen` / `last_seen`, `gap_minutes_max/min`,
-  per-visit `directions` / `colors` histograms, and an inline
-  `visits` array carrying each visit's TrackRecord fields plus the
-  best-read snap filename. Unread tracks fall under `plate=None`
-  Vehicles (single-visit) when `--include-unread` is on (default).
-* `streettracker vehicles <session>` -- writes
-  `<session>_vehicles.json` to the session directory and prints
-  headline counts + top-5 recurring plates.
-* Tests: +11 (7 in `test_vehicles.py` cover grouping / unread /
-  threshold / persons / sorting / missing-rollup; 4 in
-  `test_vehicles_dispatch.py` cover CLI registration + end-to-end
-  dispatch).
-
-**Initial findings on the existing two sessions:**
-
-| Session | Hours | Cars | Vehicles | Plated | Recurring | Most-recurrent |
-|---|---|---|---|---|---|---|
-| `session_20260525_200916` (Step 10) | 15 | 251 | 248 | 195 (78 %) | 3 | `L350W2`, `L35052`, `1350` -- all R→L both times |
-| `session_20260526_124704` (Step 11) | 5.5 | 309 | 303 | 236 (76 %) | 6 | `HX18MYJ` R→L then L→R 105 min later (clean "left and returned" pattern); plus 5 same-direction repeat passes |
-
-The plated counts agree exactly with Step 10 / 11's aliasing-free
-per-car rates -- aggregation is consistent with the upstream metric.
-Total tests at HEAD: **427 passing on 3.10, ruff clean.**
-
-**Known limitation / next refinement.** Plate equality is currently
-strict-string; OCR misreads of the same physical plate land as
-distinct vehicles. The Step 11 sample shows visible candidates --
-`2X7711` and `LX7711` differ only on the first character. A small
-edit-distance grouping pass (e.g. `rapidfuzz.fuzz.ratio >= 90` and
-matching length) would collapse those, lifting the recurring count
-without false merges. Saved as a follow-up.
-
-**Next pivot pieces (still to do):**
-
-1. **Make / model on 4K crops.** Adds a per-vehicle make/model field
-   to the Vehicle record; visually verifiable; needs a pre-trained or
-   fine-tuned classifier.
-2. **Recolor upgrade.** Replace the HSV vote with a learned
-   classifier validated against plate-anchored groups (multiple snaps
-   of the same vehicle should agree on color).
-3. **Re-id within session.** Visual matching for unread-plate cars to
-   merge anonymous-plate Vehicles where the same car appears twice
-   without a high-conf read. Needs an ONNX re-id model + embeddings.
-
-### Step 13 (done): direction-aware throttling + plate consensus (2026-05-26)
-
-Two follow-ups to Step 11's "78 % is the intrinsic floor" finding.
-Both implemented + tested; one deployed, one measured + held.
-
-**13a. Direction-aware `pipeline_interval_ms` (implemented; deploy pending operator approval).**
-
-`RoadGateConfig.pipeline_interval_ms_by_direction: dict[str, int] | None`
-lets a deployment override the snap-fire interval per motion direction.
-Keys: `"forward"` (t' increasing, R→L) and `"reverse"` (t' decreasing,
-L→R); either may be absent. The planner falls back to the base
-`pipeline_interval_ms` on the first in-band frame (no direction known
-yet) and for any direction whose override is missing or non-positive.
-Backward-compatible: configs without the new field load and run
-unchanged. New tests (+5) cover the helper and the throttle interaction.
-
-Rationale: Step 11 showed L→R is saturated (94.8 % per-car) but R→L
-is gated by detector quality (62.2 %). R→L CLEAN reads cluster
-tightly in `t_norm = [0.10, 0.30]`. Firing faster in that window
-(e.g. `{"forward": 200, "reverse": 400}`) gives R→L tracks more
-independent detector attempts in the band where the detector does
-succeed, without touching the already-saturated L→R direction.
-
-**Not deployed yet** -- it's a change to the live snap-fire cadence
-and warrants an operator-confirmed soak. See the deploy
-question at the end of this section.
-
-**13b. Multi-frame plate consensus (implemented; measured; negative result on this scene).**
-
-`analysis/alpr/consensus.py::consensus_plate(reads)` does
-confidence-weighted character voting across a track's per-image
-reads, dropping reads of off-mode length, and returns a consensus
-text + geo-mean vote-share confidence. Wired into
-`cli/alpr_run.py::_rollup_by_track` so `alpr_by_track.json` now
-carries both `best_<pipeline>` (single max-conf read, legacy) and
-`consensus_<pipeline>` (new). Tests +9.
-
-`vehicles.py` uses best-of-N as the anchor by default and substitutes
-consensus only when (a) consensus and best agree on plate text and
-(b) consensus has higher confidence -- otherwise consensus's vote-share
-metric dilutes the signal of a strong single read.
-
-**Measured lift on the existing sessions:**
-
-| Session | Cars | best ≥ 0.9 | consensus ≥ 0.9 | consensus ≥ 0.7 |
-|---|---|---|---|---|
-| Step 10 | 251 | 78.9 % | 35.9 % | 50.2 % |
-| Step 11 | 309 | 78.3 % | 26.2 % | 48.9 % |
-
-**Negative result.** Consensus underperforms best-of-N on this
-dataset at the same threshold (~ -43 pp at 0.9). Root cause from
-spot-checking the LOST tracks (best ≥ 0.9 but consensus < 0.9):
-**the per-image reads of a single track frequently capture
-completely different plates** (parked vehicles in some snaps, the
-tracked vehicle in others, post-mask leakage in late R→L snaps).
-Example -- track 4099 across 4 snaps: `AJ14JFE` (0.985), `AA03NI`
-(0.975), `B41145` (0.951), `KXHX87` (0.954). These are four
-different physical plates. The consensus combines them and gets a
-meaningless string; best-of-N at least picks one real plate (the
-correct one in this case).
-
-So consensus's "many low-conf agreeing reads boost confidence"
-benefit doesn't apply here -- the reads aren't agreeing because
-they're independently identifying different vehicles. The 78 %
-floor stands, and the explanation is now structural: the snap-bbox
-crops contain multiple vehicles often enough that voting across
-snaps doesn't recover the tracked-car identity.
-
-The consensus primitive is still useful infrastructure for a
-deployment with cleaner per-image reads (e.g. a narrower snap
-crop, a better-anchored detector pre-crop). It's wired into the
-rollup so it costs nothing in this deployment and is ready for any
-future scene change.
-
-Measurement: [.claude/measure_consensus.py](.claude/measure_consensus.py).
-
-**Deploy attempt + crash-loop, 2026-05-27.** First deploy attempt
-edited `camera.json` to add `pipeline_interval_ms_by_direction =
-{forward: 300, reverse: 400}` and restarted the service. The Orin
-crash-looped immediately:
-
-```
-[run] config error: $.snapshot.snap_gate: unknown key(s) for
-SnapGateSpec: pipeline_interval_ms_by_direction
-```
-
-Root cause: the runtime code change (this branch's
-`f318253 snap_planner: direction-aware pipeline_interval_ms override`)
-had been committed locally but the branch was not pushed / merged.
-The Orin was running `main@cacf611` (PR #28's merge) which has no
-`pipeline_interval_ms_by_direction` field in `SnapGateSpec`, and
-the strict JSON loader is intentionally fatal on unknown keys
-(catches typos). Service systemd-restarted twice into the same
-error before the rollback (~ 60 s total downtime; the previous
-`camera.json.bak.<ts>` snapshot was restored verbatim and the
-service came back up on the recovered config in seconds).
-
-**Lesson:** runtime-side config schema additions must land on
-`main` and be `git pull`'d on the Orin BEFORE the corresponding
-camera.json change. The right deploy order is:
+Right deploy order for schema-additive config changes:
 
 1. Push branch → open PR → CI green → merge to main.
 2. `ssh streettracker@orin "cd ~/streettracker && git pull"` (+
-   `scripts/setup_orin.sh --symlinks-only` if `.venv` was rebuilt
-   by a transient `uv sync`).
-3. Restart the service to load the new code with the OLD config
-   first; verify it still parses unchanged.
-4. THEN edit `camera.json`, scp, restart again, verify.
+   `scripts/setup_orin.sh --symlinks-only` if `.venv` was rebuilt — see
+   [Recovery from a venv rebuild](#repo--venv-setup)).
+3. Restart with the OLD `camera.json` — verify the new code parses
+   unchanged.
+4. THEN edit `camera.json`, scp, restart, verify.
 
-Step 11's `t_usable_frac` trim landed safely because the field
-already existed in `SnapGateSpec` -- a value change, not a key
-addition. The Step 13a deploy is the first instance of a
-schema-additive config change since pipeline mode itself was
-deployed.
+Value changes to existing keys (e.g. Step 11's `t_usable_frac` trim)
+are safe to deploy directly.
 
-**Proposed direction-aware throttling for `~/streettracker/configs/camera.json`** (operator-selected: forward=300, reverse=400):
+### Vehicles aggregator (`streettracker vehicles`)
 
-```jsonc
-"snap_gate": {
-  ...,
-  "pipeline_interval_ms": 400,
-  "pipeline_max_per_track": 15,
-  "pipeline_interval_ms_by_direction": {
-    "forward": 300,        // R→L: 1.33× snap budget in clean-read window
-    "reverse": 400         // L→R: unchanged (already saturated at 95%)
-  }
-}
-```
+Folds per-track records + per-track best ALPR reads into a per-vehicle
+view keyed by canonical plate. Run with
+`uv run streettracker vehicles output/<session>`; writes
+`<session>_vehicles.json`.
 
-Expected effect: ~33 % more snap budget for R→L cars in the same
-band. Conservative compared to the initial 200ms proposal; lower
-risk of saturating the snapshotter HTTP concurrency cap. If R→L
-detector failures are independent, expected R→L per-car lift from
-62 % toward 70-80 %. A 6-12 h soak with the new config + the
-existing mask + the existing trim is enough to measure.
-
-**Deployed 2026-05-27 16:01 BST.** PR #30 (Steps 10-13) merged
-with two ruff failures (auto-merge fired through them); fast-follow
-PR #31 fixed them + cherry-picked the lessons-learned commit that
-got dropped between pushes. After both PRs landed on main, executed
-the correct deploy order:
-
-1. `ssh streettracker@orin "cd ~/streettracker && git pull"` -- loads
-   the new code without touching the config.
-2. Restart with the OLD camera.json. Session `session_20260527_160043`
-   started cleanly -- smoke-tested that the new code parses the
-   existing config unchanged (the new field is optional).
-3. Edit camera.json to add the new key, scp, restart.
-   Session `session_20260527_160139` started cleanly with the
-   direction-aware cadence active.
-
-Backup of pre-deploy config at `camera.json.bak.20260527T150138Z`.
-Validation soak: ~6-12 h of fresh traffic, then re-run
-`alpr-run --pre-crop --ghost-mask` and compare per-direction
-per-image / per-car rates against the Step 11 baseline
-([session_20260526_124704](#step-11-done-snap_gate-t_usable_frac-trim-2026-05-26)).
-
-### Known issue surfaced during the soak: asset_prefix split-flip — fixed in [#21](https://github.com/nicholasaross/StreetTracker/pull/21)
-
-On at least one track (`track_id=4463` in this session), the dashboard
-tile + HQ were written as `vehicle_4463_*` but the 4K main snaps as
-`person_4463_main_*.jpg`. The data.json record carries `asset_prefix:
-"vehicle"`, so the summary HTML and downstream tooling look for the
-wrong prefix and miss the 4K captures entirely.
-
-Root cause: BotSORT reassigns a track's class as evidence accumulates
-([track_buffer.py:280](src/streettracker/device/track_buffer.py)), so
-`track.class_id` can flip mid-life. The 4K snap path was built from
-`track.class_id` at fire time, while the TrackRecord + tile/HQ were
-built from it at finalize time. A flip between those moments left the
-on-disk filenames disagreeing with `record.asset_prefix`. 26/880
-tracks (~3%) in the soak were affected.
-
-Fix: `BufferedTrack` now records the fire-time prefix per snap_index
-and a `final_prefix` slot. `finalize_track` locks the final prefix,
-sweeps already-saved snaps whose fire prefix differs, and renames
-them; the snap `_on_done` callback handles snaps that complete after
-finalize. Thumbnails reuse the same `final_prefix` so all on-disk
-filenames and the record agree. Live on Orin since 2026-05-25.
-
-Existing on-disk orphans in `session_20260524_075630` aren't
-backfilled by this change — a one-off rename script can recover them
-per-session if you want the dashboard / `alpr-run` to see them.
-
-### Follow-up: confidence-weighted class voting (2026-05-25, not yet deployed)
-
-Even with PR #21 in place, two tracks in the live
-`session_20260525_121236` were flagged by the operator as obviously
-misclassified: track 500 was a parked grey Toyota Prius+ labelled
-`person`, track 976 was a pedestrian in white walking labelled `car`.
-Visual inspection of dashboard tiles + 4K main snaps confirmed both.
-
-Diagnosis: PR #21 made the *file prefix* consistent with the
-*finalize-time class*, but the finalize-time class itself came from
-"most-recent-detection wins"
-([track_buffer.py:290-292](src/streettracker/device/track_buffer.py)).
-A single stray YOLO frame at the end of an otherwise correctly
-classified track was enough to corrupt the entire record. For tracks
-500 / 976 specifically the model was *consistently* wrong (every saved
-file is one-class — no flip between fire and finalize), so PR #21's
-rename-on-finalize logic had nothing to fix; the underlying class
-was just wrong.
-
-Fix landed on a branch (not yet on Orin):
-
-* `BufferedTrack.class_votes: dict[int, float]` — `class_id ->
-  sum(detection_score)` over the track's life.
-* `TrackBuffer.ingest` accumulates each frame's detection score into
-  `class_votes` then sets `class_id = argmax(class_votes)` so
-  fire-time and finalize-time reads always see the cumulative
-  argmax, not the latest single detection.
-* Tie-break is dict-insertion-order (the first class seen wins on
-  ties; deterministic in CPython 3.7+).
-* Three new tests cover: equal-confidence tie-break (first wins),
-  five-frames-of-A-then-one-frame-of-B resists the flip, and
-  one-low-conf-A vs four-high-conf-B does flip.
-
-What this *does* fix: any class confusion where YOLO mostly agrees
-with itself but emits one or two stray frames of the wrong class.
-What this *doesn't* fix: tracks 500 / 976 themselves, since the
-model is consistently wrong on those scenes. Those would need
-either a heuristic guardrail at finalize (e.g. cross-check
-`class_name` against `speed_px_s` + bbox aspect ratio) or a
-detector retrain.
-
-Tests: 396 passing on 3.10 (was 394; +3 new vote tests, −1 obsolete
-"most-recent wins" assertion).
-
-### Assessment baseline (2026-05-22, `session_20260522_154224`, ~1h12m of live traffic) — historical
-
-| Metric | Value |
+| Vehicle field | Notes |
 |---|---|
-| Total tracks (cars + persons) | 133 |
-| Cars with any 4K cap | 34 / 63 (54%) |
-| Cars reaching the configured max of 3 caps | 4 / 63 (6%) |
-| L→R (rear plate, median 47 px/s) | 22 / 74 (29%) any cap; **3 reach 3 caps** |
-| R→L (front plate, median 69 px/s) | 22 / 59 (37%) any cap; only 1 reaches 3 caps |
+| `plate` / `plate_conf` | canonical plate (highest-conf variant); `null` for unread cars |
+| `n_visits`, `track_ids` | tracks attributed to this vehicle |
+| `first_seen` / `last_seen` | ISO timestamps |
+| `gap_minutes_max` / `gap_minutes_min` | between consecutive visits; 0 if `n_visits==1`; can be negative when BotSORT ID-switches |
+| `directions` / `colors` | per-visit histograms |
+| `visits` | inline array with each visit's TrackRecord fields + best-read snap filename |
+| `plate_variants` | `[(str, max_conf), ...]` of OCR variants collapsed into the canonical via fuzzy clustering |
 
-Persons mostly get zero captures (60 / 70). Correct — sidewalk
-pedestrians are outside the road polygon by design.
+Fuzzy clustering uses rapidfuzz `fuzz.ratio` with default threshold 85,
+same-length only. Catches 1-char OCR diffs on 7-char UK plates (ratio
+85.7) but not 6-char ones (ratio 83.3). Dropping to `--fuzzy-ratio 80`
+catches 6-char one-char diffs too but **over-merges across UK regional
+prefixes** in this scene (an `LX7751` cluster absorbed 8 distinct
+Newcastle-area plates whose 4th-6th chars happened to be close). Use
+`--no-fuzzy` for strict-string equality.
 
-Representative tracks (visually inspected via downsampled 4K samples):
-
-| Track | Profile | Verdict |
-|---|---|---|
-| 153 | L→R Mercedes, 2 caps | **representative slow L→R**: rear plate visible, small but readable |
-| 241 | R→L red hatchback, 107 px/s, 1 cap | **representative fast R→L**: car already at left edge of frame, plate region partially out of view |
-| 516 | R→L Land Rover, 4 px/s, 131s in view | **not representative**: parked on the curb, being unloaded |
-
-Plate quality when well-framed is excellent (4K JPEG sharp, readable
-characters). The dominant failure mode is therefore **HTTP-snap
-latency**, not motion blur: by the time the Reolink JPEG arrives, fast
-vehicles have moved past the plate-readable position.
-
-### Step 1 (done): observability — [PR #16](https://github.com/nicholasaross/StreetTracker/pull/16)
-
-Merged 2026-05-22. `SessionMeta.snap_stats` now lands in `*_meta.json`:
-
-* `latency` — count / min / p50 / p90 / p99 / max ms per successful
-  fire (covers Reolink HTTP roundtrip + disk write)
-* `blur_skipped_frames` — cumulative frames where the planner's
-  `min_sharpness` gate suppressed a fire
-* `attempts / successes / failures / dropped` — pre-existing
-  counters, now persisted in JSON rather than journal-only
-
-Blur skips are also logged in the journal, throttled per-track per 5s.
-
-### Step 2 (done): deploy + ~24 h soak
-
-```bash
-ssh streettracker@orin
-cd ~/streettracker && git pull
-sudo -n systemctl restart streettracker.service
-journalctl -u streettracker -f      # confirm clean restart; Ctrl-C
-```
-
-The session JSON is only written at session shutdown, so to read mid-soak:
-
-```bash
-ssh streettracker@orin "sudo -n systemctl stop streettracker.service && \
-  jq .snap_stats ~/streettracker/output/session_*/session_*_meta.json | tail -1 && \
-  sudo -n systemctl start streettracker.service"
-```
-
-(Stopping triggers the runtime's graceful drain → final `_meta.json`
-write, then we restart for the next session.)
-
-### Step 3 (parked — wrong knob in pipeline mode): tune
-
-**Parked 2026-05-25 after the soak.** This recipe assumes the dominant
-capture mechanism is trigger-based fires at fixed t' positions. In
-pipeline mode (see [Pipeline mode](#pipeline-mode-the-dominant-capture-mechanism)
-above) trigger fires are a small minority of total fires — perfect t'
-placement won't change coverage materially. Recipe is preserved here
-for any future trigger-only deployment (`pipeline_interval_ms: 0`),
-and also as the reference math if pipeline mode is ever swapped out.
-
-A worked example against the soak's numbers: at `p50_ms = 688`,
-median speeds 77 / 87 px/s, principal-axis usable length ≈ 456
-sub-stream px, the formula produces shifts of **+0.116 t'** (L→R) and
-**−0.132 t'** (R→L). Applied mechanically that would push the
-outermost trigger on each side off the usable band, dropping from 6
-triggers to 4 — net negative on coverage. So even in a trigger-only
-config this loop wants a sanity check after computing the shift.
-
-The actual analogue for pipeline mode is **`t_usable_frac` band
-trimming** (shorten the band on the exit edge by the same px-offset
-so pipeline fires can't land outside the polygon) and/or raising
-`pipeline_interval_ms` to reduce budget pressure. Neither is needed
-right now — coverage is saturated.
-
-Read `snap_stats.latency.p50_ms` from the soaked `_meta.json`. Convert
-to a t'-unit trigger offset:
-
-1. Median traffic speed in sub-stream pixels per ms ≈ 0.05–0.07 px/ms
-   (47–69 px/s observed). Call this `v`.
-2. Pixel offset during latency = `p50_ms × v` (typically 15-30 px in
-   the 896-wide sub-stream).
-3. Polygon principal-axis length in sub-stream pixels. The local
-   `.claude/triggers_proposal.json` doesn't ship `axis_endpoints_orig`
-   directly; derive it from `t_min`, `t_max`, `main_axis_xy`, and
-   `centroid_frac` (scale endpoints from the 1200×668 sketch space
-   into the 896×512 sub-stream — separate x and y scale factors
-   because the aspect ratios don't match exactly). Call it `L`.
-4. t'-unit shift = `(p50_ms × v) / L`. Typically 0.02–0.05.
-5. **Forward triggers** (R→L approach, low t' values): *subtract* the
-   shift — fire earlier so the snap lands at the readable position.
-6. **Reverse triggers** (L→R depart, high t' values): *add* the shift
-   — same logic, motion sign is opposite.
-
-If `blur_skipped_frames` is ≳ 20% of (`attempts` + `blur_skipped_frames`),
-also drop `snapshot.min_sharpness` from 100.0 toward 50 or 30. A
-borderline-blurry cap feeds ALPR better than no cap.
-
-Apply changes via the existing recipe in
-[Adjusting triggers without re-sketching](#adjusting-triggers-without-re-sketching):
-edit `triggers_tprime` → render overlay → regenerate `snap_gate.json`
-→ scp to Orin → restart unit.
-
-### Step 4 (parked): re-soak ~1 h + diff against baseline
-
-Contingent on Step 3 producing a config change worth validating.
-Parked alongside Step 3 — see the soak completion table above for
-the actual baseline-vs-soak diff.
-
-### Resolved (was open question): trigger direction convention
-
-The convention in the snap-gate section — R→L = front plate, L→R =
-rear plate — is **visually confirmed** in the soak's 4K snaps. Median
-L→R cars (e.g. track 498) show a readable rear yellow plate near
-camera; median R→L cars (e.g. track 294) show the front grille +
-plate in mid-frame. The asymmetric trigger placement (3 forward in
-the approach half, 3 reverse in the depart half) is therefore aimed
-at the correct plates by direction.
+The aggregator **does not reject temporally-overlapping merges** — a
+real example on `session_20260526_124704` (tracks 1516 `LD22BMG` R→L
+and 1517 `LD22BWG` L→R, visits overlapping by 8s) showed both 4K snaps
+were the same silver hatchback. BotSORT ID-switched mid-transit (brief
+detection gap spawning a new track ID before the old one finalized),
+and the new track's first-few-frames motion vector mislabelled the
+direction. Earlier code rejected such merges; that produced more false
+negatives than the heuristic caught true positives.
 
 ## Fresh deployment procedure
 
-Canonical reference for any future redeploy on a wiped Orin (e.g.
-moving to a new chassis, swapping SD cards, or upgrading JetPack —
-see [JetPack 7 upgrade plan](#jetpack-7-upgrade-plan) below for the
-JP7-specific deltas).
+Canonical reference for any redeploy on a wiped Orin (new chassis, SD
+swap, or JetPack upgrade — see [JetPack 7 upgrade plan](#jetpack-7-upgrade-plan)
+for JP7 deltas).
 
 ### Backups to keep off-device
 
-Three things are not in the repo and not portable from a fresh OS
-install. Keep these in your usual backup:
+Three things are not in the repo and not portable from a fresh OS:
 
 | File | Why |
 |---|---|
-| `~/streettracker/configs/camera.json` | Reolink credentials + your operator-traced road polygon + per-install snap_gate tuning. Gitignored on purpose. |
-| `/etc/sudoers.d/streettracker-svc` | Lets the `streettracker` user (and remote agents acting as them) run `systemctl * streettracker.service` without a password prompt. |
-| `~/.ssh/authorized_keys` for the `streettracker` user | The SSH keys you use to administer the box. |
+| `~/streettracker/configs/camera.json` | Reolink credentials + operator-traced road polygon + per-install snap_gate tuning. Gitignored. |
+| `/etc/sudoers.d/streettracker-svc` | Lets the `streettracker` user run `systemctl * streettracker.service` without password prompt. |
+| `~/.ssh/authorized_keys` for `streettracker` | SSH keys for admin. |
 
-The TRT engine (`yolov8m.engine` or whatever you build) is
-deliberately *not* on this list — it's GPU-architecture-bound and
-must be rebuilt on the target device.
+The TRT engine (`yolov8m.engine`) is deliberately *not* on this list —
+it's GPU-architecture-bound and must be rebuilt on the target device.
 
 ### One-time host setup
 
 ```bash
 # As an admin user on the freshly-flashed Orin:
 sudo useradd -m -s /bin/bash streettracker
-sudo usermod -aG video,sudo,systemd-journal streettracker   # video for nvidia, journal so they can read their own service logs
+sudo usermod -aG video,sudo,systemd-journal streettracker
+# video for nvidia; systemd-journal so streettracker can read its own
+# service logs (without this, `journalctl -u streettracker` looks
+# empty rather than erroring).
 sudo mkdir -p /home/streettracker/.ssh
 sudo cp ~/.ssh/authorized_keys /home/streettracker/.ssh/
 sudo chown -R streettracker:streettracker /home/streettracker/.ssh
 sudo chmod 700 /home/streettracker/.ssh
 sudo chmod 600 /home/streettracker/.ssh/authorized_keys
 
-# Scoped NOPASSWD for service management (lets you / agents enable / restart
-# the unit over SSH without an interactive sudo prompt).
+# Scoped NOPASSWD for service management.
 echo "streettracker ALL=(ALL) NOPASSWD: /bin/systemctl * streettracker.service" \
   | sudo tee /etc/sudoers.d/streettracker-svc
 sudo chmod 440 /etc/sudoers.d/streettracker-svc
 ```
-
-`systemd-journal` membership is important — without it the
-`streettracker` user can't run `journalctl -u streettracker.service`
-on their own service (silent permission denial; the output of
-`journalctl` looks empty rather than erroring).
 
 ### Repo + venv setup
 
@@ -1322,186 +376,203 @@ on their own service (silent permission denial; the output of
 ssh streettracker@orin
 git clone https://github.com/nicholasaross/StreetTracker.git ~/streettracker
 cd ~/streettracker
-scripts/setup_orin.sh         # idempotent: apt deps + uv + uv sync + tensorrt symlinks + bashrc LD_LIBRARY_PATH + nvpmodel
+scripts/setup_orin.sh         # idempotent: apt deps + uv + uv sync +
+                              # tensorrt symlinks + bashrc LD_LIBRARY_PATH
+                              # + nvpmodel
 ```
 
-`setup_orin.sh` handles JetPack 6 (Ubuntu 22.04 / Python 3.10) and
-JetPack 7 (Ubuntu 24.04 / Python 3.12) — both via uv's
-`.python-version` honouring. See [JetPack 7 upgrade plan](#jetpack-7-upgrade-plan)
-for the pyproject + setup-script changes that have to land *before*
-the JP7 flash for that path to work.
+Handles both JP6 (Ubuntu 22.04 / Py 3.10) and JP7 (Ubuntu 24.04 / Py
+3.12) via uv's `.python-version` honouring.
 
 **Recovery from a venv rebuild.** A `uv sync` that recreates `.venv`
-(e.g. after a `.python-version` change or someone deleting the
-directory) **wipes the system-tensorrt symlinks** that `setup_orin.sh`
-step 4 installs. The systemd service then fails to load the TRT
-engine with `ModuleNotFoundError: No module named 'tensorrt'` and
-restart-loops. Recovery is the dedicated subcommand:
+(e.g. after a `.python-version` change) wipes the system-tensorrt
+symlinks. The systemd service then fails with `ModuleNotFoundError: No
+module named 'tensorrt'` and restart-loops. Recovery:
 
 ```bash
 ssh streettracker@orin "cd ~/streettracker && scripts/setup_orin.sh --symlinks-only && sudo -n systemctl restart streettracker.service"
 ```
 
-No sudo / apt / network needed — `--symlinks-only` runs step 4 in
-isolation. Hit this exact failure on 2026-05-25 during the 3.10 →
-3.11 → 3.10 pin churn, hence the new flag.
+No sudo/apt/network needed — `--symlinks-only` runs the symlink step in
+isolation. Hit this on 2026-05-25 during the 3.10 → 3.11 → 3.10 pin
+churn, hence the dedicated flag.
 
 ### Per-deploy files
 
 ```bash
-# Restore your backed-up config (gitignored).
 scp <backup>/camera.json streettracker@orin:~/streettracker/configs/
 
-# Build the TRT engine on THIS device — engines are not portable
-# across GPU architectures.
 cd ~/streettracker
 uv run streettracker export-engine yolov8m.pt
-# (~5 min on Orin Nano Super. The output filename must match
-# `inference.engine_path` in your camera.json -- the load-time
-# validator catches mismatches with a clear JSON-path error.)
+# ~5 min on Orin Nano Super. The output filename must match
+# `inference.engine_path` in camera.json — the load-time validator
+# catches mismatches with a clear JSON-path error.
 ```
 
-### Systemd install
+### Systemd install + smoke
 
 ```bash
 sudo cp scripts/systemd/streettracker.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo -n systemctl enable --now streettracker.service   # -n works thanks to the sudoers drop-in above
-journalctl -u streettracker -f                          # tail; Ctrl-C once you see frame-progress lines
+sudo -n systemctl enable --now streettracker.service
+journalctl -u streettracker -f                  # Ctrl-C once frames flow
+curl http://orin:8080/                          # "no sessions yet" page
+                                                # or latest summary redirect
 ```
 
-Smoke check: `curl http://orin:8080/` returns either the "no sessions
-yet" page (~315 bytes) or the latest summary's `index.html` redirect
-(~96 bytes).
-
-### Roll back
-
-```bash
-sudo -n systemctl disable --now streettracker.service
-```
-
-That's it — the unit stops, the SD card is unchanged, and the next
-`enable --now` starts a fresh session.
+Roll back: `sudo -n systemctl disable --now streettracker.service`. SD
+card unchanged; next `enable --now` starts a fresh session.
 
 ## JetPack 7 upgrade plan
 
-NVIDIA's JetPack 7 release for Orin Nano (Jetson Linux 38.2,
-Ubuntu 24.04, Python 3.12 native) is expected in mid-2026. At that
-point the device will be wiped and reflashed. Before the flash, the
-following repo-level changes have to land or the redeploy will fail
-at `uv sync`:
+NVIDIA's JP7 release for Orin Nano (Jetson Linux 38.2, Ubuntu 24.04, Py
+3.12 native) is expected mid-2026. Before flashing, five repo edits
+have to land or the redeploy will fail at `uv sync`:
 
-| What | Where | Current (JP6) | JP7 target |
+| What | Where | JP6 today | JP7 target |
 |---|---|---|---|
-| Python pin | `.python-version` | `3.10` (briefly 3.11 on 2026-05-25; reverted — Jetson torch wheel index has no `cp311` on the JP6 channel) | `3.12` (matches OS native; uv still honours either, but matching avoids a redundant uv-installed interpreter) |
-| Jetson torch wheel index URL | `pyproject.toml` `[[tool.uv.index]] name="jetson-ai-lab-jp6-cu126"` | `https://pypi.jetson-ai-lab.io/jp6/cu126/+simple/` | `https://pypi.jetson-ai-lab.io/jp7/cu130/+simple/` (or whatever Anibali's index publishes for JP7 — confirm at the time) |
-| cuDSS dep | `pyproject.toml` dependency `nvidia-cudss-cu12` | `cu12` (CUDA 12 series) | `cu13` if JP7 ships CUDA 13.x — verify against the JP7 release notes |
-| CUDA lib path | `scripts/setup_orin.sh` `CUDA_LIB=/usr/local/cuda-12.6/lib64` | `cuda-12.6` | Auto-detect via `ls -d /usr/local/cuda-*/lib64 \| sort -V \| tail -1`, OR hardcode `cuda-13.x` after confirming |
-| Systemd LD_LIBRARY_PATH | `scripts/systemd/streettracker.service` Environment block | `cuda-12.6/lib64` + `python3.10/site-packages/nvidia/cu12/lib` | Both paths shift; consider auto-substitution at install time or document the manual edit. The `setup_orin.sh` rewriter for `~/.bashrc` could be extended to also emit the unit. |
+| Python pin | `.python-version` | `3.10` | `3.12` |
+| Jetson torch wheel index | `pyproject.toml` `[[tool.uv.index]]` | `https://pypi.jetson-ai-lab.io/jp6/cu126/+simple/` | `https://pypi.jetson-ai-lab.io/jp7/cu130/+simple/` (verify when published) |
+| cuDSS dep | `pyproject.toml` `nvidia-cudss-cu12` | `cu12` | `cu13` if JP7 ships CUDA 13.x (confirm) |
+| CUDA lib path | `scripts/setup_orin.sh` `CUDA_LIB=...` | `/usr/local/cuda-12.6/lib64` | auto-detect or hardcode `cuda-13.x` |
+| Systemd LD_LIBRARY_PATH | `scripts/systemd/streettracker.service` Environment | `cuda-12.6/lib64` + `python3.10/site-packages/nvidia/cu12/lib` | both paths shift |
 
-**Recommended timing.** Don't pre-empt JP7 — NVIDIA hasn't published
-exact paths yet. When the JP7 release lands:
-
-1. Spin up a separate branch (`claude/jp7-readiness`).
-2. Make the five edits above on the branch.
-3. Verify on a *test* Orin (separate from the live one) — flash JP7,
-   re-run setup_orin.sh, build an engine, run the service for an hour.
-4. Once green, merge to main.
-5. *Then* flash JP7 on the live Orin and run the [Fresh deployment
-   procedure](#fresh-deployment-procedure) above.
-
-The hardening fixes from [#15](https://github.com/nicholasaross/StreetTracker/pull/15)
-mean steps 4-5 are unblocked even if the config you scp back has
-slight drift from the example — the runtime will tell you exactly
-which field needs attention.
+**Recommended timing.** Don't pre-empt JP7. When the release lands:
+spin up `claude/jp7-readiness`, make the five edits, verify on a
+*test* Orin (separate from live), only then flash JP7 on the live Orin
+and run the [Fresh deployment procedure](#fresh-deployment-procedure).
+PR #15 hardening (forgiving stream-name lookup + engine-path validation)
+means small config drift won't block the redeploy.
 
 ## Snap gate (road polygon + axis triggers)
 
-`device/snap_planner.py` decides when to fire the Reolink 4K snapshot
-for each tracked vehicle. The active mode on the live deployment is
-**`RoadGate`**: an operator-traced road polygon plus a list of
-trigger lines along the polygon's principal axis. Each trigger fires
-at most once per track; a vehicle traversing the gate yields up to N
-spatially distinct plate captures.
+`device/snap_planner.py` decides when to fire the 4K snapshot for each
+tracked vehicle. Live deployment mode is **`RoadGate`**: an
+operator-traced road polygon plus axis triggers. Each trigger fires at
+most once per track; pipeline mode adds continuous in-band fires on top.
 
-### Artifacts in `.claude/` (per-install, not committed)
+### Reolink resolution gotcha
 
-These files are the source of truth for the live gate config. They
-were generated by an interactive session with the operator and should
-be reused / edited rather than regenerated from scratch unless the
-camera physically moves.
+The "4K" main snap on this install is actually **4512×2512**, not
+3840×2160. Surfaced during Step 10's ghost-mask deploy: an early draft
+hardcoded 3840×2160 as the scaling denominator and the mask landed
+1.175× off-position. The fix reads `source_size` from the mask JSON
+and scales `w_img / source_size[0]`. If Reolink firmware changes the
+main-stream resolution, only update `source_size` in
+`.claude/ghost_mask.json` — the rect coords stay.
+
+### Live geometry (current values)
+
+| Field | Value | Origin |
+|---|---|---|
+| Polygon vertices | 23 fractional `(x, y)` | operator sketch, `.claude/sketch_me_done.png` |
+| `t_usable_frac` | `[0.10, 0.45]` | Step 11 trim (was `[0.10, 0.67]`) |
+| `trigger_t_prime` | `[0.05, 0.20, 0.35, 0.65, 0.80, 0.95]` (in usable-band coords) | 3 forward + 3 reverse triggers |
+| `trigger_directions` | `["forward", "forward", "forward", "reverse", "reverse", "reverse"]` | asymmetric: forward = R→L approach, reverse = L→R depart |
+| `pipeline_interval_ms` | `400` | base cadence |
+| `pipeline_max_per_track` | `15` | per-track cap |
+| `pipeline_interval_ms_by_direction` | `{"forward": 300, "reverse": 400}` | Step 13a — R→L 1.33× rate; deployed 2026-05-27 |
+| Ghost mask | rect `[750, 700, 960, 860]` at `source_size=[4512, 2512]` | covers parked `FD61PVX` car at 4K `(853, 780)` (`t_norm=0.593`) |
+
+**`trigger_t_prime` values are in `[0, 1]` of the USABLE band, not
+global** — so they automatically shrink with `t_usable_frac`. The
+"reverse" triggers (placed for L→R entry) now fire at absolute t_norm
+0.33 / 0.38 / 0.43 instead of 0.47 / 0.56 / 0.65 — moves L→R fires out
+of the FD61PVX zone (intended secondary benefit of the Step 11 trim).
+
+L→R = rear plate visible, R→L = front plate visible (visually confirmed
+in 27.3h soak samples).
+
+### Snap-gate config layout
+
+The live `~/streettracker/configs/camera.json`'s `snapshot.snap_gate`
+block contains all of:
+
+```jsonc
+{
+  "polygon_frac": [[x, y], ...],
+  "trigger_t_prime": [0.05, 0.20, 0.35, 0.65, 0.80, 0.95],
+  "trigger_directions": ["forward", "forward", "forward",
+                         "reverse", "reverse", "reverse"],
+  "t_usable_frac": [0.10, 0.45],
+  "pipeline_interval_ms": 400,
+  "pipeline_max_per_track": 15,
+  "pipeline_interval_ms_by_direction": {
+    "forward": 300,
+    "reverse": 400
+  }
+}
+```
+
+The local artifact `.claude/snap_gate.json` historically only carried
+`polygon_frac` / `trigger_t_prime` / `trigger_directions` / `t_usable_frac`.
+**Always preserve the live `pipeline_*` fields when scp'ing** — pull
+the live config, edit only what you need, scp back. See [Adjusting the
+snap_gate](#adjusting-the-snap_gate).
+
+### Artifacts in `.claude/` (per-install, gitignored)
 
 | File | Purpose |
 |---|---|
-| `.claude/live_frame.jpg` | Reference 4K snap of the live scene (fetched directly from the Reolink). Source for any new sketching. |
-| `.claude/sketch_me.png` | 1200×668 downscale of the live frame, given to the operator to sketch on. |
-| `.claude/sketch_me_done.png` | Operator's returned sketch — magenta (`#FF00FF`) outline of the visible road tarmac. |
-| `.claude/road_polygon_user.json` | Polygon vertices extracted from the magenta sketch (`{source_size, vertices_frac}`). Fractional coords, resolution-independent. |
-| `.claude/triggers_proposal.json` | Full trigger spec: polygon vertices, principal axis, centroid, raw t-range, **`t_usable_orig`** (the band of the polygon to actually use — trims the distant tip and Z2/near zone), **`triggers_tprime`** (list of t' values in `[0, 1]` over the usable band where snaps fire), and optionally **`trigger_directions`** (parallel list of `"forward"` / `"reverse"` / `"both"`; omitted = all `"both"`). |
-| `.claude/triggers_proposal.jpg` | Visual overlay of the proposal on the live frame — yellow road outline, dimmed excluded regions, coloured trigger lines + circles. **Reference this image when discussing zone adjustments with the operator.** Re-render via `uv run python .claude/_render_triggers_overlay.py`. |
-| `.claude/snap_gate.json` | Subset of `triggers_proposal.json` shipped to `~/streettracker/configs/camera.json` on the Orin under `snapshot.snap_gate`. Format: `{polygon_frac, trigger_t_prime, t_usable_frac, trigger_directions?, pipeline_interval_ms?, pipeline_max_per_track?}`. `trigger_directions` defaults to all `"both"` if absent. The two `pipeline_*` fields are required to enable [pipeline mode](#pipeline-mode-the-dominant-capture-mechanism) — the live deployment has them set (`400`, `15` respectively) but the local artifact currently doesn't; the artifact predates the pipeline-mode rollout. |
+| `live_frame.jpg` | Reference 4K snap of the live scene (fetched directly from Reolink). |
+| `sketch_me.png` | 1200×668 downscale of the live frame, given to the operator to sketch on. |
+| `sketch_me_done.png` | Operator's returned sketch — magenta (`#FF00FF`) outline of the visible road tarmac. |
+| `road_polygon_user.json` | Polygon vertices extracted from the magenta sketch (fractional coords, resolution-independent). |
+| `triggers_proposal.json` | Full trigger spec: polygon vertices, principal axis, centroid, raw t-range, `t_usable_orig`, `triggers_tprime`, `trigger_directions`, `trigger_labels`. |
+| `triggers_proposal.jpg` | Visual overlay on the live frame — yellow road outline, dimmed excluded regions, coloured trigger lines. Re-render via `uv run python .claude/_render_triggers_overlay.py`. |
+| `snap_gate.json` | Subset of `triggers_proposal.json` for shipping to `camera.json` under `snapshot.snap_gate`. |
+| `ghost_mask.json` | Parked-car rects + `source_size`, fed to `alpr-run --ghost-mask`. |
+| `aggregate_step{8,10,11}.py`, `measure_consensus.py` | Re-producible measurement scripts for each step's table. |
 
-### Adjusting triggers without re-sketching
+### Adjusting the snap_gate
 
-Most operator changes ("move T2 slightly toward camera", "drop T1
-entirely", "add a 4th trigger between T2 and T3") only need the t'
-values to change.
+Most operator changes ("move T2 toward camera", "drop T1", "add a
+trigger between T2 and T3") only need t' values:
 
 1. Edit `triggers_tprime` (and optionally `t_usable_orig`) in
-   `.claude/triggers_proposal.json`. Values are in `[0, 1]` along the
-   usable band — t'=0 is the distant edge, t'=1 is the near edge.
-2. Re-render `.claude/triggers_proposal.jpg` from the updated JSON so
-   the visual stays in sync:
-   `uv run python .claude/_render_triggers_overlay.py`.
+   `.claude/triggers_proposal.json`. Values in `[0, 1]` over the usable
+   band — t'=0 = distant edge, t'=1 = near edge.
+2. Re-render: `uv run python .claude/_render_triggers_overlay.py`.
 3. Regenerate `.claude/snap_gate.json` from the JSON
    (`polygon_frac=vertices_frac`, `trigger_t_prime=triggers_tprime`,
-   `t_usable_frac=t_usable_orig`, and `trigger_directions` if used).
-4. `scp .claude/snap_gate.json streettracker@orin:/tmp/`, then merge
-   into `~/streettracker/configs/camera.json` under `snapshot.snap_gate`
-   (preserving the live `pipeline_interval_ms` / `pipeline_max_per_track`
-   fields if the local artifact still lacks them — see the [Pipeline
-   mode](#pipeline-mode-the-dominant-capture-mechanism) note above) and
-   `sudo -n systemctl restart streettracker.service`. Keep the prior
-   config as a timestamped backup.
+   `t_usable_frac=t_usable_orig`, `trigger_directions` if used).
+4. Pull live config, splice the new fields in, scp back, restart:
+
+```bash
+scp streettracker@orin:~/streettracker/configs/camera.json /tmp/orin_live.json
+# Edit (Python or jq) -- replace the snap_gate value-changes only;
+# preserve pipeline_interval_ms / pipeline_max_per_track /
+# pipeline_interval_ms_by_direction.
+ssh streettracker@orin "cp ~/streettracker/configs/camera.json ~/streettracker/configs/camera.json.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+scp /tmp/orin_proposed.json streettracker@orin:~/streettracker/configs/camera.json
+ssh streettracker@orin "sudo -n systemctl restart streettracker.service"
+ssh streettracker@orin "journalctl -u streettracker.service --since '30 seconds ago' --no-pager | tail -15"
+```
+
+For schema-additive changes (new key in `SnapGateSpec`), see
+[Schema-additive config changes](#schema-additive-config-changes).
 
 ### Re-sketching the road (camera moved, new view)
 
-1. Pull a fresh 4K frame: `curl http://.../cmd=Snap...` via the Orin
-   (or directly against the Reolink HTTP endpoint with credentials)
-   and `scp` it back to `.claude/live_frame.jpg`.
+1. Pull a fresh 4K frame via the Reolink HTTP `cmd=Snap` endpoint →
+   `.claude/live_frame.jpg`.
 2. Downscale to 1200px wide → `.claude/sketch_me.png`.
-3. Operator opens it in any image editor, traces the visible road
-   tarmac as a closed magenta (`#FF00FF`) outline, saves to
-   `.claude/sketch_me_done.png`.
+3. Operator traces the visible road tarmac as a closed magenta
+   (`#FF00FF`) outline → `.claude/sketch_me_done.png`.
 4. Extract polygon: detect magenta pixels, dilate + fill, take the
-   largest connected component, walk the boundary radially from the
-   centroid, Ramer-Douglas-Peucker simplify (`eps≈6`) →
+   largest connected component, walk boundary radially from centroid,
+   Ramer-Douglas-Peucker simplify (`eps≈6`) →
    `.claude/road_polygon_user.json`.
-5. Compute principal axis (PCA on polygon vertices in pixel coords)
-   and propose initial triggers + `t_usable` band — render overlay,
-   iterate with operator until approved. Then continue from
-   "Adjusting triggers" step 3.
+5. Compute principal axis (PCA on polygon vertices in pixel coords),
+   propose initial triggers + `t_usable` band, render overlay,
+   iterate with operator until approved. Continue from "Adjusting"
+   step 3.
 
 ### Live planner behaviour
 
 | `SnapPlannerConfig.road_gate` | Mode | Notes |
 |---|---|---|
-| `None`, `right_half_only=True` | Right-half zone-thirds | Pre-polygon fallback. Not used in the live deployment. |
+| `None`, `right_half_only=True` | Right-half zone-thirds | Pre-polygon fallback. Not used live. |
 | `None`, `right_half_only=False` | Legacy peak/decay | Benchmark only. |
-| `RoadGateConfig(...)` w/ `pipeline_interval_ms = 0` | Road polygon + axis triggers, trigger-only | Crossing semantics: each frame compares the bbox-centre's t' with the previous frame's; a not-yet-fired trigger between them fires *if its direction tag matches the motion sign* (`"forward"` = t' increasing = camera-approach side, `"reverse"` = t' decreasing = departure side, `"both"` = default). After a fire, `prev_t_prime` is advanced to the trigger's t' (not to `cur_tp`) so subsequent triggers in the same forward motion remain detectable one-per-frame. Asymmetric triggers let R→L (front plate) and L→R (rear plate) tracks each have their own early-capture trigger without one direction consuming the other's. This was the 2026-05-22 baseline configuration. |
-| `RoadGateConfig(...)` w/ `pipeline_interval_ms > 0` | Road polygon + axis triggers + **pipeline mode** | **Live deployment mode since 2026-05-23.** Trigger crossings still fire as above. *Additionally*, while a track sits inside the `t_usable` band, the planner fires a snap every `pipeline_interval_ms` of wall-clock time, capped at `pipeline_max_per_track`. Pipeline fires use a separate per-track counter (`pipeline_fires`) but share the snapshotter's `max_concurrent` HTTP semaphore with trigger fires. Pipeline fires dominate trigger fires in volume by roughly an order of magnitude at the current settings (`400` ms / `15` cap). Documented in `snap_planner.py` `consider_pipeline`. |
-
-Phase 7 cutover is operationally complete (Orin live since
-2026-05-22); the remaining tail is repo archival on GitHub
-(VehicleTracker + NanoTracker) after ~a week of clean operation.
-The [ANPR tuning loop](#anpr-tuning-loop) section above lifted the
-per-car high-confidence read rate from a 59 % floor (Step 6) through
-91.5 % aliased (Step 7) to a verified **~78 % aliasing-free** across
-two sessions ([Step 10](#step-10-done-ghost-mask--padding-cap-2026-05-26)
-+ [Step 11 validation](#step-11-done-snap_gate-t_usable_frac-trim-2026-05-26)),
-which is the intrinsic floor of this camera + scene. Dataset-level
-pivot now in progress: [Step 12](#step-12-done-plate-anchored-vehicle-aggregation-2026-05-26)
-landed the plate-anchored aggregator (`streettracker vehicles`)
-that turns the 78 % read pool into per-vehicle records with
-recurring-visit detection. Make/model on 4K crops, learned recolor,
-and visual re-id are the remaining pieces.
+| `RoadGateConfig(...)` w/ `pipeline_interval_ms = 0` | Road polygon + trigger-only | Crossing semantics: each frame compares bbox-centre's t' with previous frame's; a not-yet-fired trigger between them fires *if its direction tag matches the motion sign*. After a fire, `prev_t_prime` advances to the trigger's t' so subsequent triggers in the same motion remain detectable one-per-frame. Asymmetric triggers let R→L and L→R each have their own early-capture trigger without one direction consuming the other's. |
+| `RoadGateConfig(...)` w/ `pipeline_interval_ms > 0` | + pipeline mode | **Live deployment since 2026-05-23.** Trigger crossings as above. *Additionally*, while a track sits inside `t_usable`, fire a snap every `pipeline_interval_ms` (or per-direction override), capped at `pipeline_max_per_track`. Pipeline fires share `max_concurrent` with trigger fires; dominate by ~10×. See `consider_pipeline` in `snap_planner.py`. |
