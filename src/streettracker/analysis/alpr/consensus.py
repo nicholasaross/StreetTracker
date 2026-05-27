@@ -32,7 +32,7 @@ high-confidence consensus that no individual snap reaches.
 
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import defaultdict
 from typing import Any
 
 MIN_INPUT_CONF = 0.30

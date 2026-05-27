@@ -331,7 +331,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  plated:    {len(plated)}")
     print(f"  recurring: {len(recurring)}  (>=2 visits in session)")
     if recurring:
-        print(f"  top recurring:")
+        print("  top recurring:")
         for v in sorted(recurring, key=lambda x: -x.n_visits)[:5]:
             print(
                 f"    {v.plate}  n_visits={v.n_visits}  "
