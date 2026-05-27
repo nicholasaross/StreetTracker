@@ -130,62 +130,6 @@ class Vehicle:
         return d
 
 
-def _intervals_overlap(
-    a_start: float, a_end: float, b_start: float, b_end: float
-) -> bool:
-    """Half-open interval overlap, [start, end)."""
-    return a_start < b_end and b_start < a_end
-
-
-def _eject_temporal_overlaps(
-    canonical: dict[str, str],
-    strict_groups: dict[str | None, list[tuple[dict, dict | None]]],
-) -> None:
-    """Post-cluster check: split clusters whose member plates have
-    temporally overlapping tracks.
-
-    ``canonical`` maps strict plate -> cluster seed; mutated in place
-    so plates with overlap-conflicting tracks get re-pointed to
-    themselves (becoming their own cluster).
-
-    A merge of plate A and plate B is rejected if ANY track of A
-    overlaps ANY track of B in wall-clock time. Same vehicle can't be
-    in two places at once; an overlap proves the fuzzy match was
-    coincidental.
-    """
-    # Build cluster -> [(strict_plate, [(t_start, t_end), ...])].
-    cluster_members: dict[str, list[tuple[str, list[tuple[float, float]]]]] = {}
-    for plate, can in canonical.items():
-        if plate is None:
-            continue
-        items = strict_groups.get(plate, [])
-        intervals = [
-            (r["time_start_unix"], r["time_end_unix"])
-            for r, _b in items
-        ]
-        cluster_members.setdefault(can, []).append((plate, intervals))
-
-    for can, members in cluster_members.items():
-        if len(members) <= 1:
-            continue
-        # Greedy: keep the seed (canonical plate), check each other
-        # member for overlap against the union of so-far-kept members.
-        # First entry sorted to seed position.
-        members.sort(key=lambda x: 0 if x[0] == can else 1)
-        kept_intervals = list(members[0][1])
-        for plate, intervals in members[1:]:
-            conflicts = any(
-                _intervals_overlap(a_s, a_e, b_s, b_e)
-                for (a_s, a_e) in intervals
-                for (b_s, b_e) in kept_intervals
-            )
-            if conflicts:
-                # Eject -- this plate becomes its own cluster.
-                canonical[plate] = plate
-            else:
-                kept_intervals.extend(intervals)
-
-
 def _cluster_plates_by_similarity(
     plates_with_conf: list[tuple[str, float]],
     *,
@@ -320,6 +264,21 @@ def build_vehicles(
     # ``canonical`` maps each strict plate to its cluster representative
     # (the highest-conf plate in the cluster). The plate=None bucket
     # is not eligible -- those tracks are anonymous already.
+    #
+    # Note: an earlier version of this code rejected merges whose
+    # tracks overlapped in wall-clock time, on the theory that the
+    # same physical car cannot be in frame twice at the same
+    # instant. That logic was wrong on this setup: BotSORT routinely
+    # ID-switches mid-transit (brief occlusion / detection gap),
+    # producing two overlapping tracks for ONE physical vehicle --
+    # often with disagreeing direction labels because the new track's
+    # motion vector takes a couple of frames to settle. A real
+    # example surfaced visually on session_20260526_124704 tracks
+    # 1516 (LD22BMG, R→L, "black") and 1517 (LD22BWG, L→R,
+    # "unknown") -- both 4K snaps show the same silver hatchback
+    # driving R→L, one second apart. Rejecting that merge produced
+    # a false negative more often than the temporal-overlap heuristic
+    # caught a true positive, so the rejection is gone.
     if fuzzy_ratio is not None:
         plated_plates: list[tuple[str, float]] = []
         for plate, items in strict_groups.items():
@@ -332,15 +291,6 @@ def build_vehicles(
         canonical = _cluster_plates_by_similarity(
             plated_plates, ratio=fuzzy_ratio
         )
-        # Eject any plate whose tracks temporally overlap with its
-        # cluster-mates. Two visits of the SAME physical vehicle
-        # cannot coexist in the camera's frame at the same instant;
-        # an overlap proves the fuzzy-merge was wrong (the OCR
-        # captured two adjacent cars whose plates happened to be
-        # one character apart, e.g. an LD22BWG / LD22BMG pair
-        # caught simultaneously). Ejected plates become their own
-        # singleton cluster.
-        _eject_temporal_overlaps(canonical, strict_groups)
     else:
         canonical = {p: p for p in strict_groups if p is not None}
 
