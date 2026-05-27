@@ -991,9 +991,46 @@ future scene change.
 
 Measurement: [.claude/measure_consensus.py](.claude/measure_consensus.py).
 
-**Open question for the operator: deploy 13a?**
+**Deploy attempt + crash-loop, 2026-05-27.** First deploy attempt
+edited `camera.json` to add `pipeline_interval_ms_by_direction =
+{forward: 300, reverse: 400}` and restarted the service. The Orin
+crash-looped immediately:
 
-Proposed direction-aware throttling for `~/streettracker/configs/camera.json`:
+```
+[run] config error: $.snapshot.snap_gate: unknown key(s) for
+SnapGateSpec: pipeline_interval_ms_by_direction
+```
+
+Root cause: the runtime code change (this branch's
+`f318253 snap_planner: direction-aware pipeline_interval_ms override`)
+had been committed locally but the branch was not pushed / merged.
+The Orin was running `main@cacf611` (PR #28's merge) which has no
+`pipeline_interval_ms_by_direction` field in `SnapGateSpec`, and
+the strict JSON loader is intentionally fatal on unknown keys
+(catches typos). Service systemd-restarted twice into the same
+error before the rollback (~ 60 s total downtime; the previous
+`camera.json.bak.<ts>` snapshot was restored verbatim and the
+service came back up on the recovered config in seconds).
+
+**Lesson:** runtime-side config schema additions must land on
+`main` and be `git pull`'d on the Orin BEFORE the corresponding
+camera.json change. The right deploy order is:
+
+1. Push branch → open PR → CI green → merge to main.
+2. `ssh streettracker@orin "cd ~/streettracker && git pull"` (+
+   `scripts/setup_orin.sh --symlinks-only` if `.venv` was rebuilt
+   by a transient `uv sync`).
+3. Restart the service to load the new code with the OLD config
+   first; verify it still parses unchanged.
+4. THEN edit `camera.json`, scp, restart again, verify.
+
+Step 11's `t_usable_frac` trim landed safely because the field
+already existed in `SnapGateSpec` -- a value change, not a key
+addition. The Step 13a deploy is the first instance of a
+schema-additive config change since pipeline mode itself was
+deployed.
+
+**Proposed direction-aware throttling for `~/streettracker/configs/camera.json`** (operator-selected: forward=300, reverse=400):
 
 ```jsonc
 "snap_gate": {
@@ -1001,19 +1038,21 @@ Proposed direction-aware throttling for `~/streettracker/configs/camera.json`:
   "pipeline_interval_ms": 400,
   "pipeline_max_per_track": 15,
   "pipeline_interval_ms_by_direction": {
-    "forward": 200,        // R→L: fire 2× faster in clean-read window
-    "reverse": 400         // L→R: unchanged (already saturated)
+    "forward": 300,        // R→L: 1.33× snap budget in clean-read window
+    "reverse": 400         // L→R: unchanged (already saturated at 95%)
   }
 }
 ```
 
-Expected effect: ~2× snap budget for R→L cars in the same band.
-If the detector failures on R→L are independent (which we can't
-verify a priori), expected R→L per-car lift from 62 % toward
-80-90 %. If detector failures are correlated (e.g. always blurry
-at a given motion speed), the lift could be much smaller. A 6-12 h
-soak with the new config + the existing mask + the existing trim
-is enough to measure.
+Expected effect: ~33 % more snap budget for R→L cars in the same
+band. Conservative compared to the initial 200ms proposal; lower
+risk of saturating the snapshotter HTTP concurrency cap. If R→L
+detector failures are independent, expected R→L per-car lift from
+62 % toward 70-80 %. A 6-12 h soak with the new config + the
+existing mask + the existing trim is enough to measure.
+
+**Deploy is gated on PR #30 merging to main** (auto-merge enabled
+on CI green at 2026-05-27 14:27 BST).
 
 ### Known issue surfaced during the soak: asset_prefix split-flip — fixed in [#21](https://github.com/nicholasaross/StreetTracker/pull/21)
 
