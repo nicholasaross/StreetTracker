@@ -127,6 +127,75 @@ def test_run_detector_exception_surfaces_into_error_field(
     assert "kaboom" in res.error
 
 
+def test_run_ghost_rects_zero_image_before_detect(tmp_path: Path) -> None:
+    """ghost_rects zero-fills the image rect before the detector sees
+    it. Verified by giving the detector a stub that records the
+    pixel value at a point inside the mask: if the mask is applied,
+    the pixel reads as 0; otherwise it carries the original fill
+    value. Mask coords are interpreted in the source_size coord
+    system and scaled to the actual image dimensions."""
+    # 384x216 image filled with 200 (so a 0-masked region is clearly
+    # distinguishable). Save as JPEG and let cv2 re-read it.
+    p = tmp_path / "vehicle_1_main_1.jpg"
+    img = np.full((216, 384, 3), 200, dtype=np.uint8)
+    cv2.imwrite(str(p), img)
+
+    seen_pixel: dict[str, int] = {}
+
+    class _PeekDetector:
+        name = "peek"
+
+        def detect(self, image, *, bbox_hint=None):  # noqa: ANN001
+            del bbox_hint
+            # Mask rect at source_size [3840, 2160] is [750, 700,
+            # 960, 860]; scaled to 384x216 (sx=sy=0.1) it becomes
+            # [75, 70, 96, 86]. (78, 85) is inside that rect.
+            seen_pixel["centre"] = int(image[78, 85, 0])
+            return None
+
+    runner = PipelineRunner("fake", _PeekDetector(), _FakeRecognizer(read=None))
+    runner.run(
+        image_path=p, track_id=1, snap_index=1,
+        class_name="vehicle", crop_out_dir=tmp_path / "crops",
+        ghost_rects=[(750, 700, 960, 860)],
+        ghost_source_size=(3840, 2160),
+    )
+
+    assert seen_pixel["centre"] == 0
+
+
+def test_run_ghost_rects_without_source_size_uses_raw_coords(
+    tmp_path: Path,
+) -> None:
+    """When ghost_source_size is None, rects are applied at raw pixel
+    coords (no scaling)."""
+    p = tmp_path / "vehicle_1_main_1.jpg"
+    img = np.full((216, 384, 3), 200, dtype=np.uint8)
+    cv2.imwrite(str(p), img)
+
+    seen_pixel: dict[str, int] = {}
+
+    class _PeekDetector:
+        name = "peek"
+
+        def detect(self, image, *, bbox_hint=None):  # noqa: ANN001
+            del bbox_hint
+            # Rect (50, 50, 150, 100) in raw pixel coords; (75, 75)
+            # is inside.
+            seen_pixel["centre"] = int(image[75, 75, 0])
+            return None
+
+    runner = PipelineRunner("fake", _PeekDetector(), _FakeRecognizer(read=None))
+    runner.run(
+        image_path=p, track_id=1, snap_index=1,
+        class_name="vehicle", crop_out_dir=tmp_path / "crops",
+        ghost_rects=[(50, 50, 150, 100)],
+        ghost_source_size=None,
+    )
+
+    assert seen_pixel["centre"] == 0
+
+
 def test_to_json_round_trip_has_expected_fields(
     vehicle_snap: Path, tmp_path: Path
 ) -> None:

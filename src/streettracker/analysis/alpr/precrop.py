@@ -61,6 +61,12 @@ class PreCropDetector:
     cropping. 0.15 gives enough margin for plates that hang slightly
     over the bumper without blowing up the crop size.
 
+    ``pad_max_px`` caps the per-side padding in absolute pixels.
+    Matters for wide BotSORT bboxes -- a 300 px-wide near-camera
+    bbox does not need 45 px of padding; that just spills into
+    neighbouring cars. 30 px is roughly one number-plate width
+    at the closest camera distance, which is plenty.
+
     ``vehicle_conf`` is the YOLO confidence threshold for the
     vehicle stage. Set generously (0.25) since we'd rather over-crop
     than skip a real vehicle and fall back to full-image detection.
@@ -74,11 +80,13 @@ class PreCropDetector:
         vehicle_model: str | Path = "yolov8n.pt",
         vehicle_conf: float = 0.25,
         pad_frac: float = 0.15,
+        pad_max_px: int = 30,
     ) -> None:
         self._plate_detector = plate_detector
         self._vehicle_model_spec = str(vehicle_model)
         self._vehicle_conf = vehicle_conf
         self._pad_frac = pad_frac
+        self._pad_max_px = pad_max_px
         self._yolo = None
         self.name = f"precrop-{getattr(plate_detector, 'name', 'unknown')}"
 
@@ -147,7 +155,8 @@ class PreCropDetector:
         for i in order:
             x1, y1, x2, y2 = xy[int(i)]
             bw, bh = x2 - x1, y2 - y1
-            pad_x, pad_y = bw * self._pad_frac, bh * self._pad_frac
+            pad_x = min(bw * self._pad_frac, self._pad_max_px)
+            pad_y = min(bh * self._pad_frac, self._pad_max_px)
             cx1 = max(0, int(x1 - pad_x))
             cy1 = max(0, int(y1 - pad_y))
             cx2 = min(w, int(x2 + pad_x))
@@ -201,7 +210,8 @@ class PreCropDetector:
         if bw <= 0 or bh <= 0:
             # Degenerate hint -- fall back to full-image detection.
             return self._plate_detector.detect(image)
-        pad_x, pad_y = bw * self._pad_frac, bh * self._pad_frac
+        pad_x = min(bw * self._pad_frac, self._pad_max_px)
+        pad_y = min(bh * self._pad_frac, self._pad_max_px)
         cx1 = max(0, int(x1 - pad_x))
         cy1 = max(0, int(y1 - pad_y))
         cx2 = min(w, int(x2 + pad_x))

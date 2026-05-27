@@ -17,6 +17,7 @@ from streettracker.device.snap_planner import (
     SnapDecision,
     SnapPlanner,
     SnapPlannerConfig,
+    _pick_pipeline_interval,
     compute_quality_score,
     is_exit_imminent,
     right_half_zone_index,
@@ -829,6 +830,100 @@ def test_pipeline_throttles_by_interval() -> None:
     )
     assert d_fires.should_fire is True
     assert d_fires.snap_index == 2
+
+
+def test_pick_pipeline_interval_falls_back_on_first_frame() -> None:
+    """First in-band frame has no previous t' to infer direction from
+    -- must fall back to the base interval even when overrides exist."""
+    cfg = RoadGateConfig(
+        polygon_frac=ROAD_POLY,
+        trigger_t_prime=ROAD_TRIGGERS,
+        pipeline_interval_ms=400,
+        pipeline_interval_ms_by_direction={"forward": 200, "reverse": 600},
+    )
+    assert _pick_pipeline_interval(cfg, prev_tp=None, cur_tp=0.3) == 400
+
+
+def test_pick_pipeline_interval_picks_forward_when_tp_increasing() -> None:
+    cfg = RoadGateConfig(
+        polygon_frac=ROAD_POLY,
+        trigger_t_prime=ROAD_TRIGGERS,
+        pipeline_interval_ms=400,
+        pipeline_interval_ms_by_direction={"forward": 200, "reverse": 600},
+    )
+    assert _pick_pipeline_interval(cfg, prev_tp=0.20, cur_tp=0.25) == 200
+
+
+def test_pick_pipeline_interval_picks_reverse_when_tp_decreasing() -> None:
+    cfg = RoadGateConfig(
+        polygon_frac=ROAD_POLY,
+        trigger_t_prime=ROAD_TRIGGERS,
+        pipeline_interval_ms=400,
+        pipeline_interval_ms_by_direction={"forward": 200, "reverse": 600},
+    )
+    assert _pick_pipeline_interval(cfg, prev_tp=0.45, cur_tp=0.30) == 600
+
+
+def test_pick_pipeline_interval_falls_back_when_direction_absent() -> None:
+    """Only "forward" overridden -- reverse motion falls back to base."""
+    cfg = RoadGateConfig(
+        polygon_frac=ROAD_POLY,
+        trigger_t_prime=ROAD_TRIGGERS,
+        pipeline_interval_ms=400,
+        pipeline_interval_ms_by_direction={"forward": 200},
+    )
+    assert _pick_pipeline_interval(cfg, prev_tp=0.45, cur_tp=0.30) == 400
+
+
+def test_pick_pipeline_interval_falls_back_when_override_nonpositive() -> None:
+    """A direction key explicitly set to 0 or negative falls back to base
+    -- this is the documented "disable override for this direction"
+    knob, so an operator can set just one direction without specifying
+    the other."""
+    cfg = RoadGateConfig(
+        polygon_frac=ROAD_POLY,
+        trigger_t_prime=ROAD_TRIGGERS,
+        pipeline_interval_ms=400,
+        pipeline_interval_ms_by_direction={"forward": 0, "reverse": 600},
+    )
+    assert _pick_pipeline_interval(cfg, prev_tp=0.20, cur_tp=0.25) == 400
+
+
+def test_pipeline_per_direction_throttle_fires_earlier_in_forward() -> None:
+    """End-to-end: with forward=100ms override and base=400ms, a track
+    moving in the forward direction gets its 2nd fire at +101ms (not
+    +400ms). The first call always uses base (no prev_tp yet), then the
+    next call with motion in either direction picks up the override."""
+    # ROAD_POLY is a horizontal strip; t' along x. Figure out which
+    # direction (left or right) is "forward" by querying t_prime at
+    # two centres so the test isn't axis-orientation-dependent.
+    cfg = RoadGateConfig(
+        polygon_frac=ROAD_POLY,
+        trigger_t_prime=ROAD_TRIGGERS,
+        t_usable_frac=(0.0, 1.0),
+        pipeline_interval_ms=400,
+        pipeline_max_per_track=5,
+        pipeline_interval_ms_by_direction={"forward": 100, "reverse": 100},
+    )
+    p = SnapPlanner(FW, FH, SnapPlannerConfig(road_gate=cfg, max_per_track=10))
+    # Three distinct positions so every frame has a non-zero motion
+    # delta (zero delta would fall back to base). Whichever direction
+    # the polygon's PCA chose, the override (100ms for both) kicks in.
+    p.consider_pipeline(track_id=300, bbox=_bbox_at(FW * 0.30, FH * 0.5),
+                        frame_idx=0, wall_ms=1000.0)
+    # Frame 1: motion, but only 80ms since last fire (1000) -- below
+    # the 100ms override -> throttled.
+    d1 = p.consider_pipeline(track_id=300, bbox=_bbox_at(FW * 0.50, FH * 0.5),
+                             frame_idx=1, wall_ms=1080.0)
+    assert d1.should_fire is False
+    assert d1.reason == "pipeline_throttled"
+    # Frame 2: motion, 230ms since last fire -- above the 100ms
+    # override -> fires. Under base (400ms) this would still throttle.
+    d2 = p.consider_pipeline(track_id=300, bbox=_bbox_at(FW * 0.70, FH * 0.5),
+                             frame_idx=2, wall_ms=1230.0)
+    assert d2.should_fire is True
+    assert d2.reason == "pipeline"
+    assert d2.snap_index == 2
 
 
 def test_pipeline_respects_per_track_cap() -> None:

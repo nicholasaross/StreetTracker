@@ -188,6 +188,14 @@ class SnapGateSpec:
     # of the existing trigger-crossing fires.
     pipeline_interval_ms: int = 0
     pipeline_max_per_track: int = 10
+    # Optional per-direction interval override. Keys: ``"forward"``
+    # (t' increasing, R→L motion) and ``"reverse"`` (t' decreasing,
+    # L→R motion); either may be absent. Values in ms; the planner
+    # falls back to ``pipeline_interval_ms`` for any direction not in
+    # the dict or with value <= 0, and on the first in-band frame
+    # where motion direction is unknown. See ``RoadGateConfig`` in
+    # ``device.snap_planner`` for the runtime equivalent.
+    pipeline_interval_ms_by_direction: dict[str, int] | None = None
 
 
 @dataclass(frozen=True, slots=True)
