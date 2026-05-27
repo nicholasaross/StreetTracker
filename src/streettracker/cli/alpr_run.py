@@ -409,9 +409,26 @@ def _build_pipelines(args: argparse.Namespace) -> list[PipelineRunner]:
 
 
 def _rollup_by_track(records: list[dict]) -> dict:
-    """Per-track best-of-N: for each ``(pipeline, track_id)``, pick the
-    read with the highest ``ocr_conf``."""
+    """Per-track best-of-N + consensus rollup.
+
+    For each ``(pipeline, track_id)``:
+    * ``best_<pipeline>``: the single read with the highest
+      ``ocr_conf`` (legacy behaviour, kept for backward compat).
+    * ``consensus_<pipeline>``: the confidence-weighted character-vote
+      consensus across all of the track's reads above
+      :data:`consensus.MIN_INPUT_CONF`. Often outperforms the best-of-N
+      pick when individual reads are low-conf but agree -- see
+      :func:`streettracker.analysis.alpr.consensus.consensus_plate`.
+
+    Both fields land in the per-track rollup so downstream consumers
+    can pick whichever is appropriate for their use case.
+    """
+    from streettracker.analysis.alpr.consensus import consensus_plate
+
     by_pipe_track: dict[str, dict[int, dict]] = defaultdict(dict)
+    by_pipe_track_all: dict[str, dict[int, list[dict]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
     for r in records:
         p = r["pipeline"]
         tid = r["track_id"]
@@ -427,11 +444,17 @@ def _rollup_by_track(records: list[dict]) -> dict:
                 "ocr_conf": r.get("ocr_conf"),
                 "det_conf": r.get("det_conf"),
             }
+        by_pipe_track_all[p][tid].append(r)
 
     tracks: dict[int, dict] = {}
     for pipe, by_tid in by_pipe_track.items():
         for tid, best in by_tid.items():
             tracks.setdefault(tid, {"track_id": tid})[f"best_{pipe}"] = best
+    for pipe, by_tid_reads in by_pipe_track_all.items():
+        for tid, reads in by_tid_reads.items():
+            c = consensus_plate(reads)
+            if c is not None:
+                tracks.setdefault(tid, {"track_id": tid})[f"consensus_{pipe}"] = c
 
     return {"tracks": sorted(tracks.values(), key=lambda r: r["track_id"])}
 

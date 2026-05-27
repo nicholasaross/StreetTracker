@@ -138,14 +138,33 @@ def build_vehicles(
     else:
         alpr_rollup = {"tracks": []}
 
-    # tid -> best_preferred dict (or None). Bespoke pipeline is not
-    # the read authority (Step 6 of CLAUDE.md ANPR tuning loop) -- we
-    # use preferred only.
+    # tid -> anchor read dict. Use the per-image best as the default
+    # anchor (max-conf single read). Substitute the consensus rollup
+    # ONLY when (a) it agrees with the best on plate text and (b) its
+    # confidence is higher -- this is the "multi-frame agreement
+    # boost" case where multiple low-conf reads all support the same
+    # answer. On this camera's data the per-image reads frequently
+    # capture different parked / passing vehicles, so a disagreeing
+    # consensus is unreliable and the best-of-N pick is the right
+    # anchor. See ``measure_consensus.py`` for the empirical study.
+    # Bespoke pipeline is not the read authority (Step 6 of the ANPR
+    # tuning loop).
     best_by_tid: dict[int, dict[str, Any]] = {}
     for t in alpr_rollup.get("tracks", []):
         best = t.get("best_preferred")
-        if best and (best.get("ocr_conf") or 0) >= conf_threshold:
-            best_by_tid[t["track_id"]] = best
+        if not best or (best.get("ocr_conf") or 0) < conf_threshold:
+            continue
+        consensus = t.get("consensus_preferred")
+        anchor = best
+        if (
+            consensus
+            and consensus.get("ocr_text") == best.get("ocr_text")
+            and (consensus.get("ocr_conf") or 0) > (best.get("ocr_conf") or 0)
+        ):
+            anchor = dict(consensus)
+            anchor.setdefault("image", consensus.get("best_image"))
+            anchor.setdefault("snap_index", consensus.get("best_snap_index"))
+        best_by_tid[t["track_id"]] = anchor
 
     # Group track records by canonical plate. Tracks whose best read
     # is below threshold (or absent) collect under ``None``.
