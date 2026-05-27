@@ -25,6 +25,11 @@ dependencies = [
     # device runtime is asyncio-based; this is the single async-IO
     # primitive both PR 3b and PR 3d depend on.
     "aiohttp>=3.9",
+    # Fuzzy plate matching in the vehicles aggregator -- collapses
+    # OCR variants of the same physical plate (e.g. "2X7711" vs
+    # "LX7711") into one Vehicle record. Pure-Python+Cython, no
+    # heavy deps. ~50 KB.
+    "rapidfuzz>=3.6",
     # Required by `streettracker export-engine`: Ultralytics' .pt -> .onnx -> .engine
     # pipeline imports `onnx` (graph build) and `onnxslim` (graph simplify); the
     # in-tree exporter also validates the .onnx via onnxruntime CPU.

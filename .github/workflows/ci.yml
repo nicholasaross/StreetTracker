@@ -40,6 +40,7 @@ jobs:
             "jinja2>=3.1" \
             "opencv-python-headless>=4.10" \
             "aiohttp>=3.9" \
+            "rapidfuzz>=3.6" \
             "pytest>=8" \
             "pytest-asyncio>=0.24" \
             "ruff>=0.6"
