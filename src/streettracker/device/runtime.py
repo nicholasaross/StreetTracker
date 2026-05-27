@@ -327,6 +327,11 @@ def _maybe_lazy_init_planner(ctx: SessionContext) -> None:
             trigger_directions=directions,
             pipeline_interval_ms=s.pipeline_interval_ms,
             pipeline_max_per_track=s.pipeline_max_per_track,
+            pipeline_interval_ms_by_direction=(
+                dict(s.pipeline_interval_ms_by_direction)
+                if s.pipeline_interval_ms_by_direction is not None
+                else None
+            ),
         )
     ctx.planner = SnapPlanner(
         frame_width=ctx.frame_w,

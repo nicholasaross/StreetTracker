@@ -146,6 +146,17 @@ class RoadGateConfig:
     # is saturated are dropped, not queued.
     pipeline_interval_ms: int = 0
     pipeline_max_per_track: int = 10
+    # Optional per-direction interval override. Keys are ``"forward"``
+    # (t' increasing, R→L motion) and ``"reverse"`` (t' decreasing,
+    # L→R motion); either may be absent. When provided the planner
+    # uses the per-direction value once it can detect motion (two
+    # consecutive frames in the band); falls back to
+    # ``pipeline_interval_ms`` on the first in-band frame and for any
+    # direction not in the dict or with value <= 0. This lets a
+    # direction whose detector struggles (e.g. R→L front-plate angle
+    # on this camera) burn snaps faster within its narrow
+    # clean-readable window without affecting the saturated direction.
+    pipeline_interval_ms_by_direction: dict[str, int] | None = None
 
 
 @dataclass(slots=True)
@@ -230,6 +241,12 @@ class _TrackState:
     last_pipeline_submit_wall_ms: float = 0.0
     in_band_since_wall_ms: float | None = None
     time_in_band_ms: float = 0.0
+    # Previous frame's t' value as seen by ``consider_pipeline``. Used
+    # only for direction-aware throttling (sign of cur_tp - prev gives
+    # motion direction). Distinct from ``prev_t_prime`` which is
+    # managed by the trigger-crossing path and advanced to the trigger
+    # position after a fire (not to the actual previous frame's t').
+    prev_pipeline_tp: float | None = None
 
 
 # ----------------------------------------------------------------------
@@ -294,6 +311,36 @@ def is_exit_imminent(
     if dy < 0 and y1 < margin_y:  # noqa: SIM103
         return True
     return False
+
+
+def _pick_pipeline_interval(
+    gate_cfg: RoadGateConfig,
+    prev_tp: float | None,
+    cur_tp: float,
+) -> int:
+    """Return the pipeline-fire interval for the current frame.
+
+    Reads ``pipeline_interval_ms_by_direction`` when it's set and we
+    have a previous in-band t' value to infer motion direction from.
+    Otherwise (first in-band frame, no override configured, or the
+    chosen direction's override is missing / non-positive) returns
+    the base ``pipeline_interval_ms``.
+    """
+    base = gate_cfg.pipeline_interval_ms
+    overrides = gate_cfg.pipeline_interval_ms_by_direction
+    if not overrides or prev_tp is None:
+        return base
+    delta = cur_tp - prev_tp
+    if delta > 1e-9:
+        direction = "forward"
+    elif delta < -1e-9:
+        direction = "reverse"
+    else:
+        return base
+    candidate = overrides.get(direction)
+    if candidate is None or candidate <= 0:
+        return base
+    return int(candidate)
 
 
 def _bbox_area_frac(
@@ -790,8 +837,7 @@ class SnapPlanner:
         gate_cfg = cfg.road_gate
         if self._road_gate is None or gate_cfg is None:
             return SnapDecision(False, "out_of_gate", 0.0)
-        interval = gate_cfg.pipeline_interval_ms
-        if interval <= 0:
+        if gate_cfg.pipeline_interval_ms <= 0:
             return SnapDecision(False, "out_of_gate", 0.0)
 
         st = self._state.get(track_id)
@@ -806,14 +852,24 @@ class SnapPlanner:
         gate = self._road_gate
         if not gate.contains(cx, cy):
             self._close_in_band_span(st, wall_ms)
+            st.prev_pipeline_tp = None
             return SnapDecision(False, "outside_road_polygon", 0.0)
         cur_tp = gate.t_prime(cx, cy)
         if cur_tp is None:
             self._close_in_band_span(st, wall_ms)
+            st.prev_pipeline_tp = None
             return SnapDecision(False, "out_of_gate", 0.0)
 
         if st.in_band_since_wall_ms is None:
             st.in_band_since_wall_ms = wall_ms
+
+        # Direction-aware throttle: pick the per-direction interval if
+        # configured and we have two consecutive in-band samples to
+        # compute motion sign from. First frame in band, or any frame
+        # without a registered per-direction override, falls back to
+        # the base ``pipeline_interval_ms``.
+        interval = _pick_pipeline_interval(gate_cfg, st.prev_pipeline_tp, cur_tp)
+        st.prev_pipeline_tp = cur_tp
 
         if (
             st.last_pipeline_submit_wall_ms > 0.0
