@@ -1051,8 +1051,26 @@ detector failures are independent, expected R→L per-car lift from
 62 % toward 70-80 %. A 6-12 h soak with the new config + the
 existing mask + the existing trim is enough to measure.
 
-**Deploy is gated on PR #30 merging to main** (auto-merge enabled
-on CI green at 2026-05-27 14:27 BST).
+**Deployed 2026-05-27 16:01 BST.** PR #30 (Steps 10-13) merged
+with two ruff failures (auto-merge fired through them); fast-follow
+PR #31 fixed them + cherry-picked the lessons-learned commit that
+got dropped between pushes. After both PRs landed on main, executed
+the correct deploy order:
+
+1. `ssh streettracker@orin "cd ~/streettracker && git pull"` -- loads
+   the new code without touching the config.
+2. Restart with the OLD camera.json. Session `session_20260527_160043`
+   started cleanly -- smoke-tested that the new code parses the
+   existing config unchanged (the new field is optional).
+3. Edit camera.json to add the new key, scp, restart.
+   Session `session_20260527_160139` started cleanly with the
+   direction-aware cadence active.
+
+Backup of pre-deploy config at `camera.json.bak.20260527T150138Z`.
+Validation soak: ~6-12 h of fresh traffic, then re-run
+`alpr-run --pre-crop --ghost-mask` and compare per-direction
+per-image / per-car rates against the Step 11 baseline
+([session_20260526_124704](#step-11-done-snap_gate-t_usable_frac-trim-2026-05-26)).
 
 ### Known issue surfaced during the soak: asset_prefix split-flip — fixed in [#21](https://github.com/nicholasaross/StreetTracker/pull/21)
 
