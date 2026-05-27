@@ -346,16 +346,21 @@ def test_fuzzy_clustering_disabled_keeps_strict_string_equality(
     assert plated == ["AB12CDE", "AB12CXE"]
 
 
-def test_fuzzy_clustering_rejects_temporally_overlapping_merges(
+def test_fuzzy_clustering_allows_temporally_overlapping_merges(
     tmp_path: Path, sample_track: TrackRecord
 ) -> None:
-    """Two plates that fuzzy-match by string but whose tracks overlap
-    in wall-clock time must NOT collapse -- the same physical car
-    can't be in frame twice at the same instant. Real example: a
-    Step 11 session had LD22BWG and LD22BMG merge with negative
-    gap_minutes; this guard rejects that."""
+    """Two plates that fuzzy-match by string AND have overlapping
+    tracks should merge anyway. BotSORT ID-switches routinely produce
+    two overlapping tracks for ONE physical vehicle (brief occlusion
+    spawns a new track ID before the old one finalises). A real
+    example surfaced on session_20260526_124704 tracks 1516 (LD22BMG,
+    R→L) and 1517 (LD22BWG, L→R) -- both 4K snaps show the same
+    silver hatchback one second apart, but BotSORT had ID-switched
+    mid-transit and even mislabelled the new track's direction.
+    Earlier code REJECTED overlap-conflicting merges; that produced
+    more false negatives than the overlap heuristic caught true
+    positives, so the rejection is gone."""
     t1 = sample_track  # 14:32:05 -> 14:32:11
-    # t2 overlaps t1 in time (starts mid-t1) -- impossible for same car.
     t2 = replace(
         sample_track,
         track_id=99,
@@ -363,6 +368,8 @@ def test_fuzzy_clustering_rejects_temporally_overlapping_merges(
         time_end="2026-05-17T14:32:15+01:00",
         time_start_unix=sample_track.time_start_unix + 3,
         time_end_unix=sample_track.time_end_unix + 4,
+        direction="right to left",  # opposite of t1 -- mirrors the
+                                    # real BotSORT ID-switch case
     )
     alpr = {
         "tracks": [
@@ -390,13 +397,13 @@ def test_fuzzy_clustering_rejects_temporally_overlapping_merges(
     session = _write_session(tmp_path, [t1, t2], alpr)
 
     vehicles = build_vehicles(session)
-    plated = sorted(
-        (v.plate for v in vehicles if v.plate is not None),
-        key=str,
-    )
-    # Two separate vehicles; the temporal-overlap guard rejected the
-    # otherwise-eligible fuzzy merge.
-    assert plated == ["LD22BMG", "LD22BWG"]
+    plated = [v for v in vehicles if v.plate is not None]
+    assert len(plated) == 1
+    v = plated[0]
+    # Higher-conf plate becomes canonical, other lands in variants.
+    assert v.plate == "LD22BWG"
+    assert v.n_visits == 2
+    assert v.plate_variants == [("LD22BMG", pytest.approx(0.93))]
 
 
 def test_fuzzy_clustering_high_threshold_does_not_merge_distant_plates(
