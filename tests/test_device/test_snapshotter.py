@@ -256,7 +256,7 @@ async def test_submit_records_latency_on_success(
     server, url = await _start_fake_reolink(handler)
     try:
         snapper = ReolinkSnapshotter(url=url, session=session)
-        assert snapper.stats.latencies_ms == []
+        assert len(snapper.stats.latencies_ms) == 0
         task = snapper.submit(tmp_path / "vehicle_1_main_1.jpg")
         assert task is not None
         await task
@@ -287,7 +287,7 @@ async def test_failed_submit_does_not_record_latency(
         assert task is not None
         await task
         assert snapper.stats.failures == 1
-        assert snapper.stats.latencies_ms == []
+        assert len(snapper.stats.latencies_ms) == 0
     finally:
         await server.close()
 
@@ -319,6 +319,27 @@ def test_latency_summary_rounds_to_one_decimal() -> None:
     s = stats.latency_summary()
     assert s["p50_ms"] == 234.6
     assert s["min_ms"] == 123.5
+
+
+def test_latencies_ms_is_bounded_for_long_running_sessions() -> None:
+    """The live deployment runs for days without session rotation. The
+    latency buffer must cap so a multi-week uptime doesn't grow it
+    unboundedly + slow down each idle dashboard regen's percentile sort.
+    """
+    from streettracker.device.snapshotter import _MAX_LATENCY_SAMPLES
+
+    stats = SnapshotStats()
+    # Default-factory'd deque enforces the cap.
+    for i in range(_MAX_LATENCY_SAMPLES + 500):
+        stats.latencies_ms.append(float(i))
+    assert len(stats.latencies_ms) == _MAX_LATENCY_SAMPLES
+    # Oldest 500 dropped off the left; newest sample retained.
+    assert stats.latencies_ms[0] == 500.0
+    assert stats.latencies_ms[-1] == float(_MAX_LATENCY_SAMPLES + 499)
+    # Summary still works on a windowed sample.
+    s = stats.latency_summary()
+    assert s["count"] == _MAX_LATENCY_SAMPLES
+    assert s["min_ms"] == 500.0
 
 
 # ----------------------------------------------------------------------

@@ -560,6 +560,87 @@ def test_close_open_ir_period_noop_in_day_mode(tmp_path: Path) -> None:
 
 
 # ----------------------------------------------------------------------
+# IR events sidecar log -- crash-safety so a SIGKILL during an IR
+# period doesn't lose the start timestamp.
+
+
+async def test_process_frame_records_ir_transitions_to_sidecar(
+    tmp_path: Path,
+) -> None:
+    """day -> IR transition appends a "start" line to the IR events log
+    BEFORE meta.json would normally be written; IR -> day appends "end".
+    The sidecar is what survives a SIGKILL between transitions."""
+    from streettracker.common.output import IREventLog, read_ir_events_jsonl
+
+    ctx = _build_ctx(tmp_path)
+    ctx.yolo = _StubYolo()
+    sidecar = tmp_path / "ir_events.jsonl"
+    ctx.ir_events_log = IREventLog(sidecar)
+
+    # is_ir_frame treats a monochrome (channels-equal) frame as IR, so
+    # _frame()/np.full both classify as IR regardless of value. A real
+    # day frame needs per-channel variation above the detector's
+    # channel_diff_threshold (default 8).
+    day_frame = np.zeros((_FRAME_H, _FRAME_W, 3), dtype=np.uint8)
+    day_frame[:, :, 0] = 50
+    day_frame[:, :, 1] = 100
+    day_frame[:, :, 2] = 200
+
+    # Drive into IR via the warm-up + 30 IR-frame history that the
+    # detector wants. The state flip happens on the call that brings
+    # history to ``hysteresis_frames``; we pre-fill 29 directly (so
+    # the detector is one short of flipping), then call process_frame
+    # for the 30th frame so the day -> IR transition fires inside
+    # process_frame's code path and writes the "start" line.
+    ir_frame = np.full((_FRAME_H, _FRAME_W, 3), 80, dtype=np.uint8)
+    for i in range(29):
+        ctx.ir.update(ir_frame, _T0_WALL + i)
+    assert ctx.ir.in_ir_mode is False
+    await process_frame(ctx, frame_idx=0, source_t=0.0, frame=ir_frame)
+    assert ctx.ir.in_ir_mode is True
+
+    # Now drive back to day via process_frame with a day-bright frame.
+    for i in range(35):
+        await process_frame(ctx, frame_idx=i + 1, source_t=0.0, frame=day_frame)
+    assert ctx.ir.in_ir_mode is False
+
+    ctx.ir_events_log.close()
+    events = read_ir_events_jsonl(sidecar)
+    kinds = [e["event"] for e in events]
+    # One day -> IR, one IR -> day.
+    assert "start" in kinds
+    assert "end" in kinds
+    # First "start" precedes first "end" in file order.
+    assert kinds.index("start") < kinds.index("end")
+
+
+def test_close_open_ir_period_writes_end_to_sidecar(tmp_path: Path) -> None:
+    """A graceful shutdown synthesises the closing IRPeriod for meta.json
+    and must record the synthetic "end" on the sidecar too, so a
+    subsequent SIGKILL during write_session_outputs can't lose it."""
+    from streettracker.common.output import IREventLog, read_ir_events_jsonl
+
+    ctx = _build_ctx(tmp_path)
+    sidecar = tmp_path / "ir_events.jsonl"
+    ctx.ir_events_log = IREventLog(sidecar)
+
+    ir_frame = np.full((_FRAME_H, _FRAME_W, 3), 80, dtype=np.uint8)
+    start = time.time() - 5.0
+    for i in range(35):
+        ctx.ir.update(ir_frame, start + i * 0.01)
+    assert ctx.ir.in_ir_mode is True
+    _close_open_ir_period(ctx)
+    ctx.ir_events_log.close()
+
+    events = read_ir_events_jsonl(sidecar)
+    # _close_open_ir_period only writes the "end" -- the "start" would
+    # have been written by process_frame at the day -> IR transition,
+    # which this test bypasses.
+    assert len(events) == 1
+    assert events[0]["event"] == "end"
+
+
+# ----------------------------------------------------------------------
 # _consumer_loop -- the inner async pull-and-process loop.
 
 

@@ -55,7 +55,7 @@ import aiohttp
 from streettracker.common.color import vote_color
 from streettracker.common.config import StreetTrackerConfig
 from streettracker.common.hourly import build_hourly_rollup
-from streettracker.common.output import EventLog, format_wall, save_json
+from streettracker.common.output import EventLog, IREventLog, format_wall, save_json
 from streettracker.common.schema import IRPeriod, SessionMeta, TrackRecord
 from streettracker.common.summary import generate_html
 from streettracker.device.dashboard import Dashboard, start_dashboard
@@ -135,6 +135,11 @@ class SessionContext:
     snapshotter: ReolinkSnapshotter | None = None
     dashboard: Dashboard | None = None
     planner: SnapPlanner | None = None  # lazy on first frame (needs frame w/h)
+    # IR events sidecar log -- crash-safe transition record so a SIGKILL
+    # mid-IR-period doesn't lose the start timestamp. Optional so tests
+    # that build a SessionContext directly can leave it ``None``; the
+    # process_frame code path guards on it.
+    ir_events_log: IREventLog | None = None
 
     # Output accumulators -- written to disk at session end.
     records: list[TrackRecord] = field(default_factory=list)
@@ -203,6 +208,7 @@ def session_paths(output_root: Path, session_label: str) -> dict[str, Path]:
     return {
         "dir": base,
         "events_jsonl": base / f"{session_label}_events.jsonl",
+        "ir_events_jsonl": base / f"{session_label}_ir_events.jsonl",
         "data_json": base / f"{session_label}_data.json",
         "meta_json": base / f"{session_label}_meta.json",
         "hourly_json": base / f"{session_label}_hourly.json",
@@ -622,16 +628,24 @@ async def process_frame(
 
     session_t = _compute_session_t(ctx, source_t)
 
-    # IR check + day/night transition handling.
+    # IR check + day/night transition handling. The same wall_time is
+    # used for the detector update and the sidecar IREventLog so the
+    # transition timestamps round-trip exactly even if a SIGKILL lands
+    # right after one is recorded.
+    wall_time = time.time()
     was_in_ir = ctx.ir.in_ir_mode
-    closed = ctx.ir.update(frame, time.time())
+    closed = ctx.ir.update(frame, wall_time)
     if closed is not None:
         ctx.ir_periods.append(closed)
+        if ctx.ir_events_log is not None:
+            ctx.ir_events_log.append_end(wall_time)
         logger.info("[runtime] returning to day at %s -- resuming inference", closed.end)
     if not was_in_ir and ctx.ir.in_ir_mode:
+        if ctx.ir_events_log is not None:
+            ctx.ir_events_log.append_start(wall_time)
         logger.info(
             "[runtime] entering IR/night at %s -- skipping inference",
-            format_wall(time.time()),
+            format_wall(wall_time),
         )
         # Cut active tracks cleanly across the day/night boundary.
         for tr in ctx.buffer.flush():
@@ -919,6 +933,7 @@ async def run_session(
         buffer=TrackBuffer(max_misses=config.tracking.max_misses),
         event_log=EventLog(paths["events_jsonl"]),
         is_file_source=bool(getattr(source, "is_file", False)),
+        ir_events_log=IREventLog(paths["ir_events_jsonl"]),
     )
 
     loop = asyncio.get_running_loop()
@@ -995,6 +1010,8 @@ async def run_session(
             # Final outputs (idempotent; safe even with empty record list).
             write_session_outputs(ctx, no_html=no_html, no_json=no_json)
             ctx.event_log.close()
+            if ctx.ir_events_log is not None:
+                ctx.ir_events_log.close()
             if cleanup_task is not None:
                 cleanup_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -1065,6 +1082,10 @@ def _close_open_ir_period(ctx: SessionContext) -> None:
     happened. We probe the detector's private start timestamp via a
     one-off update with a wall-time frame that should NOT flip the
     state (so it doesn't pollute the period).
+
+    Also records the synthetic close on the IR events sidecar so a
+    subsequent SIGKILL during ``write_session_outputs`` still leaves
+    a complete on-disk transition history.
     """
     if not ctx.ir.in_ir_mode:
         return
@@ -1082,6 +1103,8 @@ def _close_open_ir_period(ctx: SessionContext) -> None:
             duration_s=round(end_unix - start_unix, 1),
         )
     )
+    if ctx.ir_events_log is not None:
+        ctx.ir_events_log.append_end(end_unix)
 
 
 __all__ = [
