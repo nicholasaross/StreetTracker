@@ -7,9 +7,11 @@ from pathlib import Path
 
 from streettracker.common.output import (
     EventLog,
+    IREventLog,
     format_wall,
     read_data_json,
     read_events_jsonl,
+    read_ir_events_jsonl,
     save_data_json,
     save_json,
     save_meta_json,
@@ -103,3 +105,75 @@ def test_format_wall_includes_tz_offset() -> None:
     # astimezone() returns "+HH:MM" form.
     assert "T" in s
     assert s[-6] in ("+", "-") or s.endswith("Z")
+
+
+def test_read_events_jsonl_skips_torn_tail_without_aborting(
+    tmp_path: Path, sample_track: TrackRecord, caplog
+) -> None:
+    """A SIGKILL between EventLog.write() and the OS journal flush can
+    leave a partial last line. The reader must skip it (with a warning)
+    instead of raising and losing every record before it."""
+    import logging
+
+    p = tmp_path / "events.jsonl"
+    with EventLog(p) as log:
+        log.append(sample_track)
+        log.append(sample_track)
+    # Append a torn last line: half a JSON record, no closing brace, no
+    # newline. Exactly the failure mode SIGKILL produces on a 24/7 service.
+    with open(p, "a", encoding="utf-8") as f:
+        f.write('{"track_id": 99, "class_name":')
+    with caplog.at_level(logging.WARNING, logger="streettracker.common.output"):
+        back = read_events_jsonl(p)
+    # Two intact records preserved; the torn tail did not abort the read.
+    assert len(back) == 2
+    assert back[0] == sample_track
+    assert back[1] == sample_track
+    # Operator-visible signal: we log the skip so a silent data-loss
+    # window doesn't open up.
+    assert any("torn line" in r.message for r in caplog.records)
+
+
+def test_ir_event_log_round_trip(tmp_path: Path) -> None:
+    p = tmp_path / "ir_events.jsonl"
+    with IREventLog(p) as log:
+        log.append_start(1747488725.0)
+        log.append_end(1747490725.0)
+    events = read_ir_events_jsonl(p)
+    assert len(events) == 2
+    assert events[0]["event"] == "start"
+    assert events[0]["unix"] == 1747488725.0
+    assert "T" in events[0]["iso"]
+    assert events[1]["event"] == "end"
+    assert events[1]["unix"] == 1747490725.0
+
+
+def test_ir_event_log_records_unfinished_period_for_crash_recovery(
+    tmp_path: Path,
+) -> None:
+    """A SIGKILL'd session that was mid-IR leaves a trailing unmatched
+    "start" -- which is the whole point of the sidecar: meta.json
+    never got written, but the start timestamp is still on disk."""
+    p = tmp_path / "ir_events.jsonl"
+    log = IREventLog(p)
+    log.append_start(1747488725.0)
+    # Simulate SIGKILL: no close() call. The IR -> day "end" never lands.
+    del log
+    events = read_ir_events_jsonl(p)
+    assert len(events) == 1
+    assert events[0]["event"] == "start"
+
+
+def test_read_ir_events_jsonl_skips_torn_tail(tmp_path: Path, caplog) -> None:
+    import logging
+
+    p = tmp_path / "ir_events.jsonl"
+    with IREventLog(p) as log:
+        log.append_start(1747488725.0)
+    with open(p, "a", encoding="utf-8") as f:
+        f.write('{"event": "end", "unix":')
+    with caplog.at_level(logging.WARNING, logger="streettracker.common.output"):
+        events = read_ir_events_jsonl(p)
+    assert len(events) == 1
+    assert events[0]["event"] == "start"
+    assert any("torn IR-event line" in r.message for r in caplog.records)

@@ -38,6 +38,7 @@ import dataclasses
 import logging
 import time
 import urllib.parse
+from collections import deque
 from pathlib import Path
 
 import aiohttp
@@ -51,6 +52,14 @@ logger = logging.getLogger(__name__)
 _JPEG_SOI = b"\xff\xd8\xff"
 _MIN_JPEG_BYTES = 100
 
+# Bound the latency sample buffer. The streettracker.service runs 24/7
+# without session rotation, so an unbounded list would grow indefinitely
+# (and the O(N log N) sort inside latency_summary() runs every 10 s on
+# every idle dashboard regen). 10 000 samples == ~240 KB and a sub-ms
+# sort, with the percentile summary tracking the most-recent window --
+# which is what you want for live trigger-placement tuning anyway.
+_MAX_LATENCY_SAMPLES = 10_000
+
 
 @dataclasses.dataclass(slots=True)
 class SnapshotStats:
@@ -63,13 +72,22 @@ class SnapshotStats:
     plate-readable position by exactly that much (in t' units along the
     polygon). Failures aren't sampled because the timing of a failed
     fire isn't meaningful for placement decisions.
+
+    The buffer is a rolling window of the most recent
+    ``_MAX_LATENCY_SAMPLES`` samples (older samples drop off the left).
+    Sessions on the live deployment run for days; an unbounded list
+    would slowly grow and the percentile sort would get more expensive
+    on each idle dashboard regen. The window is large enough that a
+    multi-hour soak still has every sample retained.
     """
 
     attempts: int = 0
     successes: int = 0
     failures: int = 0
     dropped: int = 0
-    latencies_ms: list[float] = dataclasses.field(default_factory=list)
+    latencies_ms: deque[float] = dataclasses.field(
+        default_factory=lambda: deque(maxlen=_MAX_LATENCY_SAMPLES)
+    )
 
     def latency_summary(self) -> dict[str, float | int]:
         """Percentile breakdown of fire latencies. Empty dict if no samples yet.
