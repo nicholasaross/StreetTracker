@@ -67,12 +67,13 @@ def test_collect_plate_requests_groups_split_tracks() -> None:
             },
         ]
     }
-    reqs = dvsa_label._collect_plate_requests(by_track, conf_threshold=0.9)
+    reqs, skipped = dvsa_label._collect_plate_requests(by_track, conf_threshold=0.9)
     by_plate = {r.plate: r for r in reqs}
     assert set(by_plate) == {"AE13SJX", "LD22BMG"}
     # Two tracks collapsed onto AE13SJX; highest conf preserved.
     assert sorted(by_plate["AE13SJX"].track_ids) == [1, 2]
     assert by_plate["AE13SJX"].plate_conf == pytest.approx(0.99)
+    assert skipped == []
 
 
 def test_collect_plate_requests_drops_below_threshold() -> None:
@@ -94,8 +95,9 @@ def test_collect_plate_requests_drops_below_threshold() -> None:
             },
         ]
     }
-    reqs = dvsa_label._collect_plate_requests(by_track, conf_threshold=0.9)
+    reqs, skipped = dvsa_label._collect_plate_requests(by_track, conf_threshold=0.9)
     assert [r.plate for r in reqs] == ["LD22BMG"]
+    assert skipped == []
 
 
 def test_collect_plate_requests_normalises_plate_string() -> None:
@@ -118,10 +120,109 @@ def test_collect_plate_requests_normalises_plate_string() -> None:
             },
         ]
     }
-    reqs = dvsa_label._collect_plate_requests(by_track, conf_threshold=0.9)
+    reqs, skipped = dvsa_label._collect_plate_requests(by_track, conf_threshold=0.9)
     assert len(reqs) == 1
     assert reqs[0].plate == "AE13SJX"
     assert sorted(reqs[0].track_ids) == [1, 2]
+    assert skipped == []
+
+
+# ----------------------------------------------------------------------
+# Canonical-shape filter.
+
+
+def test_collect_plate_requests_skips_non_canonical_by_default() -> None:
+    """The 2026-05-29 re-soak smoke test surfaced OCR garbage like
+    ``123889`` and ``1157WHT`` -- 291 of 508 distinct 'high-conf
+    reads'. The default filter routes them into ``skipped`` rather
+    than billing DVSA for a guaranteed 404."""
+    by_track = {
+        "tracks": [
+            {
+                "track_id": 1,
+                "best_preferred": {
+                    "track_id": 1, "snap_index": 1, "image": "x.jpg",
+                    "ocr_text": "AE13SJX", "ocr_conf": 0.99, "det_conf": 0.9,
+                },
+            },
+            {
+                "track_id": 2,
+                "best_preferred": {
+                    "track_id": 2, "snap_index": 1, "image": "y.jpg",
+                    "ocr_text": "123889", "ocr_conf": 0.99, "det_conf": 0.9,
+                },
+            },
+            {
+                "track_id": 3,
+                "best_preferred": {
+                    "track_id": 3, "snap_index": 1, "image": "z.jpg",
+                    "ocr_text": "1157WHT", "ocr_conf": 0.95, "det_conf": 0.9,
+                },
+            },
+        ]
+    }
+    reqs, skipped = dvsa_label._collect_plate_requests(by_track, conf_threshold=0.9)
+    assert [r.plate for r in reqs] == ["AE13SJX"]
+    assert skipped == ["1157WHT", "123889"]
+
+
+def test_collect_plate_requests_include_non_canonical_keeps_everything() -> None:
+    """``canonical_only=False`` recovers the pre-filter behaviour for
+    operators chasing trade plates / NI plates / similar edge cases."""
+    by_track = {
+        "tracks": [
+            {
+                "track_id": 1,
+                "best_preferred": {
+                    "track_id": 1, "snap_index": 1, "image": "y.jpg",
+                    "ocr_text": "123889", "ocr_conf": 0.99, "det_conf": 0.9,
+                },
+            },
+        ]
+    }
+    reqs, skipped = dvsa_label._collect_plate_requests(
+        by_track, conf_threshold=0.9, canonical_only=False
+    )
+    assert [r.plate for r in reqs] == ["123889"]
+    assert skipped == []
+
+
+def test_collect_plate_requests_accepts_prefix_format() -> None:
+    """1983-2001 prefix plates (e.g. ``X123 ABC``) should pass the
+    filter -- there are still ~2.7M of these on the road."""
+    by_track = {
+        "tracks": [
+            {
+                "track_id": 1,
+                "best_preferred": {
+                    "track_id": 1, "snap_index": 1, "image": "x.jpg",
+                    "ocr_text": "X123ABC", "ocr_conf": 0.99, "det_conf": 0.9,
+                },
+            },
+        ]
+    }
+    reqs, skipped = dvsa_label._collect_plate_requests(by_track, conf_threshold=0.9)
+    assert [r.plate for r in reqs] == ["X123ABC"]
+    assert skipped == []
+
+
+def test_collect_plate_requests_accepts_suffix_format() -> None:
+    """1963-1983 suffix plates (e.g. ``ABC 123X``) -- rare but real
+    on classics."""
+    by_track = {
+        "tracks": [
+            {
+                "track_id": 1,
+                "best_preferred": {
+                    "track_id": 1, "snap_index": 1, "image": "x.jpg",
+                    "ocr_text": "ABC123X", "ocr_conf": 0.99, "det_conf": 0.9,
+                },
+            },
+        ]
+    }
+    reqs, skipped = dvsa_label._collect_plate_requests(by_track, conf_threshold=0.9)
+    assert [r.plate for r in reqs] == ["ABC123X"]
+    assert skipped == []
 
 
 # ----------------------------------------------------------------------
@@ -301,3 +402,111 @@ def test_main_limit_caps_distinct_plates_processed(tmp_path: Path) -> None:
 
     payload = json.loads((session / "session_demo_dvsa_labels.json").read_text())
     assert payload["n_labelled"] == 1
+
+
+def test_main_records_skipped_non_canonical_in_output(tmp_path: Path) -> None:
+    """End-to-end: a session with mixed canonical + garbage plates
+    bills DVSA only for the real ones, persists the garbage list for
+    operator inspection, and emits the new `n_skipped_non_canonical`
+    summary field."""
+    session = tmp_path / "session_demo"
+    session.mkdir()
+    (session / "session_demo_alpr_by_track.json").write_text(
+        json.dumps(
+            {
+                "tracks": [
+                    {
+                        "track_id": 1,
+                        "best_preferred": {
+                            "track_id": 1, "snap_index": 1, "image": "x.jpg",
+                            "ocr_text": "AE13SJX", "ocr_conf": 0.99, "det_conf": 0.9,
+                        },
+                    },
+                    {
+                        "track_id": 2,
+                        "best_preferred": {
+                            "track_id": 2, "snap_index": 1, "image": "y.jpg",
+                            "ocr_text": "123889", "ocr_conf": 0.99, "det_conf": 0.9,
+                        },
+                    },
+                ]
+            }
+        )
+    )
+    cfg = tmp_path / "dvsa.json"
+    cfg.write_text(
+        json.dumps(
+            {
+                "x_api_key": "k",
+                "oauth": {
+                    "client_id": "cid",
+                    "client_secret": "sec",
+                    "token_url": "u",
+                    "scope": "s",
+                },
+            }
+        )
+    )
+
+    with patch("streettracker.cli.dvsa_label.DvsaClient") as cls:
+        client = cls.return_value
+        client.lookup_plate.side_effect = lambda plate: _porsche_result(plate)
+        dvsa_label.main([str(session), "--config", str(cfg)])
+        # Only the canonical plate should reach the client.
+        assert client.lookup_plate.call_count == 1
+        assert client.lookup_plate.call_args.args[0] == "AE13SJX"
+
+    payload = json.loads((session / "session_demo_dvsa_labels.json").read_text())
+    assert payload["n_skipped_non_canonical"] == 1
+    assert payload["skipped_non_canonical"] == ["123889"]
+    assert payload["n_labelled"] == 1
+    assert "123889" not in payload["labels"]
+
+
+def test_main_include_non_canonical_flag_queries_garbage(tmp_path: Path) -> None:
+    """``--include-non-canonical`` recovers the pre-filter behaviour:
+    every above-threshold plate gets a lookup attempt, none get skipped."""
+    session = tmp_path / "session_demo"
+    session.mkdir()
+    (session / "session_demo_alpr_by_track.json").write_text(
+        json.dumps(
+            {
+                "tracks": [
+                    {
+                        "track_id": 1,
+                        "best_preferred": {
+                            "track_id": 1, "snap_index": 1, "image": "y.jpg",
+                            "ocr_text": "123889", "ocr_conf": 0.99, "det_conf": 0.9,
+                        },
+                    },
+                ]
+            }
+        )
+    )
+    cfg = tmp_path / "dvsa.json"
+    cfg.write_text(
+        json.dumps(
+            {
+                "x_api_key": "k",
+                "oauth": {
+                    "client_id": "cid",
+                    "client_secret": "sec",
+                    "token_url": "u",
+                    "scope": "s",
+                },
+            }
+        )
+    )
+
+    with patch("streettracker.cli.dvsa_label.DvsaClient") as cls:
+        client = cls.return_value
+        client.lookup_plate.return_value = None  # plate genuinely not on register
+        dvsa_label.main(
+            [str(session), "--config", str(cfg), "--include-non-canonical"]
+        )
+        assert client.lookup_plate.call_count == 1
+
+    payload = json.loads((session / "session_demo_dvsa_labels.json").read_text())
+    assert payload["n_skipped_non_canonical"] == 0
+    assert payload["n_unknown"] == 1
+    assert payload["unknown"] == ["123889"]

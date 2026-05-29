@@ -22,6 +22,7 @@ from streettracker.analysis.dvsa import (
     OAuthConfig,
     _parse_int,
     _parse_year,
+    is_canonical_uk_plate,
 )
 
 
@@ -157,6 +158,46 @@ def test_parse_int_coerces_stringified_numerics() -> None:
     assert _parse_int(" 1998 ") == 1998
     assert _parse_int(None) is None
     assert _parse_int("not a number") is None
+
+
+# ----------------------------------------------------------------------
+# is_canonical_uk_plate
+
+
+@pytest.mark.parametrize(
+    "plate",
+    [
+        # Current (2001+): LL00LLL
+        "AE13SJX", "VK74TPO", "LD22BMG", "BC75ANF",
+        # Prefix (1983-2001): L1-3 LLL
+        "X123ABC", "A1BCD", "Y99XYZ",
+        # Suffix (1963-1983): LLL1-3 L
+        "ABC123X", "XYZ1A", "ABC99Z",
+    ],
+)
+def test_is_canonical_uk_plate_accepts_all_three_uk_schemes(plate: str) -> None:
+    assert is_canonical_uk_plate(plate) is True
+
+
+@pytest.mark.parametrize(
+    "plate",
+    [
+        # OCR garbage from the 2026-05-29 re-soak smoke test
+        "1157WHT",       # leading digit, post-2001 shape broken
+        "1214LZH",
+        "123889",
+        "141232",
+        "142219",
+        "1E6971",
+        "169FTA",
+        "AB1CDE",        # right length, wrong pattern
+        "",              # empty
+        "AB12CD",        # short
+        "AB12CDEF",      # long
+    ],
+)
+def test_is_canonical_uk_plate_rejects_non_uk_shapes(plate: str) -> None:
+    assert is_canonical_uk_plate(plate) is False
 
 
 # ----------------------------------------------------------------------

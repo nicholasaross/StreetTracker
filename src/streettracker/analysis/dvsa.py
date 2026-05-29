@@ -27,6 +27,7 @@ import dataclasses
 import datetime
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,41 @@ from typing import Any
 import requests
 
 logger = logging.getLogger(__name__)
+
+# UK plate format regexes used to filter OCR-mangled "plates" before
+# they bill an API call. The 2026-05-29 re-soak smoke test surfaced 291
+# garbage strings (out of 508 distinct high-conf "reads") that would
+# never have matched a real registration -- digits like ``123889`` or
+# malformed combos like ``1157WHT`` from clipped 4K snaps. Costs nothing
+# to skip them; saves ~60 % of API budget per soak.
+#
+# The three formats are all the UK car-numbering schemes still seen on
+# the road:
+#   * Current (2001+): ``LL00 LLL`` -- two letters, two digits, three letters
+#   * Prefix (1983-2001): ``L1 LLL`` to ``L999 LLL``
+#   * Suffix (1963-1983): ``LLL 1L`` to ``LLL 999L`` -- still found on
+#     classics and the occasional well-cared-for daily driver
+#
+# Trade plates, NI plates (``ABC 1234``), and personalised plates that
+# wander outside these shapes will be skipped by the filter; an
+# operator who specifically needs those can pass
+# ``--include-non-canonical`` to the CLI.
+_UK_PLATE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^[A-Z]{2}\d{2}[A-Z]{3}$"),       # 2001+ current
+    re.compile(r"^[A-Z]\d{1,3}[A-Z]{3}$"),        # 1983-2001 prefix
+    re.compile(r"^[A-Z]{3}\d{1,3}[A-Z]$"),        # 1963-1983 suffix
+)
+
+
+def is_canonical_uk_plate(plate: str) -> bool:
+    """``True`` if ``plate`` matches one of the three UK car-plate
+    schemes. Plates should already be normalised (uppercase, no
+    whitespace) before calling -- typically by
+    :meth:`DvsaClient.lookup_plate` semantics. Returns ``False`` on
+    empty input rather than raising."""
+    if not plate:
+        return False
+    return any(pat.fullmatch(plate) for pat in _UK_PLATE_PATTERNS)
 
 # DVSA's documented limit. We deliberately stay just below it so a
 # brief network blip doesn't push us over.

@@ -36,7 +36,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from streettracker.analysis.dvsa import DvsaClient, DvsaConfig, MotLookupResult
+from streettracker.analysis.dvsa import (
+    DvsaClient,
+    DvsaConfig,
+    MotLookupResult,
+    is_canonical_uk_plate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +90,19 @@ def _build_parser() -> argparse.ArgumentParser:
             "Default is incremental: only newly-present plates are looked up."
         ),
     )
+    ap.add_argument(
+        "--include-non-canonical",
+        action="store_true",
+        help=(
+            "Look up plates whose shape does not match any of the UK car-"
+            "plate formats (current 'LL00 LLL', 1983-2001 prefix, "
+            "1963-1983 suffix). Off by default because the 2026-05-29 "
+            "smoke test found 57 percent of high-conf 'reads' were OCR "
+            "misreads (e.g. '123889', '1157WHT') that just burn API budget. "
+            "Skipped plates land in the output's 'skipped_non_canonical' "
+            "list for inspection."
+        ),
+    )
     return ap
 
 
@@ -99,12 +117,24 @@ class _PlateRequest:
 
 
 def _collect_plate_requests(
-    by_track: dict[str, Any], conf_threshold: float
-) -> list[_PlateRequest]:
+    by_track: dict[str, Any],
+    conf_threshold: float,
+    *,
+    canonical_only: bool = True,
+) -> tuple[list[_PlateRequest], list[str]]:
     """Walk ``alpr_by_track.json`` and group its tracks by best-read
     plate. Per-plate aggregation avoids billing 80 lookups for the same
-    car that BotSORT split into 80 tracks (the FD61PVX failure mode)."""
+    car that BotSORT split into 80 tracks (the FD61PVX failure mode).
+
+    When ``canonical_only`` (the default), plates that fail
+    :func:`is_canonical_uk_plate` are returned in the second tuple
+    element instead of the request list; the caller surfaces them in
+    the output JSON's ``skipped_non_canonical`` field rather than
+    billing them to DVSA. Set ``False`` to recover the pre-2026-05-29
+    behaviour.
+    """
     by_plate: dict[str, _PlateRequest] = {}
+    skipped_non_canonical: set[str] = set()
     for track in by_track.get("tracks", []):
         best = track.get("best_preferred")
         if not best:
@@ -112,6 +142,9 @@ def _collect_plate_requests(
         plate = (best.get("ocr_text") or "").strip().upper().replace(" ", "")
         conf = float(best.get("ocr_conf") or 0.0)
         if not plate or conf < conf_threshold:
+            continue
+        if canonical_only and not is_canonical_uk_plate(plate):
+            skipped_non_canonical.add(plate)
             continue
         tid = int(track["track_id"])
         existing = by_plate.get(plate)
@@ -128,7 +161,9 @@ def _collect_plate_requests(
             if conf > existing.plate_conf:
                 by_plate[plate] = dataclasses.replace(existing, plate_conf=conf)
     # Sort for stable output ordering -- humans diff these files.
-    return sorted(by_plate.values(), key=lambda r: r.plate)
+    return sorted(by_plate.values(), key=lambda r: r.plate), sorted(
+        skipped_non_canonical
+    )
 
 
 def _result_to_json(
@@ -151,17 +186,19 @@ def _result_to_json(
 def _load_existing(path: Path) -> dict[str, Any]:
     """Return the previous output if present, or an empty skeleton."""
     if not path.exists():
-        return {"labels": {}, "unknown": []}
+        return {"labels": {}, "unknown": [], "skipped_non_canonical": []}
     try:
         prev = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         logger.warning(
             "[dvsa-label] %s is corrupt (%s) -- starting fresh.", path, exc
         )
-        return {"labels": {}, "unknown": []}
-    # Be tolerant of older variants that may have omitted "unknown".
+        return {"labels": {}, "unknown": [], "skipped_non_canonical": []}
+    # Be tolerant of older variants that may have omitted these keys
+    # (pre-canonical-filter outputs).
     prev.setdefault("labels", {})
     prev.setdefault("unknown", [])
+    prev.setdefault("skipped_non_canonical", [])
     return prev
 
 
@@ -171,6 +208,7 @@ def _write_output(
     session_label: str,
     labels: dict[str, dict[str, Any]],
     unknown: list[str],
+    skipped_non_canonical: list[str],
     n_high_conf_plates: int,
 ) -> None:
     payload: dict[str, Any] = {
@@ -181,8 +219,10 @@ def _write_output(
         "n_high_conf_plates": n_high_conf_plates,
         "n_labelled": len(labels),
         "n_unknown": len(unknown),
+        "n_skipped_non_canonical": len(skipped_non_canonical),
         "labels": labels,
         "unknown": sorted(set(unknown)),
+        "skipped_non_canonical": sorted(set(skipped_non_canonical)),
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -216,19 +256,36 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = DvsaConfig.from_json_file(args.config)
     by_track = json.loads(by_track_path.read_text(encoding="utf-8"))
-    requests_ = _collect_plate_requests(by_track, args.conf_threshold)
+    requests_, skipped_non_canonical = _collect_plate_requests(
+        by_track,
+        args.conf_threshold,
+        canonical_only=not args.include_non_canonical,
+    )
+    n_tracks_billed = sum(len(r.track_ids) for r in requests_)
     print(
         f"[dvsa-label] {len(requests_)} distinct high-conf plates "
-        f"(>= {args.conf_threshold}) across {sum(len(r.track_ids) for r in requests_)} tracks"
+        f"(>= {args.conf_threshold}) across {n_tracks_billed} tracks"
+        + (
+            f"; skipping {len(skipped_non_canonical)} non-canonical "
+            f"(use --include-non-canonical to query them)"
+            if skipped_non_canonical
+            else ""
+        )
     )
 
     existing = _load_existing(out_path)
     existing_labels: dict[str, dict[str, Any]] = dict(existing["labels"])
     existing_unknown: set[str] = set(existing["unknown"])
+    # Merge the run's skipped set with any prior skipped record; the
+    # output is the cumulative diagnostic, not just this run's.
+    existing_skipped: set[str] = set(existing["skipped_non_canonical"]) | set(
+        skipped_non_canonical
+    )
     if args.re_label:
         # Drop everything; we'll re-query every plate.
         existing_labels.clear()
         existing_unknown.clear()
+        existing_skipped = set(skipped_non_canonical)
 
     client = DvsaClient(cfg)
 
@@ -272,12 +329,26 @@ def main(argv: list[str] | None = None) -> int:
             session_label=session_label,
             labels=existing_labels,
             unknown=sorted(existing_unknown),
+            skipped_non_canonical=sorted(existing_skipped),
             n_high_conf_plates=len(requests_),
         )
 
+    # Final flush: ensures the output is updated even when the loop
+    # ran zero iterations (e.g. every plate was already known but the
+    # skipped_non_canonical list grew this run).
+    _write_output(
+        out_path,
+        session_label=session_label,
+        labels=existing_labels,
+        unknown=sorted(existing_unknown),
+        skipped_non_canonical=sorted(existing_skipped),
+        n_high_conf_plates=len(requests_),
+    )
+
     print(
         f"[dvsa-label] wrote {out_path}: {len(existing_labels)} labelled, "
-        f"{len(existing_unknown)} unknown, {api_errors} api errors "
+        f"{len(existing_unknown)} unknown, {len(existing_skipped)} skipped "
+        f"(non-canonical), {api_errors} api errors "
         f"({new_labels} new labels + {new_unknown} new unknown this run)"
     )
     return 0
