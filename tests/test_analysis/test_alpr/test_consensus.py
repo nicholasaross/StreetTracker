@@ -12,9 +12,12 @@ where individual reads are low-conf but agree across snaps:
 
 from __future__ import annotations
 
+import math
+
 from streettracker.analysis.alpr.consensus import (
     consensus_by_track,
     consensus_plate,
+    sum_logprobs_argmax,
 )
 
 
@@ -157,3 +160,98 @@ def test_consensus_best_image_falls_back_when_no_input_matches_text() -> None:
     # said that. best_image falls back to the highest-conf same-len.
     assert out["ocr_text"] == "ABCDEF"
     assert out["best_snap_index"] == 4
+
+
+# ----------------------------------------------------------------------
+# sum_logprobs_argmax: classifier-head aggregation for the planned
+# vehicle-type / make-model heads. Per-snap softmaxes get summed in log
+# space (proper Bayesian under the "snaps are independent observations"
+# assumption); argmax of the summed distribution is the per-track call.
+
+
+def _logp(probs: dict[str, float]) -> dict[str, float]:
+    """Build a {class: log_prob} dict from a {class: prob} dict.
+
+    Lets the tests think in raw probabilities; the aggregator wants
+    log-probs to avoid float-underflow on multi-snap accumulation."""
+    return {c: math.log(p) for c, p in probs.items()}
+
+
+def test_sum_logprobs_argmax_single_confident_snap() -> None:
+    """One snap, one obvious winner."""
+    result = sum_logprobs_argmax([_logp({"sedan": 0.9, "SUV": 0.05, "van": 0.05})])
+    assert result is not None
+    cls, conf = result
+    assert cls == "sedan"
+    assert conf > 0.85  # softmax of single snap recovers the snap's own prob
+
+
+def test_sum_logprobs_argmax_summed_across_agreeing_snaps_amplifies_winner() -> None:
+    """Four 0.55-conf snaps all picking sedan -> per-track conf rises
+    well above any individual snap's softmax. This is the whole point
+    of the multi-frame aggregator vs picking the per-image best."""
+    snap = _logp({"sedan": 0.55, "SUV": 0.30, "van": 0.15})
+    result = sum_logprobs_argmax([snap, snap, snap, snap])
+    assert result is not None
+    cls, conf = result
+    assert cls == "sedan"
+    # 0.55^4 / (0.55^4 + 0.30^4 + 0.15^4) ~= 0.91. Higher than any
+    # individual snap's 0.55 -- exactly the amplification the
+    # aggregator is meant to deliver.
+    assert conf > 0.85
+
+
+def test_sum_logprobs_argmax_one_disagreeing_snap_overruled() -> None:
+    """Three snaps say sedan @ 0.6, one snap says SUV @ 0.6. The summed
+    log-prob picks sedan because it had more votes."""
+    sedan_snap = _logp({"sedan": 0.6, "SUV": 0.2, "van": 0.2})
+    suv_snap = _logp({"SUV": 0.6, "sedan": 0.2, "van": 0.2})
+    result = sum_logprobs_argmax([sedan_snap, sedan_snap, sedan_snap, suv_snap])
+    assert result is not None
+    cls, _conf = result
+    assert cls == "sedan"
+
+
+def test_sum_logprobs_argmax_handles_missing_classes_per_snap() -> None:
+    """Different snaps can carry different label sets; missing classes
+    are treated as -inf log-prob for that snap."""
+    snaps = [
+        _logp({"sedan": 0.7, "SUV": 0.3}),       # snap A: no van column
+        _logp({"sedan": 0.5, "van": 0.5}),       # snap B: no SUV column
+        _logp({"sedan": 0.9, "SUV": 0.05, "van": 0.05}),
+    ]
+    result = sum_logprobs_argmax(snaps)
+    assert result is not None
+    cls, _conf = result
+    assert cls == "sedan"  # only class present in all three snaps' top-3
+
+
+def test_sum_logprobs_argmax_empty_returns_none() -> None:
+    assert sum_logprobs_argmax([]) is None
+    assert sum_logprobs_argmax([{}, {}]) is None
+
+
+def test_sum_logprobs_argmax_tie_break_is_deterministic() -> None:
+    """Identical summed log-probs across two classes -> the alphabetically
+    earlier label wins, so output is stable across CPython runs."""
+    snap = _logp({"sedan": 0.5, "SUV": 0.5})
+    # Two identical snaps -> still tied.
+    result = sum_logprobs_argmax([snap, snap])
+    assert result is not None
+    cls, conf = result
+    # "SUV" < "sedan" lexicographically (uppercase < lowercase).
+    assert cls == "SUV"
+    assert math.isclose(conf, 0.5, abs_tol=1e-6)
+
+
+def test_sum_logprobs_argmax_does_not_overflow_on_many_confident_snaps() -> None:
+    """100 snaps all saying sedan @ 0.99 -> summed log-probs near -1.
+    The stable-softmax subtraction must prevent exp() from blowing up
+    on the unnormalised denominator."""
+    snap = _logp({"sedan": 0.99, "SUV": 0.005, "van": 0.005})
+    result = sum_logprobs_argmax([snap] * 100)
+    assert result is not None
+    cls, conf = result
+    assert cls == "sedan"
+    # Near-1 but not exactly (eps in the denominator).
+    assert conf > 0.999

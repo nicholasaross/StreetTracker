@@ -32,6 +32,7 @@ high-confidence consensus that no individual snap reaches.
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from typing import Any
 
@@ -136,6 +137,67 @@ def consensus_plate(
         "best_snap_index": best_snap,
         "best_image": best_image,
     }
+
+
+def sum_logprobs_argmax(
+    per_snap_logprobs: list[dict[str, float]],
+    *,
+    eps: float = 1e-9,
+) -> tuple[str, float] | None:
+    """Bayesian per-track aggregation for classifier-head outputs.
+
+    Each snap contributes a ``{class_name: log_prob}`` dict (natural log
+    of the softmax for that snap's prediction). We sum log-probs per
+    class across all snaps -- this is the correct posterior for a track
+    treated as N independent observations of the same vehicle -- then
+    return the argmax class together with its calibrated probability.
+
+    Used by the planned vehicle-type and make/model classifier
+    aggregators. The existing :func:`consensus_plate` is plate-string
+    specific (per-character voting on alphabetic strings); summed
+    log-probs is the right shape for classifier softmax outputs over
+    fixed label sets. Both live in this module because they share a
+    common purpose: collapse a track's N per-snap reads into one
+    per-track answer.
+
+    Args:
+        per_snap_logprobs: list of dicts, one per snap. Each dict maps
+            class label -> ``log(P(class))`` under that snap's softmax.
+            Snaps may carry different label sets (a snap whose
+            classifier was uncertain about, say, "Tesla" can simply
+            omit it -- the sum treats it as ``-inf`` for that class).
+        eps: floor added to the unnormalised summed-probability mass
+            before division, to avoid 0/0 when every class has summed
+            log-prob = -inf (no snap was confident about anything).
+
+    Returns:
+        ``(class_name, probability)`` for the argmax, or ``None`` when
+        ``per_snap_logprobs`` is empty / contains only empty dicts.
+        The reported probability is the softmax of the *summed* log-probs
+        at the winner -- i.e. the posterior P(winner | all snaps)
+        assuming snaps were independent observations.
+    """
+    if not per_snap_logprobs:
+        return None
+    summed: dict[str, float] = defaultdict(float)
+    seen_any = False
+    for snap in per_snap_logprobs:
+        for cls, lp in snap.items():
+            summed[cls] += lp
+            seen_any = True
+    if not seen_any:
+        return None
+    # Stable softmax: subtract max so exp doesn't overflow on small
+    # batches of confident snaps. Without this, summed log-probs of -50
+    # or so produce exp underflows in float64.
+    max_lp = max(summed.values())
+    weights = {cls: math.exp(lp - max_lp) for cls, lp in summed.items()}
+    total = sum(weights.values()) + eps
+    # Deterministic tie-break: descending weight, then ascending class
+    # name so identical-weight ties resolve to the alphabetically-first
+    # label across runs.
+    winner_cls = max(weights, key=lambda c: (weights[c], tuple(-ord(ch) for ch in c)))
+    return winner_cls, weights[winner_cls] / total
 
 
 def consensus_by_track(
