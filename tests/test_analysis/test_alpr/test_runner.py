@@ -200,7 +200,7 @@ def test_to_json_round_trip_has_expected_fields(
     vehicle_snap: Path, tmp_path: Path
 ) -> None:
     det = PlateDetection(bbox=(40, 80, 160, 120), det_confidence=0.92)
-    read = PlateRead(text="ABC123", ocr_confidence=0.88, raw_text="ABC 123")
+    read = PlateRead(text="AB12CDE", ocr_confidence=0.88, raw_text="AB12 CDE")
     runner = PipelineRunner("fake", _FakeDetector(det), _FakeRecognizer(read))
     res = runner.run(
         image_path=vehicle_snap, track_id=42, snap_index=2,
@@ -210,6 +210,47 @@ def test_to_json_round_trip_has_expected_fields(
     assert j["image"] == "vehicle_1_main_1.jpg"
     assert j["pipeline"] == "fake"
     assert j["det_bbox"] == [40, 80, 160, 120]
-    assert j["ocr_text"] == "ABC123"
-    assert j["ocr_raw"] == "ABC 123"
+    assert j["ocr_text"] == "AB12CDE"
+    assert j["ocr_raw"] == "AB12 CDE"
     assert j["error"] is None
+    # "AB12CDE" matches the 2001+ current scheme -- canonical.
+    assert j["canonical_uk_shape"] is True
+
+
+def test_to_json_marks_canonical_shape_false_for_ocr_garbage(
+    vehicle_snap: Path, tmp_path: Path
+) -> None:
+    """Per the 2026-05-29 threshold curve, the OCR conf is flat below
+    0.95 -- the model is overconfident on strings that don't match any
+    UK plate shape. The annotation lets downstream consumers filter
+    them without re-running the regex on the producer's output."""
+    det = PlateDetection(bbox=(40, 80, 160, 120), det_confidence=0.92)
+    read = PlateRead(text="1157WHT", ocr_confidence=0.99, raw_text="1157WHT")
+    runner = PipelineRunner("fake", _FakeDetector(det), _FakeRecognizer(read))
+    res = runner.run(
+        image_path=vehicle_snap, track_id=42, snap_index=2,
+        class_name="vehicle", crop_out_dir=tmp_path / "crops",
+    )
+    j = res.to_json()
+    assert j["ocr_text"] == "1157WHT"
+    # OCR confidence is 0.99 but the shape is wrong -- the annotation
+    # is the more reliable signal of "real plate or not".
+    assert j["canonical_uk_shape"] is False
+
+
+def test_to_json_canonical_shape_is_none_when_no_read(
+    vehicle_snap: Path, tmp_path: Path
+) -> None:
+    """If the OCR step didn't fire (no detection, or recognizer
+    returned None), there's no plate string to validate -- the
+    annotation must be ``None``, not ``False``, so consumers can
+    distinguish 'no read' from 'garbage read'."""
+    det = PlateDetection(bbox=(40, 80, 160, 120), det_confidence=0.92)
+    runner = PipelineRunner("fake", _FakeDetector(det), _FakeRecognizer(None))
+    res = runner.run(
+        image_path=vehicle_snap, track_id=42, snap_index=2,
+        class_name="vehicle", crop_out_dir=tmp_path / "crops",
+    )
+    j = res.to_json()
+    assert j["ocr_text"] is None
+    assert j["canonical_uk_shape"] is None

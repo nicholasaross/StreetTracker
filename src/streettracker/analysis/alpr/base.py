@@ -51,6 +51,11 @@ class PlateResult:
     error: str | None = None
 
     def to_json(self) -> dict:
+        # Deferred so the alpr.base module stays importable in unit
+        # tests that don't pull the dvsa client's requests dep transitively.
+        from streettracker.analysis.dvsa import is_canonical_uk_plate
+
+        ocr_text = self.read.text if self.read else None
         return {
             "image": self.image_name,
             "image_path": self.image_path,
@@ -60,9 +65,18 @@ class PlateResult:
             "pipeline": self.pipeline,
             "det_bbox": list(self.detection.bbox) if self.detection else None,
             "det_conf": self.detection.det_confidence if self.detection else None,
-            "ocr_text": self.read.text if self.read else None,
+            "ocr_text": ocr_text,
             "ocr_raw": self.read.raw_text if self.read else None,
             "ocr_conf": self.read.ocr_confidence if self.read else None,
+            # Annotation only -- doesn't filter or alter `ocr_text`.
+            # Downstream consumers (vehicles.py, dvsa-label) read this
+            # to skip OCR garbage without each one re-running the regex.
+            # The 2026-05-29 threshold-curve analysis showed the OCR
+            # conf score isn't itself informative below 0.95, so shape
+            # is the cheaper + more reliable signal.
+            "canonical_uk_shape": (
+                is_canonical_uk_plate(ocr_text) if ocr_text else None
+            ),
             "crop_path": self.crop_path,
             "pipeline_ms": self.pipeline_ms,
             "error": self.error,

@@ -1,0 +1,27 @@
+{
+    "_comment": [
+        "DVSA MOT history API credentials. Copy to configs/dvsa.json",
+        "(gitignored) and fill in the four values. The OAuth client_credentials",
+        "flow is used: streettracker dvsa-label calls the token_url at startup",
+        "to obtain a fresh Bearer (typical TTL 3600 s), caches it in memory,",
+        "and refreshes automatically when it expires.",
+        "",
+        "Values come from the DVSA developer portal:",
+        "  https://documentation.history.mot.api.gov.uk/",
+        "",
+        "  x_api_key: 40-char API subscription key (long-lived)",
+        "  oauth.client_id: GUID, the Entra app registration ID",
+        "  oauth.client_secret: the app secret (rotates per DVSA policy)",
+        "  oauth.token_url: the tenant's Entra token endpoint",
+        "  oauth.scope: typically 'https://tapi.dvsa.gov.uk/.default'"
+    ],
+
+    "x_api_key": "REPLACE_ME_40_CHAR_API_KEY",
+
+    "oauth": {
+        "client_id": "REPLACE_ME_GUID",
+        "client_secret": "REPLACE_ME_SECRET",
+        "token_url": "https://login.microsoftonline.com/REPLACE_ME_TENANT_GUID/oauth2/v2.0/token",
+        "scope": "https://tapi.dvsa.gov.uk/.default"
+    }
+}

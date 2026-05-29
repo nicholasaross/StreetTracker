@@ -59,22 +59,31 @@ def test_discover_snaps_filters_to_vehicle(tmp_path: Path) -> None:
 def test_rollup_by_track_picks_highest_confidence_per_pipeline() -> None:
     records = [
         {"pipeline": "bespoke", "track_id": 1, "snap_index": 1,
-         "image": "a.jpg", "ocr_text": "ABC", "ocr_conf": 0.3, "det_conf": 0.9},
+         "image": "a.jpg", "ocr_text": "ABC", "ocr_conf": 0.3, "det_conf": 0.9,
+         "canonical_uk_shape": False},
         {"pipeline": "bespoke", "track_id": 1, "snap_index": 2,
-         "image": "b.jpg", "ocr_text": "ABC2", "ocr_conf": 0.7, "det_conf": 0.95},
+         "image": "b.jpg", "ocr_text": "ABC2", "ocr_conf": 0.7, "det_conf": 0.95,
+         "canonical_uk_shape": False},
         # Same track, different pipeline — independent best
         {"pipeline": "preferred", "track_id": 1, "snap_index": 1,
-         "image": "a.jpg", "ocr_text": "ABC", "ocr_conf": 0.5, "det_conf": 0.9},
+         "image": "a.jpg", "ocr_text": "AB12CDE", "ocr_conf": 0.95, "det_conf": 0.9,
+         "canonical_uk_shape": True},
         # Records with no OCR are skipped entirely
         {"pipeline": "bespoke", "track_id": 2, "snap_index": 1,
-         "image": "c.jpg", "ocr_text": None, "ocr_conf": None, "det_conf": None},
+         "image": "c.jpg", "ocr_text": None, "ocr_conf": None, "det_conf": None,
+         "canonical_uk_shape": None},
     ]
     rollup = alpr_run._rollup_by_track(records)
     by_tid = {t["track_id"]: t for t in rollup["tracks"]}
     assert 1 in by_tid
     assert by_tid[1]["best_bespoke"]["ocr_conf"] == 0.7
     assert by_tid[1]["best_bespoke"]["ocr_text"] == "ABC2"
-    assert by_tid[1]["best_preferred"]["ocr_text"] == "ABC"
+    # The canonical_uk_shape annotation forwards from per-image records
+    # into the per-track rollup -- downstream consumers (vehicles.py,
+    # dvsa-label) read it without re-running the regex.
+    assert by_tid[1]["best_bespoke"]["canonical_uk_shape"] is False
+    assert by_tid[1]["best_preferred"]["ocr_text"] == "AB12CDE"
+    assert by_tid[1]["best_preferred"]["canonical_uk_shape"] is True
     # Track 2 had no OCR at all — should not appear
     assert 2 not in by_tid
 

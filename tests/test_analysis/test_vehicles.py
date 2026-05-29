@@ -144,7 +144,7 @@ def test_build_vehicles_unread_tracks_emit_anonymous_vehicles(
                 "best_preferred": {
                     "track_id": 42, "snap_index": 1,
                     "image": "vehicle_42_main_1.jpg",
-                    "ocr_text": "GOOD123", "ocr_conf": 0.95,
+                    "ocr_text": "AA15AAA", "ocr_conf": 0.95,
                     "det_conf": 0.85,
                 },
             },
@@ -163,7 +163,7 @@ def test_build_vehicles_unread_tracks_emit_anonymous_vehicles(
 
     vehicles = build_vehicles(session)
     plates = [v.plate for v in vehicles]
-    assert plates.count("GOOD123") == 1
+    assert plates.count("AA15AAA") == 1
     assert plates.count(None) == 2  # t2 (low conf) + t3 (absent)
 
 
@@ -180,7 +180,7 @@ def test_build_vehicles_no_unread_filter(
             "best_preferred": {
                 "track_id": 42, "snap_index": 1,
                 "image": "vehicle_42_main_1.jpg",
-                "ocr_text": "GOOD123", "ocr_conf": 0.95,
+                "ocr_text": "AA15AAA", "ocr_conf": 0.95,
                 "det_conf": 0.85,
             },
         }],
@@ -189,7 +189,7 @@ def test_build_vehicles_no_unread_filter(
 
     vehicles = build_vehicles(session, include_unread=False)
     assert len(vehicles) == 1
-    assert vehicles[0].plate == "GOOD123"
+    assert vehicles[0].plate == "AA15AAA"
 
 
 def test_build_vehicles_persons_are_skipped(
@@ -462,3 +462,76 @@ def test_build_vehicles_sorted_by_first_seen(
                              alpr_by_track={"tracks": []})
     vehicles = build_vehicles(session)
     assert [v.track_ids for v in vehicles] == [[10], [42]]
+
+
+def test_build_vehicles_filters_non_canonical_plates_by_default(
+    tmp_path: Path, sample_track: TrackRecord
+) -> None:
+    """OCR garbage like '1157WHT' / '123889' should NOT seed a synthetic
+    vehicle -- those strings dilute the per-vehicle output and would
+    fuzzy-cluster with each other into ghost cars. Default-on canonical
+    filter routes them into the plate=None bucket instead, same as a
+    low-conf or absent read."""
+    t1 = sample_track  # AB12CDE -- canonical, should be kept
+    t2 = replace(
+        sample_track,
+        track_id=51,
+        time_start_unix=sample_track.time_start_unix + 30,
+    )
+    alpr = {
+        "tracks": [
+            {
+                "track_id": 42,
+                "best_preferred": {
+                    "track_id": 42, "snap_index": 1,
+                    "image": "vehicle_42_main_1.jpg",
+                    "ocr_text": "AB12CDE", "ocr_conf": 0.98,
+                    "det_conf": 0.85,
+                },
+            },
+            {
+                "track_id": 51,
+                "best_preferred": {
+                    "track_id": 51, "snap_index": 1,
+                    "image": "vehicle_51_main_1.jpg",
+                    "ocr_text": "1157WHT",  # OCR garbage (leading digit)
+                    "ocr_conf": 0.99,
+                    "det_conf": 0.85,
+                },
+            },
+        ],
+    }
+    session = _write_session(tmp_path, [t1, t2], alpr)
+
+    vehicles = build_vehicles(session)
+    plated = sorted(v.plate for v in vehicles if v.plate is not None)
+    assert plated == ["AB12CDE"]
+    # Track 51 still surfaces, but as a plate=None vehicle, not a
+    # ghost cluster keyed on the OCR garbage.
+    anon = [v for v in vehicles if v.plate is None]
+    assert any(51 in v.track_ids for v in anon)
+
+
+def test_build_vehicles_include_non_canonical_recovers_legacy_behavior(
+    tmp_path: Path, sample_track: TrackRecord
+) -> None:
+    """Operators who care about trade plates / NI plates / similar can
+    opt out of the canonical filter and get the pre-PR-#37 behavior."""
+    t1 = replace(sample_track, track_id=51,
+                 time_start_unix=sample_track.time_start_unix + 30)
+    alpr = {
+        "tracks": [{
+            "track_id": 51,
+            "best_preferred": {
+                "track_id": 51, "snap_index": 1,
+                "image": "vehicle_51_main_1.jpg",
+                "ocr_text": "1157WHT", "ocr_conf": 0.99,
+                "det_conf": 0.85,
+            },
+        }],
+    }
+    session = _write_session(tmp_path, [t1], alpr)
+
+    vehicles = build_vehicles(session, canonical_only=False)
+    plated = [v.plate for v in vehicles if v.plate is not None]
+    assert plated == ["1157WHT"]

@@ -58,6 +58,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from streettracker.analysis.dvsa import is_canonical_uk_plate
+
 CONF_THRESHOLD = 0.9
 
 # Default Levenshtein similarity (rapidfuzz) threshold for collapsing
@@ -187,6 +189,7 @@ def build_vehicles(
     conf_threshold: float = CONF_THRESHOLD,
     include_unread: bool = True,
     fuzzy_ratio: int | None = FUZZY_RATIO_DEFAULT,
+    canonical_only: bool = True,
 ) -> list[Vehicle]:
     """Build per-vehicle aggregations from a closed session's outputs.
 
@@ -205,6 +208,15 @@ def build_vehicles(
     are recorded under ``Vehicle.plate_variants``. Set to ``None`` to
     disable clustering (strict-string equality only, legacy
     behaviour).
+
+    ``canonical_only`` (default ``True``) discards anchor reads that
+    don't match a UK plate shape (current 'LL00 LLL', 1983-2001
+    prefix, 1963-1983 suffix). Those tracks are then bucketed as
+    unread (``plate=None``) rather than seeding their own synthetic
+    cluster. The 2026-05-29 threshold-curve analysis showed ~55-65 %
+    of high-conf 'reads' are OCR garbage that the OCR confidence
+    score cannot itself reject; this filter prevents that garbage
+    from spawning ghost vehicles or contaminating fuzzy clusters.
 
     Cars only -- ``class_name == "car"`` tracks. Person tracks are
     skipped (snaps are anatomically wrong for ALPR).
@@ -236,6 +248,16 @@ def build_vehicles(
     for t in alpr_rollup.get("tracks", []):
         best = t.get("best_preferred")
         if not best or (best.get("ocr_conf") or 0) < conf_threshold:
+            continue
+        if canonical_only and not is_canonical_uk_plate(
+            (best.get("ocr_text") or "").strip().upper().replace(" ", "")
+        ):
+            # Non-canonical-shape "read" -- treat the track as unread
+            # so it falls into the plate=None bucket and doesn't seed
+            # a synthetic-cluster vehicle. Older sessions (pre-PR #37)
+            # whose alpr_by_track.json doesn't carry
+            # ``canonical_uk_shape`` still work: we re-derive it from
+            # ``ocr_text`` here rather than trusting the absent field.
             continue
         consensus = t.get("consensus_preferred")
         anchor = best
@@ -455,6 +477,16 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable fuzzy plate clustering (strict-string only).",
     )
+    ap.add_argument(
+        "--include-non-canonical",
+        action="store_true",
+        help=(
+            "Treat OCR reads that don't match a UK plate shape as valid "
+            "anchors anyway. Off by default to keep OCR garbage out of "
+            "the per-vehicle output. Mirrors `streettracker dvsa-label`'s "
+            "flag of the same name."
+        ),
+    )
     return ap
 
 
@@ -470,6 +502,7 @@ def main(argv: list[str] | None = None) -> int:
         conf_threshold=args.conf,
         include_unread=not args.no_unread,
         fuzzy_ratio=None if args.no_fuzzy else args.fuzzy_ratio,
+        canonical_only=not args.include_non_canonical,
     )
 
     session = session_dir.name
