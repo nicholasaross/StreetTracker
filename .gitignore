@@ -32,7 +32,7 @@ camera_config.json
 # password and is per-install. configs/camera.example.json IS tracked.
 configs/camera.json
 # DVSA MOT history API credentials (X-API-Key + OAuth client_id/secret).
-# configs/dvsa.json.example IS tracked as the schema reference.
+# configs/dvsa.example.json IS tracked as the schema reference.
 configs/dvsa.json
 *.mp4
 *.mkv
