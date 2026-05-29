@@ -443,6 +443,11 @@ def _rollup_by_track(records: list[dict]) -> dict:
                 "ocr_text": r["ocr_text"],
                 "ocr_conf": r.get("ocr_conf"),
                 "det_conf": r.get("det_conf"),
+                # Persist the canonical-UK-plate annotation through to the
+                # best-per-track rollup so downstream aggregators
+                # (vehicles.py, dvsa-label) can filter without re-running
+                # the regex.
+                "canonical_uk_shape": r.get("canonical_uk_shape"),
             }
         by_pipe_track_all[p][tid].append(r)
 
