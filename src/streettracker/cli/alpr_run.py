@@ -81,6 +81,19 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Process only the first N images (0 = all).",
     )
     ap.add_argument(
+        "--plate-pad-frac",
+        type=float,
+        default=0.10,
+        help=(
+            "Padding (fraction of plate-bbox side length) added around the "
+            "detected plate before the OCR crop. Default 0.10. The "
+            "2026-05-30 garbage analysis found 74%% of high-conf misreads "
+            "were 6 chars (one short of a 7-char UK plate) -- the OCR fed a "
+            "plate with an edge character clipped. A larger pad (try 0.25-"
+            "0.35) gives the OCR the whole plate to segment."
+        ),
+    )
+    ap.add_argument(
         "--pre-crop",
         action="store_true",
         help=(
@@ -380,6 +393,7 @@ def _build_pipelines(args: argparse.Namespace) -> list[PipelineRunner]:
                 name="bespoke",
                 detector=_wrap(bespoke_det, "bespoke"),
                 recognizer=EasyOcrRecognizer(use_gpu=args.gpu),
+                plate_pad_frac=args.plate_pad_frac,
             ))
 
     if args.pipeline in ("both", "preferred") or args.ablation:
@@ -394,6 +408,7 @@ def _build_pipelines(args: argparse.Namespace) -> list[PipelineRunner]:
                 name="preferred",
                 detector=_wrap(oim_det, "preferred"),
                 recognizer=FastPlateOcrRecognizer(args.ocr_model),
+                plate_pad_frac=args.plate_pad_frac,
             ))
 
     if args.ablation and bespoke_det is not None:
@@ -403,6 +418,7 @@ def _build_pipelines(args: argparse.Namespace) -> list[PipelineRunner]:
             name="ablation_bespokedet_fastocr",
             detector=_wrap(bespoke_det, "ablation_bespokedet_fastocr"),
             recognizer=FastPlateOcrRecognizer(args.ocr_model),
+            plate_pad_frac=args.plate_pad_frac,
         ))
 
     return pipelines

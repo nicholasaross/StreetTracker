@@ -254,3 +254,65 @@ def test_to_json_canonical_shape_is_none_when_no_read(
     j = res.to_json()
     assert j["ocr_text"] is None
     assert j["canonical_uk_shape"] is None
+
+
+class _CropCapturingRecognizer:
+    """Records the crop ndarray it was handed so a test can assert on
+    its dimensions."""
+
+    name = "crop-capture"
+
+    def __init__(self) -> None:
+        self.last_crop = None
+
+    def recognize(self, crop_bgr):  # noqa: ANN001
+        self.last_crop = crop_bgr
+        return PlateRead(text="AB12CDE", ocr_confidence=0.9, raw_text="AB12CDE")
+
+
+def test_plate_pad_frac_controls_ocr_crop_size(
+    vehicle_snap: Path, tmp_path: Path
+) -> None:
+    """The 2026-05-30 garbage analysis traced 74% of misreads to a
+    clipped edge character. --plate-pad-frac widens the OCR crop; a
+    larger pad must yield a strictly larger crop fed to the recognizer
+    (until it saturates at the image bounds)."""
+    # Plate bbox well inside the 200x200 image so padding has room to grow.
+    det = PlateDetection(bbox=(80, 90, 120, 110), det_confidence=0.9)
+
+    tight_rec = _CropCapturingRecognizer()
+    PipelineRunner(
+        "tight", _FakeDetector(det), tight_rec, plate_pad_frac=0.10
+    ).run(
+        image_path=vehicle_snap, track_id=1, snap_index=1,
+        class_name="vehicle", crop_out_dir=tmp_path / "c1",
+    )
+
+    wide_rec = _CropCapturingRecognizer()
+    PipelineRunner(
+        "wide", _FakeDetector(det), wide_rec, plate_pad_frac=0.30
+    ).run(
+        image_path=vehicle_snap, track_id=1, snap_index=1,
+        class_name="vehicle", crop_out_dir=tmp_path / "c2",
+    )
+
+    th, tw = tight_rec.last_crop.shape[:2]
+    wh, ww = wide_rec.last_crop.shape[:2]
+    assert wh > th and ww > tw
+
+
+def test_plate_pad_frac_defaults_to_010(vehicle_snap: Path, tmp_path: Path) -> None:
+    """Default preserves the historical behaviour so existing sessions
+    re-run identically."""
+    det = PlateDetection(bbox=(80, 90, 120, 110), det_confidence=0.9)
+    rec = _CropCapturingRecognizer()
+    runner = PipelineRunner("default", _FakeDetector(det), rec)
+    assert runner._plate_pad_frac == 0.10
+    runner.run(
+        image_path=vehicle_snap, track_id=1, snap_index=1,
+        class_name="vehicle", crop_out_dir=tmp_path / "c",
+    )
+    # bbox is 40x20; pad 0.10 -> +4px each side x, +2px each side y ->
+    # crop is 48 wide x 24 tall.
+    ch, cw = rec.last_crop.shape[:2]
+    assert (cw, ch) == (48, 24)
