@@ -53,10 +53,25 @@ class Recognizer(Protocol):
 class PipelineRunner:
     """Detector + Recognizer + I/O scaffolding under a single name."""
 
-    def __init__(self, name: str, detector: Detector, recognizer: Recognizer) -> None:
+    def __init__(
+        self,
+        name: str,
+        detector: Detector,
+        recognizer: Recognizer,
+        *,
+        plate_pad_frac: float = 0.10,
+    ) -> None:
         self.name = name
         self._detector = detector
         self._recognizer = recognizer
+        # Padding (as a fraction of plate-bbox side length) added around
+        # the detected plate before the OCR crop. The 2026-05-30 garbage
+        # analysis found 74 % of high-conf misreads were exactly 6 chars
+        # (one short of a 7-char UK plate) -- the OCR being fed plates
+        # with an edge character clipped. A larger pad gives the OCR the
+        # whole plate to segment. Default 0.10 preserves the historical
+        # behaviour; the experiment sweeps this.
+        self._plate_pad_frac = plate_pad_frac
 
     def run(
         self,
@@ -116,7 +131,9 @@ class PipelineRunner:
                         pipeline_ms=t.ms, error=None,
                     )
 
-                crop = crop_with_padding(image, detection.bbox, pad_frac=0.10)
+                crop = crop_with_padding(
+                    image, detection.bbox, pad_frac=self._plate_pad_frac
+                )
                 crop_path = _save_crop(crop, crop_out_dir, image_name)
                 read = self._recognizer.recognize(crop)
             except Exception as e:  # noqa: BLE001 — surfaced into PlateResult.error
