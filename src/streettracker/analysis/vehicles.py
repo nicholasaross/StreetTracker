@@ -21,6 +21,10 @@ Output schema (per vehicle):
       "gap_minutes_min": 226.5,             # min same (= max when n=2)
       "directions": {"right to left": 2, "left to right": 0},
       "colors":     {"white": 2},
+      "make": "FORD",                       # from the DVSA MOT label;
+      "model": "FOCUS",                     #   null if plate unread,
+      "year": 2017,                         #   <3yr car, or dvsa-label
+      "make_model_source": "dvsa",          #   not run
       "visits": [
         {
           "track_id": 42,
@@ -121,6 +125,17 @@ class Vehicle:
     # ``plate`` is the highest-conf variant. Empty list when no
     # clustering happened (either disabled or no near-neighbours).
     plate_variants: list[tuple[str, float]] = field(default_factory=list)
+    # Make/model/year from the DVSA MOT label harvest
+    # (``<session>_dvsa_labels.json``, produced by ``streettracker
+    # dvsa-label``). Ground truth for readable, >=3yr-old plates; None
+    # when no DVSA label exists (plate unread, <3yr car not yet on the
+    # MOT register, or dvsa-label not run). ``make_model_source``
+    # records provenance ("dvsa") so a later CNN path can populate the
+    # same fields without ambiguity about where a value came from.
+    make: str | None = None
+    model: str | None = None
+    year: int | None = None
+    make_model_source: str | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -183,6 +198,50 @@ def _cluster_plates_by_similarity(
     return canonical
 
 
+def _load_dvsa_labels(path: Path) -> dict[str, dict[str, Any]]:
+    """Return ``{plate -> label-row}`` from a ``_dvsa_labels.json``
+    harvest, or ``{}`` if the file is absent / unreadable. Plate keys
+    are registration strings (uppercase, no spaces) -- the same
+    normalisation applied to OCR reads, so they join directly."""
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    labels = payload.get("labels")
+    return labels if isinstance(labels, dict) else {}
+
+
+def _attach_dvsa_labels(
+    vehicles: list[Vehicle], labels: dict[str, dict[str, Any]]
+) -> int:
+    """Fill make/model/year on each plated vehicle from the DVSA harvest.
+
+    Tries the canonical plate first, then any fuzzy ``plate_variants``
+    (the canonical read may have 404'd while a lower-conf variant
+    resolved). Returns the number of vehicles labelled. Empty
+    ``labels`` is a no-op -- fields stay ``None``.
+    """
+    if not labels:
+        return 0
+    n = 0
+    for v in vehicles:
+        if v.plate is None:
+            continue
+        for cand in (v.plate, *(p for p, _c in v.plate_variants)):
+            row = labels.get(cand)
+            if not row:
+                continue
+            v.make = row.get("make") or None
+            v.model = row.get("model") or None
+            v.year = row.get("year")
+            v.make_model_source = "dvsa"
+            n += 1
+            break
+    return n
+
+
 def build_vehicles(
     session_dir: Path,
     *,
@@ -190,6 +249,7 @@ def build_vehicles(
     include_unread: bool = True,
     fuzzy_ratio: int | None = FUZZY_RATIO_DEFAULT,
     canonical_only: bool = True,
+    dvsa_labels_path: Path | None = None,
 ) -> list[Vehicle]:
     """Build per-vehicle aggregations from a closed session's outputs.
 
@@ -217,6 +277,12 @@ def build_vehicles(
     of high-conf 'reads' are OCR garbage that the OCR confidence
     score cannot itself reject; this filter prevents that garbage
     from spawning ghost vehicles or contaminating fuzzy clusters.
+
+    ``dvsa_labels_path`` overrides where the DVSA MOT label harvest is
+    read from (default ``<session>_dvsa_labels.json``). When present,
+    each plated vehicle's ``make``/``model``/``year`` are filled from
+    the plate-keyed labels (``make_model_source="dvsa"``); an absent
+    file leaves them ``None``.
 
     Cars only -- ``class_name == "car"`` tracks. Person tracks are
     skipped (snaps are anatomically wrong for ALPR).
@@ -351,6 +417,16 @@ def build_vehicles(
         out.append(v)
 
     out.sort(key=lambda v: v.first_seen)
+
+    # DVSA-first make/model: join the plate-keyed MOT label harvest
+    # (``streettracker dvsa-label``) onto the plated vehicles. Absent
+    # file -> make/model/year stay None.
+    labels_path = (
+        dvsa_labels_path
+        if dvsa_labels_path is not None
+        else session_dir / f"{session}_dvsa_labels.json"
+    )
+    _attach_dvsa_labels(out, _load_dvsa_labels(labels_path))
     return out
 
 
@@ -517,6 +593,9 @@ def main(argv: list[str] | None = None) -> int:
     recurring = [v for v in plated if v.n_visits >= 2]
     print(f"  plated:    {len(plated)}")
     print(f"  recurring: {len(recurring)}  (>=2 visits in session)")
+    labelled = [v for v in plated if v.make]
+    if labelled:
+        print(f"  make/model: {len(labelled)}  (DVSA-labelled)")
     merged = [v for v in plated if v.plate_variants]
     if merged:
         print(f"  fuzzy-merged: {len(merged)}  (OCR variants collapsed)")
