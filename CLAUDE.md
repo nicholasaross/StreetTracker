@@ -201,6 +201,9 @@ names differ from the example.
 **Conclusion:** ANPR coverage objective is met. The 78 % aliasing-free
 floor is camera-geometry-bound (oblique angles, motion blur, occlusion),
 not solvable by more snaps. Pivoted to dataset-level enrichment.
+Capture-side read-rate tuning is likewise exhausted — near-camera band
+position and camera exposure/shutter (Step 15) were both tried and
+falsified.
 
 ### Step trajectory
 
@@ -217,6 +220,7 @@ not solvable by more snaps. Pivoted to dataset-level enrichment.
 | 13a | 05-27 | Direction-aware `pipeline_interval_ms_by_direction` runtime — fire faster in one direction's narrow clean-read window | Deployed `{forward:300, reverse:400}` (R→L 1.33× rate, L→R unchanged). Validation soak pending. | PRs #30/#31 |
 | 13b | 05-27 | Multi-frame plate consensus (`analysis/alpr/consensus.py`) — confidence-weighted character voting across a track's reads | **Negative result on this scene** (-43 pp vs best-of-N at conf 0.9). Per-image reads of one track frequently capture DIFFERENT physical plates (parked cars vs tracked car vs mask leakage), so voting dilutes. Primitive kept as infra. | — |
 | 14 | 05-27 | Fuzzy plate clustering in `vehicles.py` (rapidfuzz, ratio default 85, same-length only); no temporal-overlap rejection | `LD22BWG`/`LD22BMG` correctly merged (BotSORT ID-switch on same silver hatchback); Step 11 recurring 6 → 8. | PRs #33/#34 |
+| 15 | 05-31 | Reolink **Anti-Smearing** exposure + shutter cap (`125→32`) to freeze near-camera motion blur; validation soak ran a widened `[0.10,0.60]` band, assessed + reverted 06-01 | **Falsified.** Canonical read-rate ~halved (matched midday daylight 48.5 → 25.1 %, -23 pp, both directions); near-camera zone did not recover. Faster shutter → higher gain → sensor noise costs more than the motion blur it removes (mid-road reads were never blur-limited). Reverted ISP to Auto/125 + band to `[0.10,0.45]`. **Capture-side levers (band position + exposure) exhausted.** | — |
 
 Aggregation scripts that re-produce each measurement table live at
 `.claude/aggregate_step{8,10,11}.py` and `.claude/measure_consensus.py`.
