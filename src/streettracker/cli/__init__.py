@@ -13,6 +13,7 @@ Subcommands:
 - ``streettracker alpr-label <session>`` — interactive plate labeling
 - ``streettracker alpr-report <session>`` — render comparison HTML
 - ``streettracker dvsa-label <session>`` — DVSA MOT make/model lookup per plate
+- ``streettracker dvsa-apply <session>`` — write DVSA make/model onto per-track records
 
 Each subcommand owns its own ``argparse.ArgumentParser`` in its module's
 ``main()`` — we dispatch on the first positional rather than using
@@ -40,6 +41,7 @@ commands:
   alpr-label      interactive plate labeling
   alpr-report     render the ALPR comparison HTML
   dvsa-label      look up make/model via DVSA MOT API per plate
+  dvsa-apply      write harvested DVSA make/model onto a session's records
 
 Run ``streettracker <command> --help`` for per-command options.
 """
@@ -97,6 +99,9 @@ def main(argv: list[str] | None = None) -> int:
     if head == "dvsa-label":
         from streettracker.cli.dvsa_label import main as dvsa_label_main
         return dvsa_label_main(rest)
+    if head == "dvsa-apply":
+        from streettracker.analysis.dvsa_apply import main as dvsa_apply_main
+        return dvsa_apply_main(rest)
 
     if head == "run":
         from streettracker.cli.run import main as run_main

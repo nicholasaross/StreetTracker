@@ -28,7 +28,7 @@ class TrackRecord:
         time:      time_start[/end][/_unix][/_s], duration_visible
         motion:    direction, speed_px_s, displacement_px, net_displacement_px, lane
         detection: avg_confidence, num_detections
-        attrs:     color
+        attrs:     color, make/model/year (off-device DVSA/CNN enrichment)
         assets:    main_snaps (list of int N values whose _main_N.jpg landed)
                    main_snap_bboxes (parallel list of sub-stream bboxes at fire time)
     """
@@ -64,6 +64,15 @@ class TrackRecord:
     # surfaced by the 2026-05-25 soak re-run. See
     # :func:`streettracker.device.runtime._fire_snap`.
     main_snap_bboxes: list[list[int] | None] | None = None
+    # Make/model/year enrichment, filled OFF-DEVICE by a post-process
+    # pass (never the live runtime). ``make_model_source`` is "dvsa"
+    # when set from the DVSA MOT harvest (``streettracker dvsa-apply``)
+    # and "cnn" once the CompCars classifier lands. All None on a
+    # freshly-finalised track and on sessions written before the fields.
+    make: str | None = None
+    model: str | None = None
+    year: int | None = None
+    make_model_source: str | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
         return asdict(self)
