@@ -94,7 +94,13 @@ Session files:
 - `{session}_alpr.json` + `{session}_alpr_by_track.json` — per-image
   + per-track ALPR rollup (after running `alpr-run`)
 - `{session}_vehicles.json` — per-vehicle plate-anchored aggregation
-  (after running `vehicles`)
+  (after running `vehicles`); carries DVSA `make`/`model`/`year` once
+  `dvsa-label` has harvested for the session
+- `{session}_dvsa_labels.json` — DVSA MOT `make`/`model`/`year` per
+  plate (after `dvsa-label`); `dvsa-apply` folds it onto `data.json` +
+  `events.jsonl` per-track records
+- `cross_session_repeats.json` — repeat vehicles pooled across a cohort
+  of sessions (after `vehicles --across`; written to the output root)
 
 JSON record fields: see `common/schema.py` (`TrackRecord`, `SessionMeta`).
 
@@ -108,7 +114,10 @@ uv run mypy src/                                         # type-check
 uv run streettracker batch sample.mp4                    # batch dev-box
 uv run streettracker export-engine yolov8m.pt            # build TRT on device
 uv run streettracker alpr-run output/<session>           # offline ALPR
-uv run streettracker vehicles output/<session>           # per-vehicle aggregation
+uv run streettracker dvsa-label output/<session>         # DVSA make/model harvest (needs configs/dvsa.json)
+uv run streettracker dvsa-apply output/<session>         # fold DVSA make/model onto per-track records
+uv run streettracker vehicles output/<session>           # per-vehicle aggregation (+ DVSA make/model)
+uv run streettracker vehicles output/<a> --across output/<b> ...  # cross-session repeat vehicles
 ```
 
 **Windows + Git Bash gotcha for `streettracker pull`**: MSYS rewrites
@@ -196,7 +205,7 @@ names differ from the example.
 | Per-car aliasing-free | **~78 %** — intrinsic floor of camera + scene, verified across two sessions. Further snap-budget tuning will not move it. |
 | Misclassification | Confidence-weighted class voting (PR #23) defends single-frame flips; consistent model errors still possible. |
 | Direction-aware throttling | Deployed 2026-05-27 (`pipeline_interval_ms_by_direction={forward:300, reverse:400}`). Validation soak pending. |
-| Dataset-level pivot | `streettracker vehicles` aggregator landed (Step 12); fuzzy plate clustering landed (Step 14). Make/model, learned recolor, visual re-id still to do. |
+| Dataset-level pivot | `vehicles` aggregator (Step 12) + fuzzy clustering (Step 14). **Make/model DVSA-first prong shipped** (PRs #41/#42/#43): `dvsa-label`→`dvsa-apply`→`vehicles` (+`--across`); covers the readable ~25-30 % of cars. **CompCars CNN is next** (universal, for unreadable plates) — see [Make/model classification](#makemodel-classification). Learned recolor + visual re-id still to do. |
 
 **Conclusion:** ANPR coverage objective is met. The 78 % aliasing-free
 floor is camera-geometry-bound (oblique angles, motion blur, occlusion),
@@ -204,6 +213,32 @@ not solvable by more snaps. Pivoted to dataset-level enrichment.
 Capture-side read-rate tuning is likewise exhausted — near-camera band
 position and camera exposure/shutter (Step 15) were both tried and
 falsified.
+
+### Make/model classification
+
+The dataset-level enrichment pivot. Two prongs:
+
+- **DVSA-first (shipped, PRs #41/#42/#43).** The DVSA MOT API returns
+  ground-truth `make`/`model`/`year` from a plate. Pipeline:
+  `dvsa-label <session>` harvests `_dvsa_labels.json` (needs
+  `configs/dvsa.json`; canonical-plate-filtered so OCR garbage doesn't
+  bill the API) → `dvsa-apply <session>` writes make/model onto each
+  car's `data.json` + `events.jsonl` record → `vehicles` joins it
+  per-vehicle, and `vehicles <dir> --across <dirs>` pools repeat
+  vehicles across sessions (same-day / different-day). `TrackRecord` +
+  `Vehicle` carry `make`/`model`/`year`/`make_model_source` (= `"dvsa"`).
+  Coverage is the readable, ≥3yr-old subset (~25-30 % of cars on this
+  scene): newer cars 404 (no MOT record yet), unread plates aren't
+  covered at all.
+- **CompCars CNN (next — NOT started).** A fine-tuned classifier for the
+  unreadable majority (works without a plate). The full plan + the
+  already-resolved design decisions live in
+  `.claude/makemodel_design.md` (EfficientNet-B0 on CompCars'
+  surveillance subset; exact year; trained on the local RTX 3080; DVSA
+  auto-labels the validation set). **Start at its §9 step 1: request
+  CompCars dataset access** (multi-day turnaround — it blocks training).
+  These predictions will carry `make_model_source = "cnn"`, distinct
+  from the `"dvsa"` ground truth.
 
 ### Step trajectory
 
