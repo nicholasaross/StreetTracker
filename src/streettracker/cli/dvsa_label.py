@@ -22,7 +22,7 @@ eligible mid-session.
 
 The accumulator is the ground-truth source for the in-house
 make/model classifier's regression test (see the planning doc at
-``.claude/makemodel_design.md`` and the approved plan file).
+``docs/makemodel_design.md`` and the approved plan file).
 """
 
 from __future__ import annotations

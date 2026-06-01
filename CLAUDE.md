@@ -233,7 +233,7 @@ The dataset-level enrichment pivot. Two prongs:
 - **CompCars CNN (next — NOT started).** A fine-tuned classifier for the
   unreadable majority (works without a plate). The full plan + the
   already-resolved design decisions live in
-  `.claude/makemodel_design.md` (EfficientNet-B0 on CompCars'
+  `docs/makemodel_design.md` (EfficientNet-B0 on CompCars'
   surveillance subset; exact year; trained on the local RTX 3080; DVSA
   auto-labels the validation set). **Start at its §9 step 1: request
   CompCars dataset access** (multi-day turnaround — it blocks training).
