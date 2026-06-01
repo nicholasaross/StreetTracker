@@ -147,6 +147,35 @@ class Vehicle:
         return d
 
 
+@dataclass(slots=True)
+class CrossVehicle:
+    """A vehicle pooled across >=2 sessions, keyed by fuzzy-canonical
+    plate. ``kind`` classifies repeat behaviour by distinct LOCAL
+    calendar date: ``different-day`` (>=2 dates -- a regular, incl. any
+    car seen in multiple sessions), ``same-day`` (>=2 visits on one
+    date), ``one-off`` (single visit)."""
+
+    plate: str
+    make: str | None
+    model: str | None
+    year: int | None
+    make_model_source: str | None
+    n_visits: int
+    n_dates: int
+    dates: list[str]
+    sessions: list[str]
+    kind: str
+    directions: dict[str, int] = field(default_factory=dict)
+    first_seen: str = ""
+    last_seen: str = ""
+    # OCR variants merged in (within- and cross-session); the canonical
+    # ``plate`` is the highest-conf string across all sessions.
+    plate_variants: list[str] = field(default_factory=list)
+
+    def to_json_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 def _cluster_plates_by_similarity(
     plates_with_conf: list[tuple[str, float]],
     *,
@@ -430,6 +459,92 @@ def build_vehicles(
     return out
 
 
+def build_cross_session(
+    session_dirs: list[Path],
+    *,
+    conf_threshold: float = CONF_THRESHOLD,
+    fuzzy_ratio: int | None = FUZZY_RATIO_DEFAULT,
+    canonical_only: bool = True,
+) -> list[CrossVehicle]:
+    """Pool plated vehicles across sessions, classifying repeats by date.
+
+    Calls :func:`build_vehicles` per session (so the DVSA make/model
+    join + within-session fuzzy clustering apply), then runs one more
+    fuzzy pass across the per-session canonical plates so a 1-char OCR
+    diff doesn't split one physical car across two sessions. Unread
+    (plate=None) vehicles are dropped -- cross-session identity needs a
+    plate. Returns ``CrossVehicle`` records sorted regulars-first
+    (different-day, then same-day, then one-off; ties by visit count).
+    """
+    plated: list[tuple[str, Vehicle]] = []
+    conf_by_plate: dict[str, float] = {}
+    for d in session_dirs:
+        for v in build_vehicles(
+            d,
+            conf_threshold=conf_threshold,
+            fuzzy_ratio=fuzzy_ratio,
+            canonical_only=canonical_only,
+        ):
+            if v.plate is None:
+                continue
+            plated.append((d.name, v))
+            conf_by_plate[v.plate] = max(
+                conf_by_plate.get(v.plate, 0.0), v.plate_conf or 0.0
+            )
+
+    if fuzzy_ratio is not None:
+        canonical = _cluster_plates_by_similarity(
+            list(conf_by_plate.items()), ratio=fuzzy_ratio
+        )
+    else:
+        canonical = {p: p for p in conf_by_plate}
+
+    pool: dict[str, dict[str, Any]] = {}
+    for sname, v in plated:
+        key = canonical.get(v.plate, v.plate)
+        rec = pool.setdefault(
+            key,
+            {"make": None, "model": None, "year": None,
+             "make_model_source": None, "sessions": set(),
+             "variants": set(), "visits": []},
+        )
+        rec["sessions"].add(sname)
+        if v.plate != key:
+            rec["variants"].add(v.plate)
+        for pv, _c in v.plate_variants:
+            rec["variants"].add(pv)
+        if v.make and rec["make"] is None:
+            rec["make"], rec["model"], rec["year"], rec["make_model_source"] = (
+                v.make, v.model, v.year, v.make_model_source
+            )
+        for vis in v.visits:
+            rec["visits"].append((vis.time_start, vis.direction))
+
+    out: list[CrossVehicle] = []
+    for plate, rec in pool.items():
+        starts = sorted(t for t, _d in rec["visits"] if t)
+        dates = sorted({t[:10] for t, _d in rec["visits"] if t})
+        n_visits = len(rec["visits"])
+        kind = (
+            "different-day" if len(dates) >= 2
+            else "same-day" if n_visits >= 2
+            else "one-off"
+        )
+        out.append(CrossVehicle(
+            plate=plate, make=rec["make"], model=rec["model"], year=rec["year"],
+            make_model_source=rec["make_model_source"],
+            n_visits=n_visits, n_dates=len(dates), dates=dates,
+            sessions=sorted(rec["sessions"]), kind=kind,
+            directions=dict(Counter(d for _t, d in rec["visits"])),
+            first_seen=starts[0] if starts else "",
+            last_seen=starts[-1] if starts else "",
+            plate_variants=sorted(rec["variants"]),
+        ))
+    _kind_rank = {"different-day": 0, "same-day": 1, "one-off": 2}
+    out.sort(key=lambda c: (_kind_rank[c.kind], -c.n_visits, c.plate))
+    return out
+
+
 def _make_single_vehicle(rec: dict, best: dict | None) -> Vehicle:
     visit = _make_visit(rec, best)
     plate = best["ocr_text"] if best else None
@@ -563,11 +678,91 @@ def _build_parser() -> argparse.ArgumentParser:
             "flag of the same name."
         ),
     )
+    ap.add_argument(
+        "--across",
+        type=Path,
+        nargs="+",
+        default=None,
+        metavar="SESSION_DIR",
+        help=(
+            "Cross-session mode: pool the primary session_dir with these "
+            "additional session dir(s) into a repeat-vehicle summary "
+            "(regulars seen on >=2 calendar dates). Reuses the fuzzy "
+            "clustering so OCR variants merge across sessions. Writes "
+            "cross_session_repeats.json (see --out) and prints the summary."
+        ),
+    )
+    ap.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help=(
+            "Output path for the --across JSON (default: "
+            "<session_dir parent>/cross_session_repeats.json)."
+        ),
+    )
     return ap
+
+
+def _run_cross(args: argparse.Namespace) -> int:
+    dirs = [args.session_dir, *args.across]
+    for d in dirs:
+        if not d.is_dir():
+            print(f"not a directory: {d}", file=sys.stderr)
+            return 2
+    cross = build_cross_session(
+        dirs,
+        conf_threshold=args.conf,
+        fuzzy_ratio=None if args.no_fuzzy else args.fuzzy_ratio,
+        canonical_only=not args.include_non_canonical,
+    )
+    out_path = args.out or (args.session_dir.parent / "cross_session_repeats.json")
+    out_path.write_text(json.dumps([c.to_json_dict() for c in cross], indent=2))
+    _print_cross_summary(cross, dirs, out_path)
+    return 0
+
+
+def _print_cross_summary(
+    cross: list[CrossVehicle], dirs: list[Path], out_path: Path
+) -> None:
+    diff = [c for c in cross if c.kind == "different-day"]
+    same = [c for c in cross if c.kind == "same-day"]
+    both = [c for c in cross if len(c.sessions) >= 2]
+    labelled = sum(1 for c in cross if c.make)
+
+    def _mm(c: CrossVehicle) -> str:
+        if not c.make:
+            return ""
+        yr = f" {c.year}" if c.year else ""
+        return f"{c.make} {(c.model or '')[:18]}{yr}"
+
+    print(f"[vehicles --across] wrote {out_path}  ({len(cross)} distinct vehicles)")
+    print(f"  sessions:               {', '.join(d.name for d in dirs)}")
+    print(f"  one-off:                {sum(1 for c in cross if c.kind == 'one-off')}")
+    print(f"  same-day repeats:       {len(same)}")
+    print(f"  DIFFERENT-day repeats:  {len(diff)}  (seen on >=2 dates)")
+    print(f"  seen in >=2 sessions:   {len(both)}")
+    print(f"  with DVSA make/model:   {labelled}/{len(cross)}")
+    if diff:
+        print("\n  DIFFERENT-DAY repeats (regulars):")
+        print(f"    {'plate':<9} {'vis':>3} {'days':>4} {'sess':>4}  make/model")
+        for c in diff:
+            var = f"  ~{','.join(c.plate_variants)}" if c.plate_variants else ""
+            print(
+                f"    {c.plate:<9} {c.n_visits:>3} {c.n_dates:>4} "
+                f"{len(c.sessions):>4}  {_mm(c)}{var}"
+            )
+    if same:
+        print(f"\n  SAME-DAY repeats (first 20 of {len(same)}):")
+        print(f"    {'plate':<9} {'vis':>3}  make/model")
+        for c in same[:20]:
+            print(f"    {c.plate:<9} {c.n_visits:>3}  {_mm(c)}")
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    if args.across:
+        return _run_cross(args)
     session_dir: Path = args.session_dir
     if not session_dir.is_dir():
         print(f"not a directory: {session_dir}", file=sys.stderr)

@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from streettracker.analysis.vehicles import build_vehicles
+from streettracker.analysis.vehicles import build_cross_session, build_vehicles
 from streettracker.common.schema import TrackRecord
 
 
@@ -39,6 +39,40 @@ def _write_session(
             json.dumps(dvsa_labels)
         )
     return session
+
+
+def _write_named_session(
+    tmp_path: Path,
+    name: str,
+    tracks: list[TrackRecord],
+    alpr_by_track: dict,
+    dvsa_labels: dict | None = None,
+) -> Path:
+    """Like _write_session but with a caller-chosen session name -- the
+    cross-session aggregator keys on the dir name, so the cohort needs
+    distinct names."""
+    session = tmp_path / name
+    session.mkdir()
+    (session / f"{name}_data.json").write_text(
+        json.dumps([asdict(t) for t in tracks])
+    )
+    (session / f"{name}_alpr_by_track.json").write_text(json.dumps(alpr_by_track))
+    if dvsa_labels is not None:
+        (session / f"{name}_dvsa_labels.json").write_text(json.dumps(dvsa_labels))
+    return session
+
+
+def _alpr_one(track_id: int, plate: str, conf: float) -> dict:
+    return {
+        "tracks": [{
+            "track_id": track_id,
+            "best_preferred": {
+                "track_id": track_id, "snap_index": 1,
+                "image": f"vehicle_{track_id}_main_1.jpg",
+                "ocr_text": plate, "ocr_conf": conf, "det_conf": 0.85,
+            },
+        }],
+    }
 
 
 def test_build_vehicles_single_plated_visit(
@@ -645,3 +679,81 @@ def test_build_vehicles_dvsa_label_via_fuzzy_variant(
     assert v.model == "ASTRA"
     assert v.year == 2015
     assert v.make_model_source == "dvsa"
+
+
+def test_cross_session_different_day_repeat(
+    tmp_path: Path, sample_track: TrackRecord
+) -> None:
+    """Same plate in two sessions on different calendar dates -> one
+    CrossVehicle classified different-day, carrying the DVSA make/model."""
+    sa = _write_named_session(
+        tmp_path, "session_A", [sample_track], _alpr_one(42, "AB12CDE", 0.98),
+        dvsa_labels={"labels": {"AB12CDE": {
+            "make": "FORD", "model": "FOCUS", "year": 2017, "track_ids": [42]}}},
+    )
+    b = replace(
+        sample_track, track_id=43,
+        time_start="2026-05-18T09:00:00+01:00",
+        time_start_unix=sample_track.time_start_unix + 86400,
+        time_end_unix=sample_track.time_end_unix + 86400,
+    )
+    sb = _write_named_session(tmp_path, "session_B", [b], _alpr_one(43, "AB12CDE", 0.95))
+
+    cross = build_cross_session([sa, sb])
+    plated = [c for c in cross if c.plate == "AB12CDE"]
+    assert len(plated) == 1
+    c = plated[0]
+    assert c.kind == "different-day"
+    assert c.n_visits == 2
+    assert c.n_dates == 2
+    assert c.dates == ["2026-05-17", "2026-05-18"]
+    assert c.sessions == ["session_A", "session_B"]
+    assert c.make == "FORD"  # carried from session A's DVSA label
+    assert c.make_model_source == "dvsa"
+
+
+def test_cross_session_same_day_repeat(
+    tmp_path: Path, sample_track: TrackRecord
+) -> None:
+    """Two visits of one plate on the SAME date (one session) -> same-day."""
+    t2 = replace(
+        sample_track, track_id=43,
+        time_start="2026-05-17T15:00:00+01:00",
+        time_start_unix=sample_track.time_start_unix + 1600,
+        time_end_unix=sample_track.time_end_unix + 1600,
+    )
+    alpr = {"tracks": [
+        _alpr_one(42, "AB12CDE", 0.98)["tracks"][0],
+        _alpr_one(43, "AB12CDE", 0.95)["tracks"][0],
+    ]}
+    s = _write_named_session(tmp_path, "session_A", [sample_track, t2], alpr)
+    cross = build_cross_session([s])
+    c = next(c for c in cross if c.plate == "AB12CDE")
+    assert c.kind == "same-day"
+    assert c.n_visits == 2
+    assert c.n_dates == 1
+    assert c.sessions == ["session_A"]
+
+
+def test_cross_session_fuzzy_merges_variants_across_sessions(
+    tmp_path: Path, sample_track: TrackRecord
+) -> None:
+    """A 1-char OCR diff across sessions collapses to one CrossVehicle."""
+    sa = _write_named_session(tmp_path, "session_A", [sample_track],
+                              _alpr_one(42, "AB12CDE", 0.98))
+    b = replace(
+        sample_track, track_id=43,
+        time_start="2026-05-18T09:00:00+01:00",
+        time_start_unix=sample_track.time_start_unix + 86400,
+        time_end_unix=sample_track.time_end_unix + 86400,
+    )
+    sb = _write_named_session(tmp_path, "session_B", [b],
+                              _alpr_one(43, "AB12CXE", 0.95))
+    cross = build_cross_session([sa, sb])
+    plated = [c for c in cross if c.plate is not None]
+    assert len(plated) == 1
+    c = plated[0]
+    assert c.plate == "AB12CDE"           # higher-conf canonical
+    assert "AB12CXE" in c.plate_variants  # merged variant
+    assert c.kind == "different-day"
+    assert c.n_visits == 2
