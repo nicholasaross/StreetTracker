@@ -24,6 +24,7 @@ def _write_session(
     tmp_path: Path,
     tracks: list[TrackRecord],
     alpr_by_track: dict | None = None,
+    dvsa_labels: dict | None = None,
 ) -> Path:
     session = tmp_path / "session_test"
     session.mkdir()
@@ -32,6 +33,10 @@ def _write_session(
     if alpr_by_track is not None:
         (session / "session_test_alpr_by_track.json").write_text(
             json.dumps(alpr_by_track)
+        )
+    if dvsa_labels is not None:
+        (session / "session_test_dvsa_labels.json").write_text(
+            json.dumps(dvsa_labels)
         )
     return session
 
@@ -535,3 +540,108 @@ def test_build_vehicles_include_non_canonical_recovers_legacy_behavior(
     vehicles = build_vehicles(session, canonical_only=False)
     plated = [v.plate for v in vehicles if v.plate is not None]
     assert plated == ["1157WHT"]
+
+
+def test_build_vehicles_attaches_dvsa_make_model(
+    tmp_path: Path, sample_track: TrackRecord
+) -> None:
+    """When <session>_dvsa_labels.json is present, the plate-keyed
+    make/model/year join populates the vehicle (DVSA-first prong)."""
+    alpr = {
+        "tracks": [{
+            "track_id": 42,
+            "best_preferred": {
+                "track_id": 42, "snap_index": 1,
+                "image": "vehicle_42_main_1.jpg",
+                "ocr_text": "AB12CDE", "ocr_conf": 0.98, "det_conf": 0.85,
+            },
+        }],
+    }
+    dvsa = {
+        "labels": {
+            "AB12CDE": {
+                "plate": "AB12CDE", "make": "FORD", "model": "FOCUS",
+                "year": 2017, "primary_colour": "Blue",
+                "fuel_type": "Petrol", "track_ids": [42],
+            },
+        },
+        "unknown": [], "skipped_non_canonical": [],
+    }
+    session = _write_session(tmp_path, [sample_track], alpr, dvsa_labels=dvsa)
+
+    v = build_vehicles(session)[0]
+    assert v.plate == "AB12CDE"
+    assert v.make == "FORD"
+    assert v.model == "FOCUS"
+    assert v.year == 2017
+    assert v.make_model_source == "dvsa"
+    # round-trips through the JSON shape the CLI writer emits
+    assert v.to_json_dict()["make"] == "FORD"
+
+
+def test_build_vehicles_no_dvsa_labels_leaves_make_model_none(
+    tmp_path: Path, sample_track: TrackRecord
+) -> None:
+    """No labels file -> make/model/year/source stay None."""
+    alpr = {
+        "tracks": [{
+            "track_id": 42,
+            "best_preferred": {
+                "track_id": 42, "snap_index": 1,
+                "image": "vehicle_42_main_1.jpg",
+                "ocr_text": "AB12CDE", "ocr_conf": 0.98, "det_conf": 0.85,
+            },
+        }],
+    }
+    session = _write_session(tmp_path, [sample_track], alpr)  # no dvsa file
+
+    v = build_vehicles(session)[0]
+    assert v.plate == "AB12CDE"
+    assert v.make is None
+    assert v.model is None
+    assert v.year is None
+    assert v.make_model_source is None
+
+
+def test_build_vehicles_dvsa_label_via_fuzzy_variant(
+    tmp_path: Path, sample_track: TrackRecord
+) -> None:
+    """If the canonical plate has no DVSA label but a fuzzy variant
+    does, the variant's make/model is used -- the canonical (higher-
+    conf) read 404'd while a lower-conf OCR variant resolved on DVSA."""
+    t2 = replace(
+        sample_track, track_id=99,
+        time_start_unix=sample_track.time_end_unix + 120,
+        time_end_unix=sample_track.time_end_unix + 127,
+    )
+    alpr = {
+        "tracks": [
+            {"track_id": 42, "best_preferred": {
+                "track_id": 42, "snap_index": 1,
+                "image": "vehicle_42_main_1.jpg",
+                "ocr_text": "AB12CDE", "ocr_conf": 0.98, "det_conf": 0.85}},
+            {"track_id": 99, "best_preferred": {
+                "track_id": 99, "snap_index": 1,
+                "image": "vehicle_99_main_1.jpg",
+                "ocr_text": "AB12CXE", "ocr_conf": 0.93, "det_conf": 0.81}},
+        ],
+    }
+    # canonical AB12CDE not on file; the merged variant AB12CXE is.
+    dvsa = {
+        "labels": {
+            "AB12CXE": {"make": "VAUXHALL", "model": "ASTRA",
+                        "year": 2015, "track_ids": [99]},
+        },
+        "unknown": ["AB12CDE"], "skipped_non_canonical": [],
+    }
+    session = _write_session(tmp_path, [sample_track, t2], alpr, dvsa_labels=dvsa)
+
+    plated = [v for v in build_vehicles(session) if v.plate is not None]
+    assert len(plated) == 1
+    v = plated[0]
+    assert v.plate == "AB12CDE"  # canonical = higher conf
+    assert v.plate_variants == [("AB12CXE", pytest.approx(0.93))]
+    assert v.make == "VAUXHALL"
+    assert v.model == "ASTRA"
+    assert v.year == 2015
+    assert v.make_model_source == "dvsa"
