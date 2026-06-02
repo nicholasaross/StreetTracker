@@ -14,12 +14,16 @@ import math
 from pathlib import Path
 
 import numpy as np
-import torch
+import pytest
 from PIL import Image
-from scipy.io import savemat
 
-from streettracker.analysis.makemodel.model import MakeModelNet, load_checkpoint
-from streettracker.analysis.makemodel.training import (
+# torch / torchvision / scipy aren't installed on CI; skip there.
+torch = pytest.importorskip("torch")
+pytest.importorskip("torchvision")
+savemat = pytest.importorskip("scipy.io").savemat
+
+from streettracker.analysis.makemodel.model import MakeModelNet, load_checkpoint  # noqa: E402
+from streettracker.analysis.makemodel.training import (  # noqa: E402
     TrainConfig,
     evaluate,
     inverse_freq_weights,

@@ -12,12 +12,16 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import torch
 from PIL import Image
-from scipy.io import savemat
-from torch.utils.data import DataLoader, default_collate
 
-from streettracker.analysis.makemodel.dataset import (
+# torch / torchvision / scipy aren't installed on CI; skip there.
+torch = pytest.importorskip("torch")
+pytest.importorskip("torchvision")
+savemat = pytest.importorskip("scipy.io").savemat
+
+from torch.utils.data import DataLoader, default_collate  # noqa: E402
+
+from streettracker.analysis.makemodel.dataset import (  # noqa: E402
     CompCarsSurveillance,
     SurveillanceLabels,
     build_datasets,

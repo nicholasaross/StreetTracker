@@ -22,9 +22,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import torch
 
-from streettracker.analysis.makemodel.model import (
+# torch / torchvision aren't installed on CI (see .github/workflows/ci.yml);
+# importing the model module pulls them in, so skip this whole module there.
+torch = pytest.importorskip("torch")
+pytest.importorskip("torchvision")
+
+from streettracker.analysis.makemodel.model import (  # noqa: E402
     CHECKPOINT_FORMAT,
     MakeModelNet,
     load_checkpoint,
