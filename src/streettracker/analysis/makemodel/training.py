@@ -70,6 +70,10 @@ class TrainConfig:
     patience: int = 5
     seed: int = 0
     force_cpu: bool = False
+    # Freeze the backbone and train only the head(s) -- a linear probe.
+    # Strong regulariser on small data (the UK make set), where a full
+    # fine-tune memorises the few train cars.
+    freeze_backbone: bool = False
     # Cap batches per epoch for smoke / sanity runs; None = full epoch.
     limit_train_batches: int | None = None
     limit_val_batches: int | None = None
@@ -135,12 +139,14 @@ def train_one_epoch(
         if limit_batches is not None and i >= limit_batches:
             break
         images = images.to(device, non_blocking=True)
-        targets = {h: targets[h].to(device, non_blocking=True) for h in _HEADS}
+        # Heads come from head_losses, so this loop serves any head set
+        # (CompCars make+model, or a make-only UK classifier).
+        targets = {h: targets[h].to(device, non_blocking=True) for h in head_losses}
 
         optimizer.zero_grad(set_to_none=True)
         with torch.amp.autocast(device_type=device.type, enabled=amp):
             out = model(images)
-            loss = torch.stack([head_losses[h](out[h], targets[h]) for h in _HEADS]).sum()
+            loss = torch.stack([head_losses[h](out[h], targets[h]) for h in head_losses]).sum()
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
@@ -162,7 +168,8 @@ def evaluate(
     """Per-head top-1 / top-5 accuracy over the val set (or a capped
     prefix). Returns ``{"make": {1: acc, 5: acc}, "model": {...}}``."""
     model.eval()
-    correct: dict[str, dict[int, int]] = {h: dict.fromkeys(_TOPKS, 0) for h in _HEADS}
+    heads = tuple(model.head_sizes)  # head-agnostic: works for make-only too
+    correct: dict[str, dict[int, int]] = {h: dict.fromkeys(_TOPKS, 0) for h in heads}
     total = 0
     for i, (images, targets) in enumerate(loader):
         if limit_batches is not None and i >= limit_batches:
@@ -170,7 +177,7 @@ def evaluate(
         images = images.to(device, non_blocking=True)
         with torch.amp.autocast(device_type=device.type, enabled=amp):
             out = model(images)
-        for head in _HEADS:
+        for head in heads:
             tgt = targets[head].to(device, non_blocking=True)
             batch_hits = topk_correct(out[head], tgt, _TOPKS)
             for k in _TOPKS:
@@ -178,7 +185,7 @@ def evaluate(
         total += images.shape[0]
 
     total = max(total, 1)
-    return {h: {k: correct[h][k] / total for k in _TOPKS} for h in _HEADS}
+    return {h: {k: correct[h][k] / total for k in _TOPKS} for h in heads}
 
 
 def train(sv_root: str | Path, out_dir: str | Path, config: TrainConfig) -> dict:

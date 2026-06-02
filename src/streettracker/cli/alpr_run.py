@@ -23,11 +23,17 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from streettracker.analysis.alpr.base import (
-    atomic_write_text,
-    parse_snap_filename,
-)
+from streettracker.analysis.alpr.base import atomic_write_text
 from streettracker.analysis.alpr.runner import PipelineRunner
+from streettracker.analysis.snap_assets import (
+    discover_vehicle_snaps as _discover_snaps,
+)
+from streettracker.analysis.snap_assets import (
+    load_bbox_index as _load_bbox_index,
+)
+from streettracker.analysis.snap_assets import (
+    resolve_bbox_hint as _resolve_bbox_hint,
+)
 
 # Default location for the bespoke detector weights. The repo's
 # top-level ``.gitignore`` carries ``*.pt`` so anything under here stays
@@ -208,72 +214,6 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _discover_snaps(session_dir: Path) -> list[tuple[Path, int, int, str]]:
-    """Return ``[(path, track_id, snap_index, class_name)]`` for vehicle
-    main snaps only — person crops aren't useful for ALPR."""
-    out = []
-    for p in sorted(session_dir.glob("*_main_*.jpg")):
-        parsed = parse_snap_filename(p.name)
-        if not parsed:
-            continue
-        cls, tid, n = parsed
-        if cls != "vehicle":
-            continue
-        out.append((p, tid, n, cls))
-    return out
-
-
-def _load_bbox_index(
-    session_dir: Path,
-) -> tuple[dict[tuple[int, int], tuple[int, int, int, int]], tuple[int, int] | None]:
-    """Build ``(track_id, snap_index) -> sub_stream_bbox`` from data.json
-    and pick the sub-stream frame size out of _meta.json. Returns empty
-    dict + ``None`` size for sessions that pre-date the bbox-capture
-    change (no error, downstream falls back to YOLO)."""
-    session_label = session_dir.name
-    data_path = session_dir / f"{session_label}_data.json"
-    meta_path = session_dir / f"{session_label}_meta.json"
-
-    bbox_index: dict[tuple[int, int], tuple[int, int, int, int]] = {}
-    if data_path.exists():
-        try:
-            records = json.loads(data_path.read_text())
-        except (OSError, json.JSONDecodeError):
-            records = []
-        for r in records:
-            tid = r.get("track_id")
-            snaps = r.get("main_snaps") or []
-            bboxes = r.get("main_snap_bboxes")
-            if tid is None or not snaps or not bboxes:
-                continue
-            if len(bboxes) != len(snaps):
-                # Schema violation: skip rather than misalign.
-                continue
-            for n, bb in zip(snaps, bboxes, strict=False):
-                if bb is None:
-                    continue
-                try:
-                    x1, y1, x2, y2 = (int(v) for v in bb)
-                except (TypeError, ValueError):
-                    continue
-                bbox_index[(int(tid), int(n))] = (x1, y1, x2, y2)
-
-    sub_size: tuple[int, int] | None = None
-    if meta_path.exists():
-        try:
-            meta = json.loads(meta_path.read_text())
-        except (OSError, json.JSONDecodeError):
-            meta = {}
-        fs = meta.get("frame_size")
-        if isinstance(fs, list) and len(fs) == 2:
-            try:
-                sub_size = (int(fs[0]), int(fs[1]))
-            except (TypeError, ValueError):
-                sub_size = None
-
-    return bbox_index, sub_size
-
-
 def _load_ghost_mask(
     path: Path | None,
 ) -> tuple[list[tuple[int, int, int, int]], tuple[int, int] | None]:
@@ -316,47 +256,6 @@ def _load_ghost_mask(
         except (TypeError, ValueError):
             src_size = None
     return out, src_size
-
-
-def _resolve_bbox_hint(
-    image_path: Path,
-    track_id: int,
-    snap_index: int,
-    bbox_index: dict[tuple[int, int], tuple[int, int, int, int]],
-    sub_size: tuple[int, int] | None,
-) -> tuple[int, int, int, int] | None:
-    """Look up the per-snap bbox and scale it from sub-stream coords
-    into the 4K snap's pixel coords. Returns ``None`` if no bbox is
-    known for this snap, or if we don't know the sub-stream frame
-    size (analysis can't scale safely without it -- YOLO fallback)."""
-    sub_bbox = bbox_index.get((track_id, snap_index))
-    if sub_bbox is None or sub_size is None:
-        return None
-    sub_w, sub_h = sub_size
-    if sub_w <= 0 or sub_h <= 0:
-        return None
-    # Read image dimensions from the JPEG header without decoding the
-    # pixel data. PIL.Image.open is lazy: ``.size`` only parses the
-    # header. PipelineRunner will cv2.imread the same path moments
-    # later, so doing a full second decode here would double the I/O
-    # cost per snap. Pillow is a transitive dep of both ultralytics
-    # and open-image-models so it's already in the venv.
-    try:
-        from PIL import Image
-    except ImportError:
-        return None
-    try:
-        with Image.open(image_path) as im:
-            w, h = im.size
-    except (OSError, ValueError):
-        return None
-    # Sub-stream and 4K may have slightly different aspect ratios
-    # (Reolink's sub is 896:512 = 1.75 vs main 3840:2160 = 1.78), so
-    # scale x and y independently rather than picking a single ratio.
-    sx = w / sub_w
-    sy = h / sub_h
-    x1, y1, x2, y2 = sub_bbox
-    return (int(x1 * sx), int(y1 * sy), int(x2 * sx), int(y2 * sy))
 
 
 def _build_pipelines(args: argparse.Namespace) -> list[PipelineRunner]:
