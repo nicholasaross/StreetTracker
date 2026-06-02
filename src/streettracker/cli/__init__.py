@@ -14,6 +14,7 @@ Subcommands:
 - ``streettracker alpr-report <session>`` — render comparison HTML
 - ``streettracker dvsa-label <session>`` — DVSA MOT make/model lookup per plate
 - ``streettracker dvsa-apply <session>`` — write DVSA make/model onto per-track records
+- ``streettracker makemodel-train <sv_data>`` — fine-tune the make/model CNN on CompCars
 
 Each subcommand owns its own ``argparse.ArgumentParser`` in its module's
 ``main()`` — we dispatch on the first positional rather than using
@@ -42,6 +43,7 @@ commands:
   alpr-report     render the ALPR comparison HTML
   dvsa-label      look up make/model via DVSA MOT API per plate
   dvsa-apply      write harvested DVSA make/model onto a session's records
+  makemodel-train fine-tune the make/model CNN on the CompCars sv_data
 
 Run ``streettracker <command> --help`` for per-command options.
 """
@@ -102,6 +104,9 @@ def main(argv: list[str] | None = None) -> int:
     if head == "dvsa-apply":
         from streettracker.analysis.dvsa_apply import main as dvsa_apply_main
         return dvsa_apply_main(rest)
+    if head == "makemodel-train":
+        from streettracker.analysis.makemodel.training import main as makemodel_train_main
+        return makemodel_train_main(rest)
 
     if head == "run":
         from streettracker.cli.run import main as run_main
