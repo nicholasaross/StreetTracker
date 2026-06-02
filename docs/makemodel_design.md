@@ -10,10 +10,12 @@ built + trained (98.8 % CompCars-val, PR #46) but scored **~1 % on real
 UK street cars** -- a domain gap (CompCars is zoomed frontal toll-camera
 shots; this scene is rear/oblique). Pivoted to a **UK-native make
 classifier** trained on DVSA-auto-labelled local crops (PR #47):
-validated (22.6 % make@1 on 523 cars) but data-bound. The §9 "request
-CompCars access" steps are moot (the dataset was already local, and
-CompCars is the wrong domain regardless). See CLAUDE.md "Make/model
-classification" for the live status + the Orin-mining data-growth loop.
+on-domain training works (~22.6 % make@1) but caps at a **~21 %
+TASK-bound ceiling** -- three levers (tuning, 2× data 440→800 cars,
+best-view selection) all fail to break it. So make/model in production
+is **DVSA-only**; CNN verdict pending (park vs a 384 px-crop retry). The
+§5/§9 CompCars plan is moot (dataset was local, wrong domain regardless).
+See CLAUDE.md "Make/model classification" for the live status.
 
 ## 1. Goal
 
