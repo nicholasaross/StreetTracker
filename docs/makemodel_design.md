@@ -3,9 +3,17 @@
 Drafted 2026-05-28 after the post-Step-13a pivot to dataset-level
 enrichment. **STATUS 2026-06-01:** the §7 open questions are resolved
 (see that section) and the DVSA-first prong has shipped (PRs
-#41/#42/#43 -- see CLAUDE.md "Make/model classification"). This doc is
-now the live spec for the remaining **CompCars CNN** work; start at §9
-step 1 (request CompCars access -- the multi-day blocker).
+#41/#42/#43 -- see CLAUDE.md "Make/model classification").
+
+**STATUS 2026-06-02 (supersedes much of §5/§9):** the CompCars CNN was
+built + trained (98.8 % CompCars-val, PR #46) but scored **~1 % on real
+UK street cars** -- a domain gap (CompCars is zoomed frontal toll-camera
+shots; this scene is rear/oblique). Pivoted to a **UK-native make
+classifier** trained on DVSA-auto-labelled local crops (PR #47):
+validated (22.6 % make@1 on 523 cars) but data-bound. The §9 "request
+CompCars access" steps are moot (the dataset was already local, and
+CompCars is the wrong domain regardless). See CLAUDE.md "Make/model
+classification" for the live status + the Orin-mining data-growth loop.
 
 ## 1. Goal
 

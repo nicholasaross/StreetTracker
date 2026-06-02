@@ -54,7 +54,7 @@ src/streettracker/
 ├── inference/              # YOLO + BotSORT via Ultralytics
 ├── sources/                # RTSP (FFmpeg), file (NVDEC on Orin)
 ├── device/                 # Orin-only: live runtime, snapshotter, dashboard, IR
-├── analysis/               # off-device: ALPR, recolor, vehicles, debug-color
+├── analysis/               # off-device: ALPR, recolor, vehicles, makemodel
 └── cli/                    # `streettracker` entry + subcommands
 ```
 
@@ -101,6 +101,9 @@ Session files:
   `events.jsonl` per-track records
 - `cross_session_repeats.json` — repeat vehicles pooled across a cohort
   of sessions (after `vehicles --across`; written to the output root)
+- `{session}_makemodel.json` + `{session}_makemodel_by_track.json` —
+  per-image top-k + per-track confidence-weighted CNN make/model
+  predictions (after `makemodel`; `make_model_source="cnn"`)
 
 JSON record fields: see `common/schema.py` (`TrackRecord`, `SessionMeta`).
 
@@ -118,6 +121,11 @@ uv run streettracker dvsa-label output/<session>         # DVSA make/model harve
 uv run streettracker dvsa-apply output/<session>         # fold DVSA make/model onto per-track records
 uv run streettracker vehicles output/<session>           # per-vehicle aggregation (+ DVSA make/model)
 uv run streettracker vehicles output/<a> --across output/<b> ...  # cross-session repeat vehicles
+uv run streettracker makemodel output/<session>          # CNN make/model inference -> _makemodel.json
+# Mine the Orin -> grow the UK make-classifier corpus (run pull from PowerShell):
+uv run streettracker pull --session <S> --only-main      # pull a session's 4K snaps from the Orin
+uv run streettracker makemodel-build-uk runs/uk_crops    # DVSA-labelled UK make crops (auto-discovers sessions)
+uv run streettracker makemodel-train-uk runs/uk_crops    # train the UK make classifier (--freeze-backbone, etc.)
 ```
 
 **Windows + Git Bash gotcha for `streettracker pull`**: MSYS rewrites
@@ -142,7 +150,7 @@ code-complete; the only remaining tail is repo archival on GitHub.
 | 6 | (opt) Nano archive role | not started |
 | 7 | cutover: enable systemd on Orin + decommission Nano + archive old repos | **mostly done** — Orin live since 2026-05-22; only `VehicleTracker` + `NanoTracker` repo archival on GitHub outstanding |
 
-Tests at HEAD: **447 passing on Python 3.10, ruff clean.**
+Tests at HEAD: **593 passing on Python 3.10, ruff clean.**
 
 All subcommands wired: `run`/`batch` go through the asyncio runtime,
 `pull`/`export-engine` ship sessions and build engines,
@@ -205,7 +213,7 @@ names differ from the example.
 | Per-car aliasing-free | **~78 %** — intrinsic floor of camera + scene, verified across two sessions. Further snap-budget tuning will not move it. |
 | Misclassification | Confidence-weighted class voting (PR #23) defends single-frame flips; consistent model errors still possible. |
 | Direction-aware throttling | Deployed 2026-05-27 (`pipeline_interval_ms_by_direction={forward:300, reverse:400}`). Validation soak pending. |
-| Dataset-level pivot | `vehicles` aggregator (Step 12) + fuzzy clustering (Step 14). **Make/model DVSA-first prong shipped** (PRs #41/#42/#43): `dvsa-label`→`dvsa-apply`→`vehicles` (+`--across`); covers the readable ~25-30 % of cars. **CompCars CNN is next** (universal, for unreadable plates) — see [Make/model classification](#makemodel-classification). Learned recolor + visual re-id still to do. |
+| Dataset-level pivot | `vehicles` aggregator (Step 12) + fuzzy clustering (Step 14). **Make/model DVSA-first prong shipped** (PRs #41/#42/#43): `dvsa-label`→`dvsa-apply`→`vehicles` (+`--across`); covers the readable ~25-30 % of cars. **Universal CNN: CompCars trained (#46) but failed UK validation** (domain gap, ~1 %); **pivoted to a UK-native make classifier** (#47) trained on DVSA-auto-labelled local crops — validated but data-bound (~22.6 % make@1 on 523 cars). Production make/model stays DVSA-only; grow the corpus by mining the Orin. See [Make/model classification](#makemodel-classification). Learned recolor + visual re-id still to do. |
 
 **Conclusion:** ANPR coverage objective is met. The 78 % aliasing-free
 floor is camera-geometry-bound (oblique angles, motion blur, occlusion),
@@ -230,15 +238,35 @@ The dataset-level enrichment pivot. Two prongs:
   Coverage is the readable, ≥3yr-old subset (~25-30 % of cars on this
   scene): newer cars 404 (no MOT record yet), unread plates aren't
   covered at all.
-- **CompCars CNN (next — NOT started).** A fine-tuned classifier for the
-  unreadable majority (works without a plate). The full plan + the
-  already-resolved design decisions live in
-  `docs/makemodel_design.md` (EfficientNet-B0 on CompCars'
-  surveillance subset; exact year; trained on the local RTX 3080; DVSA
-  auto-labels the validation set). **Start at its §9 step 1: request
-  CompCars dataset access** (multi-day turnaround — it blocks training).
-  These predictions will carry `make_model_source = "cnn"`, distinct
-  from the `"dvsa"` ground truth.
+- **Universal CNN (the unreadable majority) — pivoted to UK-native
+  training (2026-06-02).** `docs/makemodel_design.md` has the original
+  CompCars plan, now partly superseded by the trajectory below:
+  1. **CompCars CNN (PR #46).** EfficientNet-B0 fine-tuned on CompCars'
+     surveillance subset → **98.8 % CompCars-val** make@1. **But ~1 % on
+     real UK cars** — a domain gap (CompCars = zoomed *frontal* Chinese
+     toll-camera shots; this scene = *rear/oblique* UK street views),
+     plus UK makes CompCars never had (Vauxhall/Tesla/MG/Mini…). A dead
+     end as a UK predictor. The inference CLI (`streettracker makemodel`)
+     + the lifted `analysis/snap_assets.py` helpers are reusable infra.
+  2. **UK-native classifier (PR #47).** Train on THIS scene instead: a
+     DVSA plate→make lookup auto-labels the car's own crops. Pipeline:
+     `pull --only-main` (Orin→local) → `alpr-run … --pipeline preferred
+     --pre-crop --ghost-mask .claude/ghost_mask.json` → `dvsa-label` →
+     `makemodel-build-uk` (crops; leakage-safe **by-car** split) →
+     `makemodel-train-uk`. Make-only for now (model-level too sparse).
+  - **Status: approach validated, but DATA-BOUND.** 523 labelled cars /
+    24 makes → **22.6 % make@1** (vs CompCars 1.1 %, majority-class
+    ~13 %, random ~4 % — so on-domain training clearly works), but heavy
+    overfit at ~18 cars/make; tighter crops / frozen-backbone / dropout
+    don't lift the ceiling. So **make/model in production stays
+    DVSA-only** until the corpus is several× bigger. CNN predictions
+    carry `make_model_source = "cnn"`.
+  - **Growing the corpus = mining the Orin** (data is the only lever).
+    `pull` recent snap-bearing sessions → `alpr-run` → `dvsa-label` →
+    rebuild + retrain. **The Orin prunes 4K snaps after ~1 week** (keeps
+    JSON) — pull + process within the week or the training images are
+    gone. Don't run `alpr-run` on the Orin (it's compute-bound running
+    the live tracker); pull to the dev-box 3080.
 
 ### Step trajectory
 
