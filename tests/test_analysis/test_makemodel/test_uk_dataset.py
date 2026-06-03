@@ -181,3 +181,89 @@ def test_train_main_cli(tmp_path: Path) -> None:
 
 def test_train_main_missing_manifest(tmp_path: Path) -> None:
     assert train_main([str(tmp_path / "nope")]) == 1
+
+
+def test_extract_select_top_by_area_keeps_largest(tmp_path: Path) -> None:
+    """select_top_by_area=1 keeps only each car's largest-bbox snap."""
+    import cv2
+
+    sess = tmp_path / "session_t"
+    sess.mkdir()
+    for n in (1, 2):
+        cv2.imwrite(str(sess / f"vehicle_1_main_{n}.jpg"), np.full((300, 400, 3), 90, np.uint8))
+    # snap 1 = big bbox, snap 2 = small bbox (sub-stream coords).
+    sess.joinpath("session_t_data.json").write_text(
+        json.dumps(
+            [
+                {
+                    "track_id": 1,
+                    "main_snaps": [1, 2],
+                    "main_snap_bboxes": [[40, 30, 300, 260], [40, 30, 100, 90]],
+                }
+            ]
+        )
+    )
+    sess.joinpath("session_t_meta.json").write_text(json.dumps({"frame_size": [640, 360]}))
+    sess.joinpath("session_t_dvsa_labels.json").write_text(
+        json.dumps({"labels": {"AB12CDE": {"make": "Ford", "model": "X", "track_ids": [1]}}})
+    )
+    stats = extract_crops([sess], tmp_path / "crops", min_cars_per_make=1, select_top_by_area=1)
+    assert stats["n_crops"] == 1
+    manifest = json.loads((tmp_path / "crops" / "manifest.json").read_text())
+    # snap 1 (the larger bbox) survived, not snap 2.
+    assert manifest["samples"][0]["path"].endswith("_1_1.jpg")
+
+
+def test_extract_crops_output_size(tmp_path: Path) -> None:
+    """output_size sets the square crop edge (the 384-detail lever)."""
+    import cv2
+
+    sess = tmp_path / "session_t"
+    sess.mkdir()
+    cv2.imwrite(str(sess / "vehicle_1_main_1.jpg"), np.full((300, 400, 3), 90, np.uint8))
+    sess.joinpath("session_t_data.json").write_text(
+        json.dumps([{"track_id": 1, "main_snaps": [1], "main_snap_bboxes": [[60, 40, 200, 180]]}])
+    )
+    sess.joinpath("session_t_meta.json").write_text(json.dumps({"frame_size": [640, 360]}))
+    sess.joinpath("session_t_dvsa_labels.json").write_text(
+        json.dumps({"labels": {"AB12CDE": {"make": "Ford", "model": "X", "track_ids": [1]}}})
+    )
+    out = tmp_path / "crops"
+    extract_crops([sess], out, min_cars_per_make=1, output_size=384)
+    manifest = json.loads((out / "manifest.json").read_text())
+    with Image.open(out / manifest["samples"][0]["path"]) as im:
+        assert im.size == (384, 384)
+
+
+def test_train_main_input_size_passthrough(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--input-size reaches TrainConfig (the trainer's resolution knob)."""
+    import streettracker.analysis.makemodel.uk_dataset as uk
+
+    _write_dataset(tmp_path / "crops")
+    seen: dict[str, int] = {}
+
+    def _fake_train(dataset_dir: object, out_dir: object, config: object) -> dict:
+        seen["input_size"] = config.input_size  # type: ignore[attr-defined]
+        return {}
+
+    monkeypatch.setattr(uk, "train_uk_make", _fake_train)
+    rc = train_main([str(tmp_path / "crops"), "--input-size", "384", "--cpu"])
+    assert rc == 0
+    assert seen["input_size"] == 384
+
+
+def test_train_main_backbone_passthrough(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--backbone reaches TrainConfig (the capacity knob for hi-res crops)."""
+    import streettracker.analysis.makemodel.uk_dataset as uk
+
+    _write_dataset(tmp_path / "crops")
+    seen: dict[str, str] = {}
+
+    def _fake_train(dataset_dir: object, out_dir: object, config: object) -> dict:
+        seen["backbone"] = config.backbone  # type: ignore[attr-defined]
+        return {}
+
+    monkeypatch.setattr(uk, "train_uk_make", _fake_train)
+    rc = train_main([str(tmp_path / "crops"), "--backbone", "efficientnet_b4", "--cpu"])
+    assert rc == 0
+    assert seen["backbone"] == "efficientnet_b4"
