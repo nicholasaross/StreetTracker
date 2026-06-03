@@ -166,3 +166,33 @@ def test_load_rejects_arch_mismatch(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="arch"):
         load_checkpoint(ckpt_path)
+
+
+# ----------------------------------------------------------------------
+# Backbone selection (B4/B5 for the higher-resolution UK crop sets).
+
+
+def test_arch_b4_widens_feature_dim() -> None:
+    """B4 pools to 1792-d; the heads + checkpoint adapt off feature_dim
+    with no per-arch wiring (B0 is 1280)."""
+    net = MakeModelNet({"make": 7}, pretrained=False, arch="efficientnet_b4")
+    assert net.arch == "efficientnet_b4"
+    assert net.feature_dim == 1792
+    out = net.eval()(torch.randn(1, 3, 64, 64))
+    assert out["make"].shape == (1, 7)
+
+
+def test_unsupported_arch_rejected_at_construction() -> None:
+    with pytest.raises(ValueError, match="arch"):
+        MakeModelNet({"make": 7}, pretrained=False, arch="resnet50")
+
+
+def test_checkpoint_preserves_non_b0_arch(tmp_path: Path) -> None:
+    """A non-default backbone round-trips: arch rides in the file, so the
+    loader rebuilds the right conv stack (1792-d, not 1280)."""
+    net = MakeModelNet({"make": 7}, pretrained=False, arch="efficientnet_b4")
+    ckpt_path = tmp_path / "b4.pt"
+    save_checkpoint(net, ckpt_path)
+    loaded, _ = load_checkpoint(ckpt_path)
+    assert loaded.arch == "efficientnet_b4"
+    assert loaded.feature_dim == 1792

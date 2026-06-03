@@ -37,7 +37,7 @@ import torch
 from torch import nn
 
 from streettracker.analysis.makemodel.dataset import build_datasets
-from streettracker.analysis.makemodel.model import MakeModelNet, save_checkpoint
+from streettracker.analysis.makemodel.model import DEFAULT_ARCH, MakeModelNet, save_checkpoint
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -62,6 +62,7 @@ class TrainConfig:
     lr: float = 1e-4
     weight_decay: float = 1e-2
     input_size: int = 224
+    backbone: str = DEFAULT_ARCH
     num_workers: int = 4
     amp: bool = True
     dropout: float = 0.2

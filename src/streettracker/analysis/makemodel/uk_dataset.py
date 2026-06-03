@@ -35,7 +35,11 @@ from torch.utils.data import Dataset
 
 from streettracker.analysis.makemodel.cropper import VehicleCropper
 from streettracker.analysis.makemodel.dataset import build_eval_transform, build_train_transform
-from streettracker.analysis.makemodel.model import MakeModelNet, save_checkpoint
+from streettracker.analysis.makemodel.model import (
+    SUPPORTED_ARCHS,
+    MakeModelNet,
+    save_checkpoint,
+)
 from streettracker.analysis.makemodel.training import (
     TrainConfig,
     evaluate,
@@ -69,6 +73,18 @@ def _load_session_labels(session_dir: Path) -> dict[str, dict[str, Any]]:
         return {}
 
 
+@dataclasses.dataclass(slots=True)
+class _Cand:
+    """A candidate snap for a car, ranked by bbox area before cropping."""
+
+    area: int
+    sess_name: str
+    tid: int
+    snap_index: int
+    hint: tuple[int, int, int, int]
+    src_path: str
+
+
 def extract_crops(
     sessions: list[Path],
     out_dir: str | Path,
@@ -76,14 +92,26 @@ def extract_crops(
     min_cars_per_make: int = 5,
     pad_frac: float = 0.25,
     max_per_car: int | None = None,
+    select_top_by_area: int | None = None,
+    output_size: int = 224,
 ) -> dict[str, Any]:
-    """Crop every DVSA-labelled car from its snaps into ``out_dir/<MAKE>/``.
+    """Crop DVSA-labelled cars from their snaps into ``out_dir/<MAKE>/``.
 
     Keeps only makes with at least ``min_cars_per_make`` distinct cars
     (rare makes can't be learned or validated). Writes ``manifest.json``
     (``{"makes": [...], "samples": [{"path", "make", "car"}]}``) for the
     by-car split. ``car`` is the plate, so a vehicle recurring across
     sessions stays one car (no cross-split leakage).
+
+    ``select_top_by_area`` keeps only each car's N largest-bbox snaps
+    (closest pass = most pixels/detail at 224) instead of all of them --
+    the best-view lever for when averaging over distant/oblique snaps
+    dilutes the signal. ``None`` keeps all (``max_per_car`` still caps).
+
+    ``output_size`` is the square edge each crop is resized to (224 by
+    default). Raise to 384 to keep more of the 4K source detail -- only
+    useful while source bboxes exceed it (typically 400-800 px here), so
+    re-extract from the snaps rather than upscaling an existing 224 set.
     """
     import cv2  # type: ignore[import-untyped]
 
@@ -113,32 +141,40 @@ def extract_crops(
         for sess, tid in tracks:
             sess_tid_plate[sess][tid] = plate
 
-    cropper = VehicleCropper(pad_frac=pad_frac)
-    samples: list[dict[str, str]] = []
-    per_car: Counter[str] = Counter()
+    # Gather candidate snaps (with bbox area, no decode yet), then per car
+    # keep the top-N largest-bbox snaps before cropping -- cv2.imread only
+    # runs for kept snaps.
+    candidates: dict[str, list[_Cand]] = defaultdict(list)
     for sess, tid_plate in sess_tid_plate.items():
         bbox_index, sub_size = load_bbox_index(sess)
         for path, tid, snap_index, _cls in discover_vehicle_snaps(sess):
             car = tid_plate.get(tid)
             if car is None:
                 continue
-            if max_per_car is not None and per_car[car] >= max_per_car:
-                continue
             hint = resolve_bbox_hint(path, tid, snap_index, bbox_index, sub_size)
             if hint is None:
                 continue
-            image = cv2.imread(str(path))
+            x1, y1, x2, y2 = hint
+            area = max(0, x2 - x1) * max(0, y2 - y1)
+            candidates[car].append(_Cand(area, sess.name, tid, snap_index, hint, str(path)))
+
+    cropper = VehicleCropper(pad_frac=pad_frac, output_size=output_size)
+    samples: list[dict[str, str]] = []
+    cap = select_top_by_area if select_top_by_area is not None else max_per_car
+    for car, cands in candidates.items():
+        cands.sort(key=lambda c: -c.area)  # largest bbox (closest) first
+        mk = car_make[car]
+        (out_dir / mk).mkdir(exist_ok=True)
+        for cand in cands[:cap] if cap is not None else cands:
+            image = cv2.imread(cand.src_path)
             if image is None:
                 continue
-            crop = cropper.crop(image, hint)
+            crop = cropper.crop(image, cand.hint)
             if crop is None:
                 continue
-            mk = car_make[car]
-            (out_dir / mk).mkdir(exist_ok=True)
-            rel = f"{mk}/{car}_{sess.name}_{tid}_{snap_index}.jpg"
+            rel = f"{mk}/{car}_{cand.sess_name}_{cand.tid}_{cand.snap_index}.jpg"
             cv2.imwrite(str(out_dir / rel), crop)
             samples.append({"path": rel, "make": mk, "car": car})
-            per_car[car] += 1
 
     manifest = {
         "makes": sorted(kept),
@@ -266,7 +302,10 @@ def train_uk_make(dataset_dir: str | Path, out_dir: str | Path, config: TrainCon
     )
 
     model = MakeModelNet(
-        {"make": len(make_names)}, dropout=config.dropout, pretrained=config.pretrained
+        {"make": len(make_names)},
+        dropout=config.dropout,
+        pretrained=config.pretrained,
+        arch=config.backbone,
     ).to(device)
     if config.freeze_backbone:
         for p in model.backbone.parameters():
@@ -375,6 +414,18 @@ def build_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--min-cars-per-make", type=int, default=5)
     parser.add_argument("--pad-frac", type=float, default=0.1)
     parser.add_argument("--max-per-car", type=int, default=None)
+    parser.add_argument(
+        "--top-by-area",
+        type=int,
+        default=None,
+        help="keep only each car's N largest-bbox (closest) snaps -- best-view selection",
+    )
+    parser.add_argument(
+        "--output-size",
+        type=int,
+        default=224,
+        help="square crop edge (px); 384 keeps more 4K detail than the 224 default",
+    )
     args = parser.parse_args(argv)
 
     sessions = list(args.sessions) if args.sessions else _discover_labelled_sessions()
@@ -388,6 +439,8 @@ def build_main(argv: list[str] | None = None) -> int:
         min_cars_per_make=args.min_cars_per_make,
         pad_frac=args.pad_frac,
         max_per_car=args.max_per_car,
+        select_top_by_area=args.top_by_area,
+        output_size=args.output_size,
     )
     print(
         f"[makemodel-build-uk] {stats['n_makes']} makes, {stats['n_cars']} cars, "
@@ -415,6 +468,18 @@ def train_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dropout", type=float, default=defaults.dropout)
     parser.add_argument("--patience", type=int, default=defaults.patience)
     parser.add_argument(
+        "--input-size",
+        type=int,
+        default=defaults.input_size,
+        help="square model input resolution (px); 384 = higher-detail crops vs 224 default",
+    )
+    parser.add_argument(
+        "--backbone",
+        choices=SUPPORTED_ARCHS,
+        default=defaults.backbone,
+        help="EfficientNet backbone; b4 (380px) / b5 (456px) are compound-scaled for hi-res crops",
+    )
+    parser.add_argument(
         "--freeze-backbone", action="store_true", help="linear-probe (frozen backbone)"
     )
     parser.add_argument("--no-class-weighting", action="store_true")
@@ -437,6 +502,8 @@ def train_main(argv: list[str] | None = None) -> int:
         num_workers=args.num_workers,
         dropout=args.dropout,
         patience=args.patience,
+        input_size=args.input_size,
+        backbone=args.backbone,
         freeze_backbone=args.freeze_backbone,
         class_weighting=not args.no_class_weighting,
         pretrained=not args.no_pretrained,

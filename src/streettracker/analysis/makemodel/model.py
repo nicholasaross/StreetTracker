@@ -49,14 +49,31 @@ import torch
 from torch import nn
 from torchvision.models import (  # type: ignore[import-untyped]  # torchvision ships no py.typed
     EfficientNet_B0_Weights,
+    EfficientNet_B4_Weights,
+    EfficientNet_B5_Weights,
     efficientnet_b0,
+    efficientnet_b4,
+    efficientnet_b5,
 )
 
 # Bumped whenever the on-disk checkpoint layout changes incompatibly.
 # load_checkpoint refuses formats it does not understand rather than
 # silently mis-loading a future schema.
 CHECKPOINT_FORMAT = 1
-_ARCH = "efficientnet_b0"
+DEFAULT_ARCH = "efficientnet_b0"
+
+# Backbone name -> (constructor, ImageNet weights). EfficientNet's
+# compound scaling pairs a larger backbone with a higher native input
+# resolution -- B0@224, B4@380, B5@456 -- so a higher-resolution crop
+# set wants the matching backbone, not just a bigger input fed to B0.
+# feature_dim is read off each backbone's own classifier, so the heads
+# adapt (B0=1280, B4=1792, B5=2048) with no per-arch wiring.
+_BACKBONES = {
+    "efficientnet_b0": (efficientnet_b0, EfficientNet_B0_Weights.IMAGENET1K_V1),
+    "efficientnet_b4": (efficientnet_b4, EfficientNet_B4_Weights.IMAGENET1K_V1),
+    "efficientnet_b5": (efficientnet_b5, EfficientNet_B5_Weights.IMAGENET1K_V1),
+}
+SUPPORTED_ARCHS = tuple(_BACKBONES)
 
 
 class MakeModelNet(nn.Module):
@@ -75,6 +92,11 @@ class MakeModelNet(nn.Module):
     hub download on first use). Set ``False`` for from-checkpoint
     reconstruction and for offline unit tests -- the conv stack still
     builds, just randomly initialised.
+
+    ``arch`` selects the EfficientNet backbone: ``"efficientnet_b0"``
+    (default, 224 px) or the compound-scaled ``"efficientnet_b4"`` /
+    ``"efficientnet_b5"`` for the higher-resolution UK crop sets. The
+    head widths follow the backbone's feature dim automatically.
     """
 
     def __init__(
@@ -83,6 +105,7 @@ class MakeModelNet(nn.Module):
         *,
         dropout: float = 0.2,
         pretrained: bool = True,
+        arch: str = DEFAULT_ARCH,
     ) -> None:
         super().__init__()
         if not head_sizes:
@@ -90,9 +113,13 @@ class MakeModelNet(nn.Module):
         bad = {name: n for name, n in head_sizes.items() if n <= 0}
         if bad:
             raise ValueError(f"head class counts must be positive, got {bad}")
+        if arch not in _BACKBONES:
+            raise ValueError(f"unsupported backbone arch {arch!r}; known: {sorted(_BACKBONES)}")
 
-        weights = EfficientNet_B0_Weights.IMAGENET1K_V1 if pretrained else None
-        backbone = efficientnet_b0(weights=weights)
+        constructor, weights_enum = _BACKBONES[arch]
+        weights = weights_enum if pretrained else None
+        backbone = constructor(weights=weights)
+        self.arch = arch
 
         # efficientnet_b0.classifier == Sequential(Dropout, Linear(1280, 1000)).
         # Read the feature width off the ImageNet head, then strip it:
@@ -142,7 +169,7 @@ def save_checkpoint(
     """
     ckpt: dict[str, Any] = {
         "format": CHECKPOINT_FORMAT,
-        "arch": _ARCH,
+        "arch": model.arch,
         "head_sizes": dict(model.head_sizes),
         "state_dict": model.state_dict(),
         "metadata": dict(metadata) if metadata is not None else {},
@@ -173,10 +200,12 @@ def load_checkpoint(
             f"unsupported checkpoint format {fmt!r} (this build understands {CHECKPOINT_FORMAT})"
         )
     arch = ckpt.get("arch")
-    if arch != _ARCH:
-        raise ValueError(f"checkpoint arch {arch!r} != expected {_ARCH!r}")
+    if arch not in _BACKBONES:
+        raise ValueError(
+            f"checkpoint arch {arch!r} is not a supported backbone {sorted(_BACKBONES)}"
+        )
 
-    model = MakeModelNet(ckpt["head_sizes"], pretrained=False)
+    model = MakeModelNet(ckpt["head_sizes"], pretrained=False, arch=arch)
     model.load_state_dict(ckpt["state_dict"])
     model.to(map_location)
     model.eval()

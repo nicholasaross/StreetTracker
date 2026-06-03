@@ -213,7 +213,7 @@ names differ from the example.
 | Per-car aliasing-free | **~78 %** — intrinsic floor of camera + scene, verified across two sessions. Further snap-budget tuning will not move it. |
 | Misclassification | Confidence-weighted class voting (PR #23) defends single-frame flips; consistent model errors still possible. |
 | Direction-aware throttling | Deployed 2026-05-27 (`pipeline_interval_ms_by_direction={forward:300, reverse:400}`). Validation soak pending. |
-| Dataset-level pivot | `vehicles` aggregator (Step 12) + fuzzy clustering (Step 14). **Make/model DVSA-first prong shipped** (PRs #41/#42/#43): `dvsa-label`→`dvsa-apply`→`vehicles` (+`--across`); covers the readable ~25-30 % of cars. **Universal CNN: CompCars trained (#46) but failed UK validation** (domain gap, ~1 %); **pivoted to a UK-native make classifier** (#47) trained on DVSA-auto-labelled local crops — on-domain training works but caps at **~21 % make@1**: three levers (tuning, 2× data, best-view) all fail to break it, so it's **task-bound, not data-bound**. Production make/model = DVSA-only; CNN verdict pending (park vs 384 px crops). See [Make/model classification](#makemodel-classification). Learned recolor + visual re-id still to do. |
+| Dataset-level pivot | `vehicles` aggregator (Step 12) + fuzzy clustering (Step 14). **Make/model DVSA-first prong shipped** (PRs #41/#42/#43): `dvsa-label`→`dvsa-apply`→`vehicles` (+`--across`); covers the readable ~25-30 % of cars. **Universal CNN: CompCars trained (#46) but failed UK validation** (domain gap, ~1 %); **pivoted to a UK-native make classifier** (#47) trained on DVSA-auto-labelled local crops — the earlier "~21 % task-bound ceiling" was **wrong** — it was **resolution-bound** (the cropper hardcoded 224 px output, capping every prior lever). Lifting input resolution breaks it: **B0 @224/384/512 = 22 / 32 / 38 % make@1** (2026-06-03); bigger backbones (B4/B5) overfit 800 cars and don't beat B0. **Production-viable CNN = EfficientNet-B0 @512, 37.6 % make@1**; remaining lever is data, not tuning. See [Make/model classification](#makemodel-classification). Learned recolor + visual re-id still to do. |
 
 **Conclusion:** ANPR coverage objective is met. The 78 % aliasing-free
 floor is camera-geometry-bound (oblique angles, motion blur, occlusion),
@@ -254,29 +254,47 @@ The dataset-level enrichment pivot. Two prongs:
      --pre-crop --ghost-mask .claude/ghost_mask.json` → `dvsa-label` →
      `makemodel-build-uk` (crops; leakage-safe **by-car** split) →
      `makemodel-train-uk`. Make-only for now (model-level too sparse).
-  - **Status (2026-06-02): on-domain training works, but ~21 % make@1 is
-    a TASK-bound ceiling — not a data/tuning knob.** Best = ~22.6 %
-    make@1 (vs CompCars 1.1 %, majority-class ~13 %, random ~4 %).
-    **Three independent levers all fail to break ~21 %:** (a) tuning
-    (tight crops / frozen-backbone / dropout) ≈22 %; (b) **2× data**
-    (440→800 labelled cars) flat at 20.8 % (less overfit, ceiling
-    unmoved); (c) **best-view selection** (train on each car's
-    largest-bbox snaps) *worse*, 9-10 % — make@1 rises monotonically
-    with crop count and plateaus ~21 %, so fewer-but-cleaner just
-    starves it. The binding limit is the rear/oblique make-ID task at
-    224 px on EfficientNet-B0. **So make/model in production = DVSA-only**;
-    CNN predictions (if used) carry `make_model_source = "cnn"`.
-  - **VERDICT PENDING (operator decides 2026-06-03):** park the CNN as
-    not viable on this scene, OR one last try at **384 px crops** (more
-    detail; low confidence after three negatives). Higher-res /
-    inference-time best-view aggregation / a coarser target (body-type)
-    are the only untried angles. Banked regardless: the 800-car corpus,
-    the full mining pipeline, and the `--top-by-area` best-view flag.
-  - **Mining the Orin is the data-growth tool** (`pull` snap-bearing
+  - **Status (2026-06-03): RESOLUTION-bound, not task-bound — verdict
+    resolved, CNN is viable.** The earlier "~21 % task-bound ceiling"
+    was an artifact: `VehicleCropper` hardcoded `output_size=224`, so
+    *every* prior lever (tuning, 2× data, best-view) was silently capped
+    at 224 px input while the source cars were 400-800 px (p50 574). Re-
+    extracting higher-res (`makemodel-build-uk --output-size`) + training
+    there (`makemodel-train-uk --input-size`) breaks it cleanly.
+    Resolution ladder (same 800-car corpus, by-car split, seed 0):
+
+    | Config | make@1 | note |
+    |---|---|---|
+    | B0 @224 (old "ceiling") | 21.7 % | — |
+    | B0 @384 | 32.2 % | +10.5 pp |
+    | **B0 @512** | **37.6 %** | best + cheapest |
+    | B4 @384 | 29.5 % | overfit, < B0@384 |
+    | B5 @456 | 37.7 % | overfit, ≈ B0@512 |
+
+    Resolution is the lever (+16 pp 224→512, decelerating). **Backbone
+    capacity is saturated** — B4/B5 (`--backbone`) overfit the small
+    corpus (train loss → ~0.04 while val stalls) and don't beat B0, so
+    **B0 is right-sized**. The three "negatives" at 224 were all
+    resolution-capped, not task limits — best-view collapsed to 9-10 %
+    precisely because fewer-crops-at-224 starves a resolution-starved
+    model further. **Production-viable CNN = EfficientNet-B0 @512 px,
+    37.6 % make@1** (~2.8× majority-class ~13 %); predictions carry
+    `make_model_source = "cnn"`, distinct from the `"dvsa"` ground truth.
+  - **Only untapped lever is data.** B5's overfitting means capacity is
+    data-starved: growing the 800-car corpus is what would let a bigger
+    backbone push past 37.6 % (a collection effort — mine more Orin
+    sessions — not a tuning knob). Higher-res on B0 (640+) keeps
+    decelerating; a coarser target (body-type) is still untried. Banked
+    + now productive: the 800-car corpus, the full mining pipeline, and
+    the `--output-size` / `--input-size` / `--backbone` / `--top-by-area`
+    flags.
+  - **Mining the Orin grows the corpus** (`pull` snap-bearing
     sessions → `alpr-run` → `dvsa-label` → `makemodel-build-uk` +
-    retrain) — it grew the corpus 523→800 cars but did NOT lift make@1,
-    so it is *not* the make/model lever it first looked like. Still
-    useful ops knowledge: **the Orin prunes 4K snaps after ~1 week**
+    retrain). It grew 523→800 cars without lifting make@1 — but only
+    because that was measured *at 224 px*, where resolution (not data)
+    was the bottleneck. Now that resolution is lifted and bigger
+    backbones overfit 800 cars, **data is the next lever** to push past
+    37.6 %. Ops knowledge: **the Orin prunes 4K snaps after ~1 week**
     (keeps JSON) — pull + process within the week or the training images
     are gone. Don't run `alpr-run` on the Orin (compute-bound running the
     live tracker); pull to the dev-box 3080.
