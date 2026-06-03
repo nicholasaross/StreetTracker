@@ -124,8 +124,8 @@ uv run streettracker vehicles output/<a> --across output/<b> ...  # cross-sessio
 uv run streettracker makemodel output/<session>          # CNN make/model inference -> _makemodel.json
 # Mine the Orin -> grow the UK make-classifier corpus (run pull from PowerShell):
 uv run streettracker pull --session <S> --only-main      # pull a session's 4K snaps from the Orin
-uv run streettracker makemodel-build-uk runs/uk_crops    # DVSA-labelled UK make crops (auto-discovers sessions)
-uv run streettracker makemodel-train-uk runs/uk_crops    # train the UK make classifier (--freeze-backbone, etc.)
+uv run streettracker makemodel-build-uk runs/uk_crops --output-size 512  # DVSA-labelled UK make crops @512 (auto-discovers sessions)
+uv run streettracker makemodel-train-uk runs/uk_crops --input-size 512   # train the UK make classifier (B0@512 = 37.6% make@1; +--backbone b4/b5)
 ```
 
 **Windows + Git Bash gotcha for `streettracker pull`**: MSYS rewrites
@@ -150,7 +150,7 @@ code-complete; the only remaining tail is repo archival on GitHub.
 | 6 | (opt) Nano archive role | not started |
 | 7 | cutover: enable systemd on Orin + decommission Nano + archive old repos | **mostly done** — Orin live since 2026-05-22; only `VehicleTracker` + `NanoTracker` repo archival on GitHub outstanding |
 
-Tests at HEAD: **593 passing on Python 3.10, ruff clean.**
+Tests at HEAD: **600 passing on Python 3.10, ruff clean.**
 
 All subcommands wired: `run`/`batch` go through the asyncio runtime,
 `pull`/`export-engine` ship sessions and build engines,
