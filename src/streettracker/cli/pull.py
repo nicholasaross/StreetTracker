@@ -15,9 +15,11 @@ Ported from NanoTracker's ``scripts/pull_session.py``. Differences:
   ``claude@nano`` defaults are no longer wired in.
 
 Designed to run on the Windows dev box where the built-in OpenSSH client
-provides ``ssh`` and ``scp``; works equally on Linux / macOS. Idempotent:
-re-running over an existing local copy overwrites with the latest remote
-state (scp merges into the existing session dir).
+provides ``ssh`` / ``scp`` / ``sftp``; works equally on Linux / macOS.
+Idempotent: re-running over an existing local copy overwrites with the
+latest remote state (scp merges into the existing session dir). With
+``--skip-existing`` only image files missing locally are fetched (snaps
+are write-once), so re-pulling a grown or still-live session is cheap.
 """
 
 from __future__ import annotations
@@ -49,9 +51,7 @@ class RemoteInventory:
     jsonl: int = 0
 
 
-def _ssh_run(
-    host: str, user: str, key: str, cmd: str, *, check: bool = True
-) -> str:
+def _ssh_run(host: str, user: str, key: str, cmd: str, *, check: bool = True) -> str:
     """Run ``cmd`` on the device via SSH and return stripped stdout.
 
     On failure with ``check=True``, prints the stderr to our stderr and
@@ -68,9 +68,7 @@ def _ssh_run(
     ]
     proc = subprocess.run(args, capture_output=True, text=True)
     if check and proc.returncode != 0:
-        sys.stderr.write(
-            f"[pull] ssh failed (exit {proc.returncode}):\n{proc.stderr.strip()}\n"
-        )
+        sys.stderr.write(f"[pull] ssh failed (exit {proc.returncode}):\n{proc.stderr.strip()}\n")
         sys.exit(proc.returncode or 1)
     return proc.stdout.strip()
 
@@ -82,21 +80,14 @@ def find_latest_session(host: str, user: str, key: str, remote_parent: str) -> s
 
     Exits non-zero if the parent has no such directory.
     """
-    cmd = (
-        f"ls -1 {shlex.quote(remote_parent)} 2>/dev/null "
-        "| grep '^session_' | sort | tail -1"
-    )
+    cmd = f"ls -1 {shlex.quote(remote_parent)} 2>/dev/null | grep '^session_' | sort | tail -1"
     name = _ssh_run(host, user, key, cmd)
     if not name:
-        sys.exit(
-            f"[pull] No session_* directories found in {host}:{remote_parent}"
-        )
+        sys.exit(f"[pull] No session_* directories found in {host}:{remote_parent}")
     return name
 
 
-def remote_inventory(
-    host: str, user: str, key: str, remote_path: str
-) -> RemoteInventory:
+def remote_inventory(host: str, user: str, key: str, remote_path: str) -> RemoteInventory:
     """Total size, file count, and counts split by filename suffix.
 
     A single SSH round-trip keeps this snappy. ``-maxdepth 1`` keeps us
@@ -112,8 +103,13 @@ def remote_inventory(
     )
     out = _ssh_run(host, user, key, cmd, check=False)
     inv = RemoteInventory()
-    fields = {"BYTES": "bytes", "FILES": "files", "MAIN": "main_snaps",
-              "HQ": "hq_crops", "JSONL": "jsonl"}
+    fields = {
+        "BYTES": "bytes",
+        "FILES": "files",
+        "MAIN": "main_snaps",
+        "HQ": "hq_crops",
+        "JSONL": "jsonl",
+    }
     for line in out.splitlines():
         parts = line.split()
         if len(parts) == 2 and parts[0] in fields:
@@ -162,8 +158,7 @@ def _scp_commands(
         "index.html",
     )
     return [
-        ["scp", "-i", key, "-p", "-q",
-         f"{user}@{host}:{remote_path}/{pat}", str(local_session)]
+        ["scp", "-i", key, "-p", "-q", f"{user}@{host}:{remote_path}/{pat}", str(local_session)]
         for pat in patterns
     ]
 
@@ -194,30 +189,152 @@ def scp_pull(
             sys.exit(f"[pull] scp failed (exit {proc.returncode})")
 
 
+def _immutable_image_patterns(only_main: bool) -> tuple[str, ...]:
+    """Globs whose files are write-once -- 4K snaps are never rewritten
+    once saved, so a remote-minus-local *name* diff is exact and needs no
+    checksum. ``--only-main`` fetches just the main snaps; a full pull
+    treats every ``*.jpg`` (tile / HQ / main) as immutable."""
+    return ("*_main_*.jpg",) if only_main else ("*.jpg",)
+
+
+def _remote_basenames(host: str, user: str, key: str, remote_path: str, pattern: str) -> set[str]:
+    """Basenames of remote files matching ``pattern`` in ``remote_path``
+    (one SSH round-trip; empty set when nothing matches)."""
+    cmd = f"cd {shlex.quote(remote_path)} 2>/dev/null && ls -1 {pattern} 2>/dev/null"
+    out = _ssh_run(host, user, key, cmd, check=False)
+    return {line.strip() for line in out.splitlines() if line.strip()}
+
+
+def sftp_get_missing(
+    host: str,
+    user: str,
+    key: str,
+    remote_path: str,
+    local_session: Path,
+    pattern: str,
+    *,
+    dry_run: bool,
+) -> int:
+    """Fetch only the ``pattern`` files not already in ``local_session``,
+    in a single ``sftp`` batch. Returns the count fetched.
+
+    Exact because snaps are immutable: a basename present locally is the
+    same bytes as the remote one, so a name diff suffices. Uses ``sftp``
+    rather than ``scp`` because Windows OpenSSH's SFTP-backed ``scp`` will
+    not shell-expand an explicit ``{a,b}`` file list, whereas ``sftp -b -``
+    runs one ``get`` per line over a single connection (no per-file
+    handshake, no command-line-length limit).
+    """
+    remote = _remote_basenames(host, user, key, remote_path, pattern)
+    local = {p.name for p in local_session.glob(pattern)}
+    missing = sorted(remote - local)
+    print(f"[pull] {pattern}: {len(remote)} remote / {len(local)} local / {len(missing)} new")
+    if not missing:
+        return 0
+    if dry_run:
+        print(f"[dry-run] sftp -b - would fetch {len(missing)} file(s) into {local_session}")
+        return 0
+    # Forward slashes for the local lcd target: sftp treats backslash as an
+    # escape, and it accepts forward-slash paths on Windows.
+    local_lcd = str(local_session).replace("\\", "/")
+    lines = [f'cd "{remote_path}"', f'lcd "{local_lcd}"']
+    lines += [f'get -p "{name}"' for name in missing]
+    args = ["sftp", "-i", key, "-o", "BatchMode=yes", "-q", "-b", "-", f"{user}@{host}"]
+    proc = subprocess.run(args, input="\n".join(lines) + "\n", text=True)
+    if proc.returncode != 0:
+        sys.exit(f"[pull] sftp failed (exit {proc.returncode})")
+    return len(missing)
+
+
+def skip_existing_pull(
+    host: str,
+    user: str,
+    key: str,
+    remote_path: str,
+    local_parent: Path,
+    *,
+    only_main: bool,
+    dry_run: bool,
+) -> None:
+    """Incremental pull: name-diff the immutable image globs (sftp only
+    the new snaps) and re-fetch the mutable metadata in full via scp
+    (``events.jsonl`` grows; ``*.json`` is rewritten at session end). Cheap
+    re-pull of a grown or still-live session."""
+    session_name = remote_path.rstrip("/").rsplit("/", 1)[-1]
+    local_session = local_parent / session_name
+    local_session.mkdir(parents=True, exist_ok=True)
+
+    total_new = 0
+    for pat in _immutable_image_patterns(only_main):
+        total_new += sftp_get_missing(
+            host, user, key, remote_path, local_session, pat, dry_run=dry_run
+        )
+
+    mutable = (
+        ("*.json", "*.jsonl", "*_summary.html", "index.html")
+        if only_main
+        else ("*.json", "*.jsonl", "*.html")
+    )
+    for pat in mutable:
+        args = [
+            "scp",
+            "-i",
+            key,
+            "-p",
+            "-q",
+            f"{user}@{host}:{remote_path}/{pat}",
+            str(local_session),
+        ]
+        if dry_run:
+            print("[dry-run]", shlex.join(args))
+            continue
+        subprocess.run(args)  # missing-pattern failures are acceptable
+    if not dry_run:
+        print(f"[pull] skip-existing: {total_new} new image(s) fetched")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="streettracker pull",
         description="Pull a StreetTracker session from the device via ssh/scp.",
     )
-    parser.add_argument("--host", default=DEFAULT_HOST,
-                        help=f"SSH host or alias (default: {DEFAULT_HOST})")
-    parser.add_argument("--user", default=DEFAULT_USER,
-                        help=f"SSH user (default: {DEFAULT_USER})")
-    parser.add_argument("--key", default=DEFAULT_KEY,
-                        help=f"SSH private key (default: {DEFAULT_KEY})")
-    parser.add_argument("--remote-parent", default=DEFAULT_REMOTE_PARENT,
-                        help="Parent output directory on the device")
-    parser.add_argument("--target", default=DEFAULT_LOCAL_PARENT,
-                        help="Local parent directory to receive the session "
-                             "(session subdir is created inside)")
-    parser.add_argument("--session", default=None,
-                        help="Specific session label (default: latest)")
-    parser.add_argument("--only-main", action="store_true",
-                        help="Pull only main-stream snaps + JSON metadata "
-                             "(skip thumbnails / HQ crops / summary HTML)")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Print the scp invocation and remote inventory; "
-                             "do not transfer")
+    parser.add_argument(
+        "--host", default=DEFAULT_HOST, help=f"SSH host or alias (default: {DEFAULT_HOST})"
+    )
+    parser.add_argument("--user", default=DEFAULT_USER, help=f"SSH user (default: {DEFAULT_USER})")
+    parser.add_argument(
+        "--key", default=DEFAULT_KEY, help=f"SSH private key (default: {DEFAULT_KEY})"
+    )
+    parser.add_argument(
+        "--remote-parent",
+        default=DEFAULT_REMOTE_PARENT,
+        help="Parent output directory on the device",
+    )
+    parser.add_argument(
+        "--target",
+        default=DEFAULT_LOCAL_PARENT,
+        help="Local parent directory to receive the session (session subdir is created inside)",
+    )
+    parser.add_argument("--session", default=None, help="Specific session label (default: latest)")
+    parser.add_argument(
+        "--only-main",
+        action="store_true",
+        help="Pull only main-stream snaps + JSON metadata "
+        "(skip thumbnails / HQ crops / summary HTML)",
+    )
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Incremental: fetch only image files missing "
+        "locally (snaps are write-once) via sftp, and "
+        "re-fetch the mutable JSON/jsonl in full. Cheap "
+        "re-pull of a grown or still-live session.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the scp invocation and remote inventory; do not transfer",
+    )
     return parser
 
 
@@ -229,9 +346,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[pull] SSH key not found: {key}", file=sys.stderr)
         return 1
 
-    session = args.session or find_latest_session(
-        args.host, args.user, key, args.remote_parent
-    )
+    session = args.session or find_latest_session(args.host, args.user, key, args.remote_parent)
     remote_path = f"{args.remote_parent.rstrip('/')}/{session}"
     local_parent = Path(args.target).expanduser().resolve()
 
@@ -246,10 +361,26 @@ def main(argv: list[str] | None = None) -> int:
     if args.only_main:
         print("[pull] mode:    --only-main (skipping thumbs + HQ + HTML)")
 
-    scp_pull(
-        args.host, args.user, key, remote_path, local_parent,
-        only_main=args.only_main, dry_run=args.dry_run,
-    )
+    if args.skip_existing:
+        skip_existing_pull(
+            args.host,
+            args.user,
+            key,
+            remote_path,
+            local_parent,
+            only_main=args.only_main,
+            dry_run=args.dry_run,
+        )
+    else:
+        scp_pull(
+            args.host,
+            args.user,
+            key,
+            remote_path,
+            local_parent,
+            only_main=args.only_main,
+            dry_run=args.dry_run,
+        )
 
     if not args.dry_run:
         landed = local_parent / session

@@ -65,9 +65,7 @@ def test_scp_commands_only_main_uses_pattern_list(tmp_path: Path) -> None:
 
 
 def _fake_completed(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess[str]:
-    return subprocess.CompletedProcess(
-        args=[], returncode=returncode, stdout=stdout, stderr=""
-    )
+    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="")
 
 
 def test_find_latest_session_returns_remote_basename() -> None:
@@ -89,13 +87,7 @@ def test_find_latest_session_exits_on_empty_listing() -> None:
 
 
 def test_remote_inventory_parses_du_and_find_output() -> None:
-    fake_out = (
-        "BYTES 1572864\n"
-        "FILES 42\n"
-        "MAIN 7\n"
-        "HQ 14\n"
-        "JSONL 1\n"
-    )
+    fake_out = "BYTES 1572864\nFILES 42\nMAIN 7\nHQ 14\nJSONL 1\n"
     with patch("streettracker.cli.pull.subprocess.run") as mock_run:
         mock_run.return_value = _fake_completed(fake_out)
         inv = pull.remote_inventory("orin", "u", "/k", "/srv/output/session_x")
@@ -191,15 +183,158 @@ def test_main_dry_run_end_to_end(tmp_path: Path) -> None:
 
     def _ssh_stub(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
         # remote_inventory; find_latest_session is skipped because we pass --session
-        return _fake_completed(
-            "BYTES 0\nFILES 0\nMAIN 0\nHQ 0\nJSONL 0\n"
-        )
+        return _fake_completed("BYTES 0\nFILES 0\nMAIN 0\nHQ 0\nJSONL 0\n")
 
     with patch("streettracker.cli.pull.subprocess.run", side_effect=_ssh_stub):
-        rc = pull.main([
-            "--key", str(fake_key),
-            "--session", "session_test",
-            "--target", str(tmp_path / "out"),
-            "--dry-run",
-        ])
+        rc = pull.main(
+            [
+                "--key",
+                str(fake_key),
+                "--session",
+                "session_test",
+                "--target",
+                str(tmp_path / "out"),
+                "--dry-run",
+            ]
+        )
+    assert rc == 0
+
+
+# ----------------------------------------------------------------------
+# --skip-existing: incremental pull (name-diff the immutable snaps).
+
+
+def test_immutable_image_patterns_by_mode() -> None:
+    assert pull._immutable_image_patterns(only_main=True) == ("*_main_*.jpg",)
+    assert pull._immutable_image_patterns(only_main=False) == ("*.jpg",)
+
+
+def test_sftp_get_missing_fetches_only_new(tmp_path: Path) -> None:
+    """The name diff fetches just the remote files absent locally; an
+    already-present snap is skipped (immutable -> no re-transfer)."""
+    local_session = tmp_path / "session_x"
+    local_session.mkdir()
+    (local_session / "vehicle_1_main_1.jpg").write_bytes(b"have")
+    remote = {"vehicle_1_main_1.jpg", "vehicle_2_main_1.jpg", "vehicle_3_main_1.jpg"}
+    captured: dict[str, Any] = {}
+
+    def _capture(args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        captured["args"] = args
+        captured["input"] = kwargs.get("input", "")
+        return _fake_completed(returncode=0)
+
+    with (
+        patch("streettracker.cli.pull._remote_basenames", return_value=remote),
+        patch("streettracker.cli.pull.subprocess.run", side_effect=_capture),
+    ):
+        n = pull.sftp_get_missing(
+            "orin",
+            "u",
+            "/k",
+            "/srv/output/session_x",
+            local_session,
+            "*_main_*.jpg",
+            dry_run=False,
+        )
+    assert n == 2
+    assert captured["args"][0] == "sftp"
+    assert "-b" in captured["args"]
+    body = captured["input"]
+    assert 'get -p "vehicle_2_main_1.jpg"' in body
+    assert 'get -p "vehicle_3_main_1.jpg"' in body
+    assert "vehicle_1_main_1.jpg" not in body  # already local -> not re-fetched
+
+
+def test_sftp_get_missing_nothing_new_skips_sftp(tmp_path: Path) -> None:
+    local_session = tmp_path / "session_x"
+    local_session.mkdir()
+    (local_session / "vehicle_1_main_1.jpg").write_bytes(b"x")
+    with (
+        patch("streettracker.cli.pull._remote_basenames", return_value={"vehicle_1_main_1.jpg"}),
+        patch("streettracker.cli.pull.subprocess.run") as mock_run,
+    ):
+        n = pull.sftp_get_missing(
+            "orin",
+            "u",
+            "/k",
+            "/p",
+            local_session,
+            "*_main_*.jpg",
+            dry_run=False,
+        )
+    assert n == 0
+    mock_run.assert_not_called()
+
+
+def test_sftp_get_missing_dry_run_skips_transfer(tmp_path: Path) -> None:
+    local_session = tmp_path / "session_x"
+    local_session.mkdir()
+    with (
+        patch("streettracker.cli.pull._remote_basenames", return_value={"vehicle_9_main_1.jpg"}),
+        patch("streettracker.cli.pull.subprocess.run") as mock_run,
+    ):
+        n = pull.sftp_get_missing(
+            "orin",
+            "u",
+            "/k",
+            "/p",
+            local_session,
+            "*_main_*.jpg",
+            dry_run=True,
+        )
+    assert n == 0
+    mock_run.assert_not_called()
+
+
+def test_skip_existing_pull_routes_images_to_sftp_metadata_to_scp(tmp_path: Path) -> None:
+    """Immutable snaps go through the sftp name-diff; mutable JSON/jsonl/
+    HTML are re-fetched in full via scp."""
+    scp_targets: list[str] = []
+
+    def _capture_scp(args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        scp_targets.append(args[-2])  # "user@host:remote/<pattern>"
+        return _fake_completed(returncode=0)
+
+    with (
+        patch("streettracker.cli.pull.sftp_get_missing", return_value=3) as mock_sftp,
+        patch("streettracker.cli.pull.subprocess.run", side_effect=_capture_scp),
+    ):
+        pull.skip_existing_pull(
+            "orin",
+            "u",
+            "/k",
+            "/srv/output/session_x",
+            tmp_path,
+            only_main=True,
+            dry_run=False,
+        )
+    mock_sftp.assert_called_once()
+    assert mock_sftp.call_args.args[-1] == "*_main_*.jpg"  # the immutable glob
+    scp_patterns = [t.rsplit("/", 1)[-1] for t in scp_targets]
+    assert scp_patterns == ["*.json", "*.jsonl", "*_summary.html", "index.html"]
+
+
+def test_main_skip_existing_dry_run(tmp_path: Path) -> None:
+    """--skip-existing dry-run happy path returns 0 and transfers nothing."""
+    fake_key = tmp_path / "id"
+    fake_key.write_text("not-a-real-key")
+
+    def _ssh_stub(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        # remote_inventory + the ls inside _remote_basenames both land here.
+        return _fake_completed("BYTES 0\nFILES 0\nMAIN 0\nHQ 0\nJSONL 0\n")
+
+    with patch("streettracker.cli.pull.subprocess.run", side_effect=_ssh_stub):
+        rc = pull.main(
+            [
+                "--key",
+                str(fake_key),
+                "--session",
+                "session_test",
+                "--target",
+                str(tmp_path / "out"),
+                "--only-main",
+                "--skip-existing",
+                "--dry-run",
+            ]
+        )
     assert rc == 0
