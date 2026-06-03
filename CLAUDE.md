@@ -150,7 +150,7 @@ code-complete; the only remaining tail is repo archival on GitHub.
 | 6 | (opt) Nano archive role | not started |
 | 7 | cutover: enable systemd on Orin + decommission Nano + archive old repos | **mostly done** — Orin live since 2026-05-22; only `VehicleTracker` + `NanoTracker` repo archival on GitHub outstanding |
 
-Tests at HEAD: **600 passing on Python 3.10, ruff clean.**
+Tests at HEAD: **606 passing on Python 3.10, ruff clean.**
 
 All subcommands wired: `run`/`batch` go through the asyncio runtime,
 `pull`/`export-engine` ship sessions and build engines,
