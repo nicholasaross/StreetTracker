@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}StreetTracker — Vehicle Showcase{% endblock %}</title>
+  <style>
+    :root {
+      --bg: #0f1115; --panel: #1b1f27; --panel-2: #232834; --line: #2c3340;
+      --text: #e6e8ec; --muted: #9aa3b2; --accent: #5b9dff; --accent-2: #1fb6a8;
+      --gold: #f5c518; --danger: #ff6b6b; --radius: 12px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font: 15px/1.5 -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    header.site {
+      position: sticky; top: 0; z-index: 10; backdrop-filter: blur(8px);
+      background: rgba(15,17,21,.85); border-bottom: 1px solid var(--line);
+      padding: 14px 24px; display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+    }
+    header.site h1 { font-size: 18px; margin: 0; letter-spacing: .3px; }
+    header.site h1 a { color: var(--text); }
+    .muted { color: var(--muted); }
+    .wrap { max-width: 1320px; margin: 0 auto; padding: 24px; }
+    .statbar { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 13px; }
+    .statbar b { color: var(--text); }
+
+    /* Cards / grid */
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 16px; }
+    .card {
+      background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+      overflow: hidden; display: flex; flex-direction: column; position: relative;
+      transition: transform .08s ease, border-color .08s ease;
+    }
+    .card:hover { transform: translateY(-2px); border-color: var(--accent); }
+    .card .thumb { aspect-ratio: 16/10; background: #000 center/cover no-repeat; display: block; }
+    .card .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .card .body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 4px; }
+    .plate {
+      font-family: "Segoe UI", monospace; font-weight: 700; letter-spacing: 1px;
+      background: #f5d000; color: #111; padding: 2px 8px; border-radius: 5px;
+      display: inline-block; font-size: 14px;
+    }
+    .mm { font-weight: 600; }
+    .sub { color: var(--muted); font-size: 12.5px; }
+    .badges { position: absolute; top: 8px; left: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+    .badge {
+      font-size: 11px; font-weight: 700; padding: 3px 7px; border-radius: 20px;
+      background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    }
+    .badge.reg { background: rgba(31,182,168,.18); color: var(--accent-2); border-color: rgba(31,182,168,.4); }
+    .badge.owner { background: rgba(91,157,255,.18); color: var(--accent); border-color: rgba(91,157,255,.4); }
+    .star {
+      position: absolute; top: 6px; right: 6px; cursor: pointer; font-size: 20px;
+      line-height: 1; background: rgba(0,0,0,.45); border: none; color: #fff8;
+      width: 32px; height: 32px; border-radius: 50%;
+    }
+    .star.on { color: var(--gold); }
+    .star:hover { color: var(--gold); }
+
+    /* Controls */
+    .controls { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin: 8px 0 20px; }
+    .search {
+      flex: 1 1 260px; min-width: 220px; padding: 9px 13px; border-radius: 9px;
+      background: var(--panel); border: 1px solid var(--line); color: var(--text); font-size: 14px;
+    }
+    .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+    .chip {
+      padding: 8px 14px; border-radius: 20px; border: 1px solid var(--line);
+      background: var(--panel); color: var(--muted); cursor: pointer; font-size: 13px; font-weight: 600;
+    }
+    .chip.active { background: var(--accent); color: #06122b; border-color: var(--accent); }
+    .hidden { display: none !important; }
+    .empty { color: var(--muted); padding: 40px; text-align: center; }
+
+    /* Featured rail */
+    .section-title { font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin: 26px 0 12px; }
+    .rail { display: flex; gap: 14px; overflow-x: auto; padding-bottom: 10px; scroll-snap-type: x proximity; }
+    .rail .card { flex: 0 0 230px; scroll-snap-align: start; }
+
+    /* Detail page */
+    .detail { display: grid; grid-template-columns: 1.4fr 1fr; gap: 28px; align-items: start; }
+    @media (max-width: 900px) { .detail { grid-template-columns: 1fr; } }
+    .hero-img { width: 100%; border-radius: var(--radius); border: 1px solid var(--line); background: #000; }
+    .thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px,1fr)); gap: 8px; margin-top: 10px; }
+    .thumbs img { width: 100%; aspect-ratio: 16/10; object-fit: cover; border-radius: 8px; cursor: pointer; border: 1px solid var(--line); }
+    .thumbs img.sel { border-color: var(--accent); }
+    table.attrs { width: 100%; border-collapse: collapse; }
+    table.attrs th, table.attrs td { text-align: left; padding: 7px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    table.attrs th { color: var(--muted); font-weight: 500; width: 42%; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; }
+    .panel h3 { margin: 0 0 14px; font-size: 15px; }
+    .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 13px; }
+    .field label { font-size: 12.5px; color: var(--muted); }
+    .field input[type=text], .field textarea {
+      padding: 9px 11px; border-radius: 8px; background: var(--panel-2);
+      border: 1px solid var(--line); color: var(--text); font: inherit; resize: vertical;
+    }
+    .row-check { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+    .btn {
+      padding: 10px 18px; border-radius: 9px; border: none; cursor: pointer;
+      background: var(--accent); color: #06122b; font-weight: 700; font-size: 14px;
+    }
+    .btn:hover { filter: brightness(1.08); }
+    .save-note { margin-left: 12px; font-size: 13px; color: var(--accent-2); opacity: 0; transition: opacity .2s; }
+    .save-note.show { opacity: 1; }
+    .timeline { list-style: none; padding: 0; margin: 0; }
+    .timeline li { padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 13px; display: flex; justify-content: space-between; gap: 10px; }
+  </style>
+</head>
+<body>
+  <header class="site">
+    <h1><a href="/">🚗 StreetTracker Showcase</a></h1>
+    <span class="muted">{% block subtitle %}enriched &amp; recurring vehicles{% endblock %}</span>
+  </header>
+  <main class="wrap">
+    {% block content %}{% endblock %}
+  </main>
+  <script>
+    // Tiny PUT helper used by the favourite toggle + the detail form.
+    async function setMeta(plate, fields) {
+      const r = await fetch(`/api/cars/${encodeURIComponent(plate)}/metadata`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(fields),
+      });
+      if (!r.ok) throw new Error(`save failed (${r.status})`);
+      return r.json();
+    }
+  </script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}{{ car.plate }} — Vehicle Showcase{% endblock %}
+{% block subtitle %}{% if car.make %}{{ car.make }} {{ car.model or '' }}{% else %}{{ car.plate }}{% endif %}{% endblock %}
+
+{% block content %}
+<p><a href="/">← All cars</a></p>
+<div class="detail">
+  <div>
+    {% if car.images %}
+    <img class="hero-img" id="hero" src="{{ car.images[0].full }}" alt="{{ car.plate }}">
+    <div class="thumbs">
+      {% for im in car.images %}
+      <img src="{{ im.thumb }}" data-full="{{ im.full }}"
+           class="{{ 'sel' if loop.first else '' }}"
+           onclick="selImg(this)" alt="sighting {{ loop.index }}">
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="panel">No snapshots on disk for this car.</div>
+    {% endif %}
+  </div>
+
+  <div>
+    <h2 style="margin:0 0 6px"><span class="plate" style="font-size:20px">{{ car.plate }}</span></h2>
+    <div class="mm" style="font-size:18px">
+      {% if car.make %}{{ car.make }} {{ car.model or '' }}{% else %}Unidentified make{% endif %}
+    </div>
+    {% if car.kind == 'different-day' %}
+    <div style="margin:8px 0 16px"><span class="badge reg">★ Regular — seen on {{ car.n_dates }} different days</span></div>
+    {% else %}
+    <div style="margin-bottom:16px"></div>
+    {% endif %}
+
+    <div class="panel" style="margin-bottom:18px">
+      <h3>Details</h3>
+      <table class="attrs">
+        <tr><th>Year</th><td>{{ car.year or '—' }}</td></tr>
+        <tr><th>Colour (DVSA)</th><td>{{ car.primary_colour or '—' }}</td></tr>
+        <tr><th>Observed colour</th><td>{{ car.colors | join_counts }}</td></tr>
+        <tr><th>Fuel</th><td>{{ car.fuel_type or '—' }}</td></tr>
+        <tr><th>Engine</th><td>{% if car.engine_size_cc %}{{ car.engine_size_cc }} cc{% else %}—{% endif %}</td></tr>
+        <tr><th>Make/model from</th><td>{{ car.make_model_source or '—' }}</td></tr>
+        <tr><th>Sightings</th><td>{{ car.n_visits }} across {{ car.n_sessions }} session{{ 's' if car.n_sessions != 1 }}, {{ car.n_dates }} day{{ 's' if car.n_dates != 1 }}</td></tr>
+        <tr><th>Direction</th><td>{{ car.directions | join_counts }}</td></tr>
+        <tr><th>First seen</th><td>{{ car.first_seen | fmt_dt }}</td></tr>
+        <tr><th>Last seen</th><td>{{ car.last_seen | fmt_dt }}</td></tr>
+        {% if car.plate_variants %}<tr><th>OCR variants</th><td>{{ car.plate_variants | join(', ') }}</td></tr>{% endif %}
+      </table>
+    </div>
+
+    <div class="panel">
+      <h3>Your notes</h3>
+      <form id="metaForm" onsubmit="return saveMeta(event)">
+        <div class="field"><label>Name</label>
+          <input type="text" name="name" value="{{ car.meta.name }}" placeholder="e.g. My car"></div>
+        <div class="field"><label>Owner</label>
+          <input type="text" name="owner" value="{{ car.meta.owner }}" placeholder="e.g. Shaun"></div>
+        <div class="field"><label>Notes</label>
+          <textarea name="notes" rows="3" placeholder="Anything worth remembering…">{{ car.meta.notes }}</textarea></div>
+        <div class="row-check">
+          <input type="checkbox" id="fav" name="favourite" {{ 'checked' if car.meta.favourite }}>
+          <label for="fav">⭐ Favourite</label>
+        </div>
+        <button class="btn" type="submit">Save</button>
+        <span class="save-note" id="saveNote">Saved ✓</span>
+      </form>
+    </div>
+
+    {% if car.images %}
+    <div class="panel" style="margin-top:18px">
+      <h3>Sighting timeline</h3>
+      <ul class="timeline">
+        {% for im in car.images %}
+        <li><span>{{ im.time | fmt_dt }}</span><span class="muted">{{ im.direction }} · {{ im.color }}</span></li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  function selImg(el) {
+    const hero = document.getElementById("hero");
+    hero.src = el.dataset.full;
+    document.querySelectorAll(".thumbs img").forEach(i => i.classList.remove("sel"));
+    el.classList.add("sel");
+  }
+
+  function saveMeta(ev) {
+    ev.preventDefault();
+    const f = ev.target.elements;
+    const fields = {
+      name: f["name"].value,
+      owner: f["owner"].value,
+      notes: f["notes"].value,
+      favourite: f["favourite"].checked,
+    };
+    setMeta("{{ car.plate }}", fields).then(() => {
+      const n = document.getElementById("saveNote");
+      n.classList.add("show");
+      setTimeout(() => n.classList.remove("show"), 1600);
+    }).catch(e => alert(e.message));
+    return false;
+  }
+</script>
+{% endblock %}
