@@ -121,6 +121,7 @@ uv run streettracker dvsa-label output/<session>         # DVSA make/model harve
 uv run streettracker dvsa-apply output/<session>         # fold DVSA make/model onto per-track records
 uv run streettracker vehicles output/<session>           # per-vehicle aggregation (+ DVSA make/model)
 uv run streettracker vehicles output/<a> --across output/<b> ...  # cross-session repeat vehicles
+uv run streettracker showcase --output-root output       # local website: enriched + recurring cars (http://127.0.0.1:8090/)
 uv run streettracker makemodel output/<session>          # CNN make/model inference -> _makemodel.json
 # Mine the Orin -> grow the UK make-classifier corpus (run pull from PowerShell):
 uv run streettracker pull --session <S> --only-main      # pull a session's 4K snaps from the Orin
@@ -132,6 +133,36 @@ uv run streettracker makemodel-train-uk runs/uk_crops --input-size 512   # train
 POSIX-looking arguments (`/home/...`) into Windows paths before Python
 sees them. Either run from PowerShell / cmd, or prefix with
 `MSYS_NO_PATHCONV=1` and pass `--key` as a Windows-style path.
+
+## Showcase website
+
+`streettracker showcase` serves a local website (`src/streettracker/web/`:
+`aggregate.py` + `metadata.py` + `server.py` + jinja2 `templates/`) that
+browses the *enriched* cars across every session in an output root —
+plate-read (ANPR) cars joined to DVSA make/model/year/colour — with the
+regularly-appearing ones featured, plus a per-car metadata editor
+("this is my car", "this is Shaun's car").
+
+```bash
+uv run streettracker showcase --output-root output   # http://127.0.0.1:8090/
+```
+
+- **Identified cars only.** `web/aggregate.build_showcase` pools the plated
+  subset from `analysis.vehicles.build_vehicles` (rebuilt **live** — the
+  on-disk `*_vehicles.json` can be stale, e.g. written before `dvsa-label`)
+  into one card per physical car, keyed by canonical plate and merged across
+  sessions with the same fuzzy clustering the `vehicles --across` cohort uses.
+  It also surfaces the richer DVSA fields (`primary_colour`/`fuel_type`/
+  `engine_size_cc`) read straight from `<session>_dvsa_labels.json`.
+  "Regulars" = the `different-day` kind (seen on ≥2 calendar dates).
+- **User metadata** (name / owner / notes / favourite) persists atomically to
+  `<output-root>/showcase_metadata.json`, keyed by plate so a tag follows a
+  car across every session. This is the *only* state the site writes;
+  everything else is read-only upstream data.
+- **Local-only by default** (binds `127.0.0.1`; the page shows plate data +
+  personal tags). `--host 0.0.0.0` opts into LAN exposure. `POST /api/refresh`
+  re-aggregates in place after new sessions are pulled. Images are served from
+  the output root through a `.jpg`-only, single-segment-validated route.
 
 ## Migration status
 
