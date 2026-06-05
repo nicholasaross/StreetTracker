@@ -1,0 +1,242 @@
+{% extends "base.html" %}
+{% block title %}Statistics — Vehicle Showcase{% endblock %}
+{% block subtitle %}traffic summary statistics{% endblock %}
+
+{% block content %}
+<style>
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin-bottom: 8px; }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+  .tile .big { font-size: 24px; font-weight: 700; }
+  .tile .lbl { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+  .panel.stat { margin-top: 22px; }
+  .panel.stat h3 { margin: 0 0 4px; font-size: 15px; }
+  .panel.stat .hint { color: var(--muted); font-size: 12.5px; margin: 0 0 12px; }
+  .legend { display: flex; gap: 16px; font-size: 12.5px; color: var(--muted); margin: 2px 0 10px; }
+  .legend i { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .scrollx { overflow-x: auto; }
+  svg.chart { display: block; height: auto; }
+  svg.chart .grid { stroke: var(--line); stroke-width: 1; }
+  svg.chart .ylab { fill: var(--muted); font-size: 10px; text-anchor: end; }
+  svg.chart .xlab { fill: var(--muted); font-size: 10px; text-anchor: middle; }
+  svg.chart .clickbar { cursor: pointer; }
+  svg.chart .clickbar:hover { opacity: .8; }
+  .row { display: flex; gap: 22px; flex-wrap: wrap; }
+  .row > .panel.stat { flex: 1 1 360px; margin-top: 22px; }
+  .selrow { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .selrow select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px; font: inherit; }
+  /* heatmap */
+  .heatmap { display: grid; grid-template-columns: 38px repeat(24, 1fr); gap: 2px; min-width: 560px; }
+  .hm-corner, .hm-h, .hm-d { font-size: 10px; color: var(--muted); display: flex; align-items: center; }
+  .hm-h { justify-content: center; }
+  .hm-d { justify-content: flex-end; padding-right: 5px; }
+  .hm-c { aspect-ratio: 1/1; border-radius: 2px; min-height: 13px; }
+  /* hbars */
+  .hbars { display: flex; flex-direction: column; gap: 7px; }
+  .hbar { display: grid; grid-template-columns: 96px 1fr 42px; align-items: center; gap: 9px; font-size: 13px; }
+  .hbar .track { background: var(--panel-2); border-radius: 5px; overflow: hidden; }
+  .hbar .fill { height: 16px; border-radius: 5px; background: var(--accent); }
+  .hbar .n { color: var(--muted); text-align: right; }
+  .sw { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; border: 1px solid #0006; }
+  /* fastest */
+  .fastest { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 8px; }
+  .fcard { flex: 0 0 150px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .fcard .th { aspect-ratio: 16/10; background: #000 center/cover no-repeat; display: block; }
+  .fcard .th img { width: 100%; height: 100%; object-fit: cover; }
+  .fcard .body { padding: 8px 10px; }
+  .fcard .spd { font-size: 18px; font-weight: 700; }
+  .fcard .spd small { font-size: 12px; color: var(--muted); font-weight: 400; }
+  .fcard .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .caveat { color: var(--muted); font-size: 12px; margin-top: 26px; border-top: 1px solid var(--line); padding-top: 12px; }
+</style>
+
+{% if not stats.overall.total_journeys %}
+  <div class="empty">No finalized sessions with track data found under the output root.</div>
+{% else %}
+{% set o = stats.overall %}
+<div class="tiles">
+  <div class="tile"><div class="big">{{ "{:,}".format(o.total_journeys) }}</div><div class="lbl">vehicle journeys</div></div>
+  <div class="tile"><div class="big">{{ o.n_days }}</div><div class="lbl">days · {{ o.n_sessions }} sessions</div></div>
+  <div class="tile"><div class="big">{{ o.pct_l2r }}% / {{ o.pct_r2l }}%</div><div class="lbl">left→right / right→left</div></div>
+  <div class="tile"><div class="big">{{ o.per_day_mean }}</div><div class="lbl">avg journeys / day</div></div>
+  {% if o.busiest_hour %}<div class="tile"><div class="big">{{ "%02d:00"|format(o.busiest_hour.hour) }}</div><div class="lbl">busiest hour ({{ o.busiest_hour.total }})</div></div>{% endif %}
+  {% if o.peak_quarter %}<div class="tile"><div class="big">{{ o.peak_quarter.start }}</div><div class="lbl">peak 15-min ({{ o.peak_quarter.total }})</div></div>{% endif %}
+</div>
+<p class="hint" style="color:var(--muted);font-size:12.5px">Coverage: {{ o.date_from }} → {{ o.date_to }}</p>
+
+<div class="panel stat">
+  <h3>Daily journeys by direction</h3>
+  <p class="hint">One bar per day. Click a day to drill into its 15-minute profile below.</p>
+  <div class="legend"><span><i style="background:#5b9dff"></i>left → right</span><span><i style="background:#1fb6a8"></i>right → left</span></div>
+  <div class="scrollx" id="daily"></div>
+</div>
+
+<div class="row">
+  <div class="panel stat">
+    <h3>Activity by day of week</h3>
+    <p class="hint">All captured days pooled by weekday.</p>
+    <div id="dow"></div>
+  </div>
+  <div class="panel stat">
+    <h3>15-minute profile</h3>
+    <div class="selrow"><label class="hint" for="daysel">Day:</label><select id="daysel"></select></div>
+    <div class="scrollx" id="quarter"></div>
+  </div>
+</div>
+
+<div class="panel stat">
+  <h3>When traffic happens</h3>
+  <p class="hint">Journeys by weekday (rows) × hour of day (columns). Darker = busier.</p>
+  <div class="scrollx" id="heatmap"></div>
+</div>
+
+<div class="row">
+  <div class="panel stat">
+    <h3>Speed distribution</h3>
+    <p class="hint">All vehicles. Avg left→right <b id="avgL"></b>, right→left <b id="avgR"></b> <span id="spunit"></span>.</p>
+    <div class="scrollx" id="speedhist"></div>
+  </div>
+  <div class="panel stat">
+    <h3>Top makes</h3>
+    <p class="hint">Distinct identified cars, from DVSA labels.</p>
+    <div class="hbars" id="makes"></div>
+  </div>
+</div>
+
+<div class="panel stat">
+  <h3>Fastest cars</h3>
+  <p class="hint" id="fastesthint"></p>
+  <div class="fastest" id="fastest"></div>
+</div>
+
+<div class="panel stat">
+  <h3>Vehicle colours</h3>
+  <div class="hbars" id="colours"></div>
+</div>
+
+<p class="caveat">
+  Stats cover all vehicle tracks across captured sessions (not 24/7 — the tracker
+  pauses at night / in IR mode), so quiet periods may mean "not recording" rather
+  than "no traffic". Each track ≈ one pass; brief ID-switches can double-count.
+  {% if stats.speed_unit == 'px/s' %}Speeds are pixels/second (relative, uncalibrated) — set a calibration to show mph.{% else %}Speeds in mph are approximate (single-point calibration; ignores perspective).{% endif %}
+</p>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+const STATS = {{ stats | tojson }};
+const el = id => document.getElementById(id);
+const C_L2R = "#5b9dff", C_R2L = "#1fb6a8";
+const DOW = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+
+function niceMax(v){ if(v<=0) return 1; const p=Math.pow(10,Math.floor(Math.log10(v))); const f=v/p; const n=f<=1?1:f<=2?2:f<=5?5:10; return n*p; }
+function fmtNum(v){ return v>=1000? (v/1000).toFixed(v%1000?1:0)+"k" : String(Math.round(v)); }
+
+// Generic vertical bar chart (stacked). series: [{name,color,values:[]}].
+function barChart(opts){
+  const {labels, series, height=190, minBar=9, rotate=false, onBar=false, sparse=1} = opts;
+  const n = labels.length, padL=40, padR=8, padT=8, padB = rotate?54:22;
+  const W = Math.max(opts.width||660, n*minBar + padL + padR);
+  const innerW = W-padL-padR, innerH = height-padT-padB;
+  let maxV=0;
+  for(let i=0;i<n;i++){ let s=0; for(const ser of series) s+=(ser.values[i]||0); maxV=Math.max(maxV,s); }
+  maxV = niceMax(maxV);
+  const bw = Math.max(2, innerW/n*0.72);
+  const cx = i => padL + innerW*(i+0.5)/n;
+  const yy = v => padT + innerH*(1 - v/maxV);
+  const p=[];
+  for(let t=0;t<=4;t++){ const v=maxV*t/4, y=yy(v); p.push(`<line class="grid" x1="${padL}" y1="${y}" x2="${W-padR}" y2="${y}"/>`); p.push(`<text class="ylab" x="${padL-5}" y="${y+3}">${fmtNum(v)}</text>`); }
+  for(let i=0;i<n;i++){
+    let acc=0;
+    for(const ser of series){
+      const v=ser.values[i]||0; if(v<=0) continue;
+      const y0=yy(acc+v), h=yy(acc)-yy(acc+v); acc+=v;
+      p.push(`<rect x="${cx(i)-bw/2}" y="${y0}" width="${bw}" height="${Math.max(0,h)}" fill="${ser.color}" ${onBar?`class="clickbar" data-i="${i}"`:''}><title>${labels[i]}: ${ser.name} ${v}</title></rect>`);
+    }
+    if((i%sparse)===0 && opts.tick!==false){ const lab=labels[i]; const ty=height-padB+(rotate?12:14);
+      p.push(`<text class="xlab" x="${cx(i)}" y="${ty}" ${rotate?`transform="rotate(45 ${cx(i)} ${ty})"`:''}>${lab}</text>`); }
+  }
+  return `<svg class="chart" viewBox="0 0 ${W} ${height}" style="min-width:${W}px;width:${W}px">${p.join("")}</svg>`;
+}
+
+function renderDaily(){
+  const d=STATS.daily;
+  const labels=d.map(x=>x.date.slice(5)); // MM-DD
+  const html=barChart({labels, height:200, minBar:26, rotate:true, onBar:true,
+    series:[{name:"L→R",color:C_L2R,values:d.map(x=>x.l2r)},{name:"R→L",color:C_R2L,values:d.map(x=>x.r2l)}]});
+  el("daily").innerHTML=html;
+  el("daily").querySelectorAll(".clickbar").forEach(r=>r.addEventListener("click",()=>{
+    const dt=d[+r.dataset.i].date; el("daysel").value=dt; renderQuarter(dt);
+  }));
+}
+
+function renderDow(){
+  const labels=DOW, html=barChart({labels, width:360, height:190, minBar:34,
+    series:[{name:"L→R",color:C_L2R,values:DOW.map(x=>STATS.dow[x].l2r)},{name:"R→L",color:C_R2L,values:DOW.map(x=>STATS.dow[x].r2l)}]});
+  el("dow").innerHTML=html;
+}
+
+function renderQuarter(date){
+  const buckets=STATS.by_day_15min[date]||[];
+  const labels=buckets.map((_,i)=> (i%8===0)? String(Math.floor(i/4)).padStart(2,"0")+":00" : "");
+  const html=barChart({labels, width:660, height:190, minBar:6, sparse:1, tick:true,
+    series:[{name:"L→R",color:C_L2R,values:buckets.map(b=>b.l2r)},{name:"R→L",color:C_R2L,values:buckets.map(b=>b.r2l)}]});
+  el("quarter").innerHTML = buckets.length? html : '<p class="hint">No directional data for this day.</p>';
+}
+
+function renderHeatmap(){
+  const hm=STATS.heatmap, max=Math.max(1,...hm.flat());
+  let h='<div class="heatmap"><div class="hm-corner"></div>';
+  for(let x=0;x<24;x++) h+=`<div class="hm-h">${x%3===0?x:""}</div>`;
+  for(let d=0;d<7;d++){ h+=`<div class="hm-d">${DOW[d]}</div>`;
+    for(let x=0;x<24;x++){ const v=hm[d][x], a=v/max;
+      h+=`<div class="hm-c" title="${DOW[d]} ${x}:00 — ${v}" style="background:rgba(91,157,255,${(0.06+0.94*a).toFixed(3)})"></div>`; } }
+  el("heatmap").innerHTML=h+"</div>";
+}
+
+function renderSpeed(){
+  const s=STATS.speed, hist=s.hist;
+  el("avgL").textContent=s.avg_l2r; el("avgR").textContent=s.avg_r2l; el("spunit").textContent=s.unit;
+  const labels=hist.map((b,i)=> (i%2===0)? Math.round(b.lo) : "");
+  el("speedhist").innerHTML = hist.length? barChart({labels, width:420, height:180, minBar:16,
+    series:[{name:s.unit,color:C_L2R,values:hist.map(b=>b.n)}]}) : '<p class="hint">No speed data.</p>';
+  const f=s.fastest;
+  el("fastesthint").textContent = f.length? `Top ${f.length} by speed (${s.unit}; tracks with ≥6 detections).` : "No qualifying tracks.";
+  el("fastest").innerHTML = f.map(c=>{
+    const img = c.thumb? `<img loading="lazy" src="${c.thumb}" alt="${c.plate||'car'}">` : "";
+    const plate = c.plate? `<a class="plate" style="font-size:12px" href="/car/${encodeURIComponent(c.plate)}">${c.plate}</a>` : '<span class="meta">unidentified</span>';
+    return `<div class="fcard"><span class="th">${img}</span><div class="body">
+      <div class="spd">${c.speed} <small>${c.unit}</small></div>
+      <div style="margin:3px 0">${plate}</div>
+      <div class="meta">${c.date} ${c.time}<br>${c.direction||""}</div></div></div>`;
+  }).join("");
+}
+
+function hbars(container, rows, opts){
+  opts=opts||{};
+  const max=Math.max(1,...rows.map(r=>r[1]));
+  el(container).innerHTML = rows.map(([k,v])=>{
+    const sw = opts.swatch? `<span class="sw" style="background:${opts.swatch(k)}"></span>`:"";
+    return `<div class="hbar"><div>${sw}${k}</div><div class="track"><div class="fill" style="width:${(100*v/max).toFixed(1)}%;${opts.fill?`background:${opts.fill(k)}`:''}"></div></div><div class="n">${v}</div></div>`;
+  }).join("") || '<p class="hint">No data.</p>';
+}
+
+const COLOUR_HEX = {white:"#e8e8e8",black:"#222",silver:"#c0c5cc",grey:"#9aa3b2",gray:"#9aa3b2",
+  red:"#e0584f",blue:"#4f7fe0",green:"#3da35d",yellow:"#e6c84f",orange:"#e08a3d",
+  brown:"#8a6240",beige:"#d9c9a3",purple:"#8a5fd0",unknown:"#4a5160"};
+const colHex = k => COLOUR_HEX[(k||"").toLowerCase()] || "#5b9dff";
+
+function init(){
+  if(!STATS || !STATS.overall || !STATS.overall.total_journeys) return;
+  const sel=el("daysel");
+  sel.innerHTML = STATS.daily.map(x=>`<option value="${x.date}">${x.date} (${x.total})</option>`).join("");
+  sel.addEventListener("change",()=>renderQuarter(sel.value));
+  const def = (STATS.overall.busiest_date && STATS.overall.busiest_date.date) || (STATS.daily.at(-1)||{}).date;
+  if(def){ sel.value=def; }
+  renderDaily(); renderDow(); renderQuarter(sel.value); renderHeatmap(); renderSpeed();
+  hbars("makes", STATS.makes);
+  hbars("colours", STATS.colours, {swatch: colHex, fill: colHex});
+}
+init();
+</script>
+{% endblock %}

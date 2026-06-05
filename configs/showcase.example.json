@@ -1,0 +1,4 @@
+{
+  "_comment": "Showcase speed calibration for the /stats page (turns px/s into mph). Copy to configs/showcase.json and set ONE of the keys below. Provide m_per_px directly (metres per inference-frame pixel), OR road_length_m: the real length in metres of the visible stretch of road, end-to-end along the direction cars drive -- m_per_px is then road_length_m / 801, where 801 is the traced road's travel-axis pixel length in the 896x512 inference frame. mph is approximate: a single global factor ignores perspective foreshortening. Leave unset (or delete the file) to show px/s instead. The --m-per-px / --road-length-m CLI flags override this file.",
+  "road_length_m": 30
+}

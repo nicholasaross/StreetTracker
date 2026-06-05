@@ -42,6 +42,12 @@ from aiohttp import web
 
 from streettracker.web.aggregate import ShowcaseCar, build_showcase, discover_sessions
 from streettracker.web.metadata import DEFAULT_FILENAME, MetadataStore, is_tagged
+from streettracker.web.stats import (
+    DEFAULT_ROAD_AXIS_PX,
+    Stats,
+    build_stats,
+    m_per_px_from_road_length,
+)
 
 # A snap filename is ``<prefix>_<id>[_main_<n>|_hq].jpg`` -- word chars + a
 # single ``.jpg``. No path separators, no ``..``, nothing but a leaf JPEG.
@@ -57,14 +63,17 @@ class _State:
     """
 
     output_root: Path
+    m_per_px: float | None = None
     cars: list[ShowcaseCar] = field(default_factory=list)
     cars_by_plate: dict[str, ShowcaseCar] = field(default_factory=dict)
     sessions: set[str] = field(default_factory=set)
+    stats: Stats | None = None
 
     def reaggregate(self) -> None:
         self.cars = build_showcase(self.output_root)
         self.cars_by_plate = {c.plate: c for c in self.cars}
         self.sessions = {d.name for d in discover_sessions(self.output_root)}
+        self.stats = build_stats(self.output_root, m_per_px=self.m_per_px)
 
     @property
     def n_regulars(self) -> int:
@@ -204,6 +213,16 @@ async def _api_set_metadata(request: web.Request) -> web.Response:
     )
 
 
+async def _stats_page(request: web.Request) -> web.Response:
+    stats = request.app[STATE].stats
+    return _render(request, "stats.html", stats=stats.to_json_dict() if stats else {})
+
+
+async def _api_stats(request: web.Request) -> web.Response:
+    stats = request.app[STATE].stats
+    return web.json_response(stats.to_json_dict() if stats else {})
+
+
 async def _api_refresh(request: web.Request) -> web.Response:
     request.app[STATE].reaggregate()
     return web.json_response({"cars": len(request.app[STATE].cars)})
@@ -228,14 +247,20 @@ async def _serve_image(request: web.Request) -> web.StreamResponse:
 # ---------------------------------------------------------------------------
 
 
-def build_app(output_root: Path, *, metadata_path: Path | None = None) -> web.Application:
+def build_app(
+    output_root: Path,
+    *,
+    metadata_path: Path | None = None,
+    m_per_px: float | None = None,
+) -> web.Application:
     """Build the showcase :class:`aiohttp.web.Application`.
 
-    Aggregates the cars eagerly so the first request is fast and ``main()`` can
-    report the count. Factored out so tests can drive it with
-    ``aiohttp.test_utils`` without a real socket.
+    Aggregates the cars + stats eagerly so the first request is fast and
+    ``main()`` can report counts. Factored out so tests can drive it with
+    ``aiohttp.test_utils`` without a real socket. ``m_per_px`` calibrates
+    speed to mph (``None`` -> px/s).
     """
-    state = _State(output_root=output_root)
+    state = _State(output_root=output_root, m_per_px=m_per_px)
     state.reaggregate()
 
     app = web.Application()
@@ -246,25 +271,62 @@ def build_app(output_root: Path, *, metadata_path: Path | None = None) -> web.Ap
     app[JINJA] = _make_jinja()
 
     app.router.add_get("/", _gallery)
+    app.router.add_get("/stats", _stats_page)
     app.router.add_get("/car/{plate}", _car_page)
     app.router.add_get("/api/cars", _api_cars)
     app.router.add_get("/api/cars/{plate}", _api_car)
     app.router.add_put("/api/cars/{plate}/metadata", _api_set_metadata)
+    app.router.add_get("/api/stats", _api_stats)
     app.router.add_post("/api/refresh", _api_refresh)
     app.router.add_get("/images/{session}/{filename}", _serve_image)
     return app
 
 
-async def _serve(output_root: Path, host: str, port: int, metadata_path: Path | None) -> None:
-    app = build_app(output_root, metadata_path=metadata_path)
+def load_m_per_px(
+    cli_m_per_px: float | None = None,
+    cli_road_length_m: float | None = None,
+    *,
+    config_path: Path = Path("configs/showcase.json"),
+) -> float | None:
+    """Resolve the speed calibration (metres-per-pixel) for mph display.
+
+    Precedence: ``--m-per-px`` > ``--road-length-m`` > ``configs/showcase.json``
+    (``m_per_px`` or ``road_length_m``). ``None`` everywhere -> speeds stay px/s.
+    """
+    if cli_m_per_px is not None:
+        return cli_m_per_px
+    if cli_road_length_m is not None:
+        return m_per_px_from_road_length(cli_road_length_m)
+    if config_path.exists():
+        try:
+            cfg = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if isinstance(cfg, dict):
+            if cfg.get("m_per_px") is not None:
+                return float(cfg["m_per_px"])
+            if cfg.get("road_length_m") is not None:
+                return m_per_px_from_road_length(float(cfg["road_length_m"]))
+    return None
+
+
+async def _serve(
+    output_root: Path,
+    host: str,
+    port: int,
+    metadata_path: Path | None,
+    m_per_px: float | None,
+) -> None:
+    app = build_app(output_root, metadata_path=metadata_path, m_per_px=m_per_px)
     state = app[STATE]
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, host, port)
     await site.start()
+    speed_mode = "mph" if m_per_px is not None else "px/s (uncalibrated)"
     print(
         f"[showcase] {len(state.cars)} identified cars ({state.n_regulars} regulars) "
-        f"from {len(state.sessions)} sessions"
+        f"from {len(state.sessions)} sessions; speed in {speed_mode}"
     )
     print(f"[showcase] serving http://{host}:{port}/  (Ctrl-C to stop)")
     try:
@@ -296,6 +358,25 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=f"User-metadata JSON path (default: <output-root>/{DEFAULT_FILENAME}).",
     )
+    ap.add_argument(
+        "--m-per-px",
+        type=float,
+        default=None,
+        help=(
+            "Speed calibration: metres per inference-frame pixel, so the stats "
+            "page can show mph. Overrides configs/showcase.json. Unset -> px/s."
+        ),
+    )
+    ap.add_argument(
+        "--road-length-m",
+        type=float,
+        default=None,
+        help=(
+            "Convenience calibration: real length (m) of the visible road; "
+            f"m_per_px = road_length_m / {int(DEFAULT_ROAD_AXIS_PX)} (the traced "
+            "road's travel-axis pixel length). Ignored if --m-per-px is given."
+        ),
+    )
     return ap
 
 
@@ -304,8 +385,9 @@ def main(argv: list[str] | None = None) -> int:
     if not args.output_root.is_dir():
         print(f"[showcase] not a directory: {args.output_root}", file=sys.stderr)
         return 2
+    m_per_px = load_m_per_px(args.m_per_px, args.road_length_m)
     try:
-        asyncio.run(_serve(args.output_root, args.host, args.port, args.metadata))
+        asyncio.run(_serve(args.output_root, args.host, args.port, args.metadata, m_per_px))
     except KeyboardInterrupt:
         print("\n[showcase] stopped.")
     return 0
