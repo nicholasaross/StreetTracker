@@ -210,3 +210,50 @@ async def test_refresh(client: TestClient) -> None:
     r = await client.post("/api/refresh")
     assert r.status == 200
     assert (await r.json())["cars"] == 1
+
+
+# ----------------------------------------------------------------------
+# Bundled brand SVGs (/brand/{slug}.svg)
+
+
+async def test_brand_svg_ford_bundled(client: TestClient) -> None:
+    # Bundled with the package -- ships in src/streettracker/web/static/brands/.
+    r = await client.get("/brand/ford.svg")
+    assert r.status == 200
+    assert r.content_type == "image/svg+xml"
+    body = await r.read()
+    assert body.lstrip().startswith(b"<svg")
+
+
+async def test_brand_svg_mercedes_bundled(client: TestClient) -> None:
+    # Hand-drawn fill-in for a brand Simple Icons doesn't cover. Same route.
+    r = await client.get("/brand/mercedes.svg")
+    assert r.status == 200
+    assert r.content_type == "image/svg+xml"
+
+
+async def test_brand_svg_unknown_make_404(client: TestClient) -> None:
+    # Valid-shape slug, but no bundled SVG -- the template's monogram fallback
+    # handles this; the route just 404s without surprises.
+    r = await client.get("/brand/madeupcarbrand.svg")
+    assert r.status == 404
+
+
+async def test_brand_svg_invalid_slug_404(client: TestClient) -> None:
+    # Bad shapes: rejected by the slug regex before any filesystem lookup.
+    for bad in (
+        "Ford.svg",  # uppercase letter
+        "ford..svg",  # double dot
+        "_ford.svg",  # leading underscore
+        "ford .svg",  # space (URL-encoded)
+        "a" * 33 + ".svg",  # too long (> _BRAND_MAX_SLUG)
+    ):
+        r = await client.get(f"/brand/{bad}")
+        assert r.status == 404, f"{bad!r} should not be served"
+
+
+async def test_brand_svg_path_traversal_rejected(client: TestClient) -> None:
+    # Even if a hostile path-traversal segment somehow reached the handler,
+    # the slug regex rejects anything with a slash or dot.
+    r = await client.get("/brand/..%2Fetc.svg")
+    assert r.status == 404

@@ -144,33 +144,52 @@ def _load_dvsa_extras(session_dir: Path) -> dict[str, dict[str, Any]]:
     return labels if isinstance(labels, dict) else {}
 
 
-def _image_urls(output_root: Path, session: str, visit: Any) -> ShowcaseImage:
-    """Build existence-checked image URLs for one sighting.
+def resolve_image_urls(
+    output_root: Path,
+    session: str,
+    track_id: int,
+    *,
+    prefix: str = "vehicle",
+    best_image: str | None = None,
+) -> tuple[str | None, str | None, bool]:
+    """Existence-checked ``(thumb, full, thumb_small)`` for one track's snaps.
 
     Sessions pulled with ``--only-main`` ship the 4K ``_main_N.jpg`` snaps but
     not the ``_hq``/tile crops, so we stat each candidate and only reference
-    files that are actually on disk -- preferring the smallest for ``thumb``
-    and the largest for ``full``."""
+    files that are actually on disk: ``thumb`` is the smallest present
+    (tile -> hq -> the 4K ``best_image``), ``full`` the largest. ``thumb_small``
+    is True when ``thumb`` is a real small crop (not a downscaled 4K snap).
+    Shared with :mod:`streettracker.web.stats` (fastest-car thumbnails)."""
     base = output_root / session
-    prefix = visit.asset_prefix or "vehicle"
-    tid = visit.track_id
 
     def _url(name: str | None) -> str | None:
         return f"/images/{session}/{name}" if name and (base / name).is_file() else None
 
-    tile = _url(f"{prefix}_{tid}.jpg")
-    hq = _url(f"{prefix}_{tid}_hq.jpg")
-    best = _url(visit.best_image)  # 4K snap that produced the best ALPR read
+    tile = _url(f"{prefix}_{track_id}.jpg")
+    hq = _url(f"{prefix}_{track_id}_hq.jpg")
+    best = _url(best_image)
     small = tile or hq
+    return small or best, best or hq or tile, small is not None
+
+
+def _image_urls(output_root: Path, session: str, visit: Any) -> ShowcaseImage:
+    """Build a :class:`ShowcaseImage` for one sighting (gallery use)."""
+    thumb, full, small = resolve_image_urls(
+        output_root,
+        session,
+        visit.track_id,
+        prefix=visit.asset_prefix or "vehicle",
+        best_image=visit.best_image,  # 4K snap that produced the best ALPR read
+    )
     return ShowcaseImage(
         session=session,
-        track_id=tid,
+        track_id=visit.track_id,
         time=visit.time_start,
         direction=visit.direction,
         color=visit.color,
-        thumb=small or best,
-        full=best or hq or tile,
-        thumb_small=small is not None,
+        thumb=thumb,
+        full=full,
+        thumb_small=small,
     )
 
 

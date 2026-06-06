@@ -137,11 +137,11 @@ sees them. Either run from PowerShell / cmd, or prefix with
 ## Showcase website
 
 `streettracker showcase` serves a local website (`src/streettracker/web/`:
-`aggregate.py` + `metadata.py` + `server.py` + jinja2 `templates/`) that
-browses the *enriched* cars across every session in an output root —
-plate-read (ANPR) cars joined to DVSA make/model/year/colour — with the
-regularly-appearing ones featured, plus a per-car metadata editor
-("this is my car", "this is Shaun's car").
+`aggregate.py` + `metadata.py` + `stats.py` + `server.py` + jinja2
+`templates/`) that browses the *enriched* cars across every session in an
+output root — plate-read (ANPR) cars joined to DVSA make/model/year/colour —
+with the regularly-appearing ones featured, plus a per-car metadata editor
+("this is my car", "this is Shaun's car"), and a traffic-statistics page.
 
 ```bash
 uv run streettracker showcase --output-root output   # http://127.0.0.1:8090/
@@ -163,6 +163,18 @@ uv run streettracker showcase --output-root output   # http://127.0.0.1:8090/
   personal tags). `--host 0.0.0.0` opts into LAN exposure. `POST /api/refresh`
   re-aggregates in place after new sessions are pulled. Images are served from
   the output root through a `.jpg`-only, single-segment-validated route.
+- **Statistics page** (`/stats`, `web/stats.build_stats`) — traffic analytics
+  over **all** vehicle tracks (`class_name=="car"`, not just the plated subset;
+  bucketed by camera-local `time_start`, so a multi-date session splits
+  correctly): daily L→R/R→L journeys (click a day → its 15-min profile),
+  day-of-week histogram, weekday×hour heatmap, speed distribution + fastest
+  cars, and make/colour mix. Charts are dependency-free SVG/CSS. One car track
+  ≈ one pass (BotSORT can split). **Speed**: `speed_px_s` is inference-frame
+  pixels, shown as px/s unless a calibration is set, then mph. Calibrate via
+  `configs/showcase.json` (`{"m_per_px": X}` or `{"road_length_m": D}` →
+  `m_per_px = D/801`, the traced road's travel-axis pixel length) or the
+  `--m-per-px` / `--road-length-m` flags; see `configs/showcase.example.json`.
+  mph is approximate (single global factor, ignores perspective).
 
 ## Migration status
 

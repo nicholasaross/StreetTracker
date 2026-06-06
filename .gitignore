@@ -36,6 +36,9 @@ configs/camera.json
 # DVSA MOT history API credentials (X-API-Key + OAuth client_id/secret).
 # configs/dvsa.example.json IS tracked as the schema reference.
 configs/dvsa.json
+# Showcase speed calibration (px/s -> mph), per-install camera geometry.
+# configs/showcase.example.json IS tracked as the schema reference.
+configs/showcase.json
 *.mp4
 *.mkv
 

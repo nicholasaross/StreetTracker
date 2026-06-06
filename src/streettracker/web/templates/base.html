@@ -24,6 +24,9 @@
     }
     header.site h1 { font-size: 18px; margin: 0; letter-spacing: .3px; }
     header.site h1 a { color: var(--text); }
+    nav.nav { display: flex; gap: 14px; }
+    nav.nav a { color: var(--muted); font-weight: 600; font-size: 14px; }
+    nav.nav a:hover { color: var(--text); text-decoration: none; }
     .muted { color: var(--muted); }
     .wrap { max-width: 1320px; margin: 0 auto; padding: 24px; }
     .statbar { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 13px; }
@@ -115,6 +118,7 @@
 <body>
   <header class="site">
     <h1><a href="/">🚗 StreetTracker Showcase</a></h1>
+    <nav class="nav"><a href="/">Gallery</a><a href="/stats">Stats</a></nav>
     <span class="muted">{% block subtitle %}enriched &amp; recurring vehicles{% endblock %}</span>
   </header>
   <main class="wrap">
