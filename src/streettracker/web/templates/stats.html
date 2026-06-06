@@ -32,20 +32,30 @@
   .hm-c { aspect-ratio: 1/1; border-radius: 2px; min-height: 13px; }
   /* hbars */
   .hbars { display: flex; flex-direction: column; gap: 7px; }
-  .hbar { display: grid; grid-template-columns: 96px 1fr 42px; align-items: center; gap: 9px; font-size: 13px; }
+  /* First column wide enough for "MERCEDES-BENZ" / "VOLKSWAGEN" on one line. */
+  .hbar { display: grid; grid-template-columns: 144px 1fr 42px; align-items: center; gap: 9px; font-size: 13px; }
   .hbar .track { background: var(--panel-2); border-radius: 5px; overflow: hidden; }
   .hbar .fill { height: 16px; border-radius: 5px; background: var(--accent); }
   .hbar .n { color: var(--muted); text-align: right; }
   .sw { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; border: 1px solid #0006; }
   /* fastest */
   .fastest { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 8px; }
-  .fcard { flex: 0 0 150px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .fcard { flex: 0 0 150px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; display: block; color: var(--text); transition: transform .08s ease, border-color .08s ease; }
+  a.fcard, a.fcard:hover { color: var(--text); text-decoration: none; }
+  a.fcard:hover { transform: translateY(-2px); border-color: var(--accent); }
   .fcard .th { aspect-ratio: 16/10; background: #000 center/cover no-repeat; display: block; }
   .fcard .th img { width: 100%; height: 100%; object-fit: cover; }
   .fcard .body { padding: 8px 10px; }
   .fcard .spd { font-size: 18px; font-weight: 700; }
   .fcard .spd small { font-size: 12px; color: var(--muted); font-weight: 400; }
   .fcard .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  /* make logos */
+  /* Brand marks are inlined into the HTML response (see BRAND_SVG below) --
+     no <img> tag, no fetch, no events. Either an <svg> renders here or the
+     monogram fallback does; there's no swap and no async path. */
+  .mwrap { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; vertical-align: middle; margin-right: 9px; }
+  .mwrap svg { width: 22px; height: 22px; display: block; }
+  .mmono { width: 22px; height: 22px; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; font-size: 12px; line-height: 1; }
   .caveat { color: var(--muted); font-size: 12px; margin-top: 26px; border-top: 1px solid var(--line); padding-top: 12px; }
 </style>
 
@@ -85,7 +95,7 @@
 
 <div class="panel stat">
   <h3>When traffic happens</h3>
-  <p class="hint">Journeys by weekday (rows) × hour of day (columns). Darker = busier.</p>
+  <p class="hint">Journeys by weekday (rows) × hour of day (columns). Brighter = busier. Hours with no traffic are hidden.</p>
   <div class="scrollx" id="heatmap"></div>
 </div>
 
@@ -186,10 +196,13 @@ function renderQuarter(date){
 
 function renderHeatmap(){
   const hm=STATS.heatmap, max=Math.max(1,...hm.flat());
-  let h='<div class="heatmap"><div class="hm-corner"></div>';
-  for(let x=0;x<24;x++) h+=`<div class="hm-h">${x%3===0?x:""}</div>`;
+  // Hide hour columns with zero traffic across every weekday.
+  const hours=[]; for(let x=0;x<24;x++){ let s=0; for(let d=0;d<7;d++) s+=hm[d][x]; if(s>0) hours.push(x); }
+  const cols=`38px repeat(${hours.length}, 1fr)`;
+  let h=`<div class="heatmap" style="grid-template-columns:${cols}"><div class="hm-corner"></div>`;
+  for(const x of hours) h+=`<div class="hm-h">${x}</div>`;
   for(let d=0;d<7;d++){ h+=`<div class="hm-d">${DOW[d]}</div>`;
-    for(let x=0;x<24;x++){ const v=hm[d][x], a=v/max;
+    for(const x of hours){ const v=hm[d][x], a=v/max;
       h+=`<div class="hm-c" title="${DOW[d]} ${x}:00 — ${v}" style="background:rgba(91,157,255,${(0.06+0.94*a).toFixed(3)})"></div>`; } }
   el("heatmap").innerHTML=h+"</div>";
 }
@@ -204,11 +217,15 @@ function renderSpeed(){
   el("fastesthint").textContent = f.length? `Top ${f.length} by speed (${s.unit}; tracks with ≥6 detections).` : "No qualifying tracks.";
   el("fastest").innerHTML = f.map(c=>{
     const img = c.thumb? `<img loading="lazy" src="${c.thumb}" alt="${c.plate||'car'}">` : "";
-    const plate = c.plate? `<a class="plate" style="font-size:12px" href="/car/${encodeURIComponent(c.plate)}">${c.plate}</a>` : '<span class="meta">unidentified</span>';
-    return `<div class="fcard"><span class="th">${img}</span><div class="body">
+    // When plated, the whole card is the link (avoids nested anchors,
+    // gives users a much bigger click target).
+    const plate = c.plate ? `<span class="plate" style="font-size:12px">${c.plate}</span>` : '<span class="meta">unidentified</span>';
+    const tag = c.plate ? "a" : "div";
+    const href = c.plate ? ` href="/car/${encodeURIComponent(c.plate)}"` : "";
+    return `<${tag} class="fcard"${href}><span class="th">${img}</span><div class="body">
       <div class="spd">${c.speed} <small>${c.unit}</small></div>
       <div style="margin:3px 0">${plate}</div>
-      <div class="meta">${c.date} ${c.time}<br>${c.direction||""}</div></div></div>`;
+      <div class="meta">${c.date} ${c.time}<br>${c.direction||""}</div></div></${tag}>`;
   }).join("");
 }
 
@@ -217,7 +234,8 @@ function hbars(container, rows, opts){
   const max=Math.max(1,...rows.map(r=>r[1]));
   el(container).innerHTML = rows.map(([k,v])=>{
     const sw = opts.swatch? `<span class="sw" style="background:${opts.swatch(k)}"></span>`:"";
-    return `<div class="hbar"><div>${sw}${k}</div><div class="track"><div class="fill" style="width:${(100*v/max).toFixed(1)}%;${opts.fill?`background:${opts.fill(k)}`:''}"></div></div><div class="n">${v}</div></div>`;
+    const prefix = opts.prefix ? opts.prefix(k) : "";
+    return `<div class="hbar"><div>${prefix}${sw}${k}</div><div class="track"><div class="fill" style="width:${(100*v/max).toFixed(1)}%;${opts.fill?`background:${opts.fill(k)}`:''}"></div></div><div class="n">${v}</div></div>`;
   }).join("") || '<p class="hint">No data.</p>';
 }
 
@@ -225,6 +243,60 @@ const COLOUR_HEX = {white:"#e8e8e8",black:"#222",silver:"#c0c5cc",grey:"#9aa3b2"
   red:"#e0584f",blue:"#4f7fe0",green:"#3da35d",yellow:"#e6c84f",orange:"#e08a3d",
   brown:"#8a6240",beige:"#d9c9a3",purple:"#8a5fd0",unknown:"#4a5160"};
 const colHex = k => COLOUR_HEX[(k||"").toLowerCase()] || "#5b9dff";
+
+// Make -> Simple Icons slug. Hits cdn.simpleicons.org for an SVG silhouette
+// that we tint with our muted text colour. Unmapped makes (e.g. obscure ones)
+// stay on the letter-monogram fallback. Slugs verified against the
+// simple-icons set at the time of writing; missing slugs land on the monogram.
+// Make -> slug in src/streettracker/web/static/brands/. Slugs match Simple
+// Icons names where possible (so the SI .svg drops in unchanged); the gaps
+// SI doesn't cover (Mercedes-Benz, Land Rover, Lexus, Alfa Romeo, Jaguar,
+// Cupra) ship as hand-drawn monochrome SVGs at the same slug. Add an entry
+// here for any new bundled brand.
+const MAKE_SLUG = {
+  "ALFA ROMEO":"alfaromeo","ASTON MARTIN":"astonmartin","AUDI":"audi",
+  "BENTLEY":"bentley","BMW":"bmw","BUGATTI":"bugatti","CADILLAC":"cadillac",
+  "CHEVROLET":"chevrolet","CHRYSLER":"chrysler","CITROEN":"citroen",
+  "CUPRA":"cupra","DACIA":"dacia","FERRARI":"ferrari","FIAT":"fiat",
+  "FORD":"ford","HONDA":"honda","HYUNDAI":"hyundai","INFINITI":"infiniti",
+  "JAGUAR":"jaguar","JEEP":"jeep","KIA":"kia","LAMBORGHINI":"lamborghini",
+  "LAND ROVER":"landrover","LEXUS":"lexus","MASERATI":"maserati",
+  "MAZDA":"mazda","MCLAREN":"mclaren","MERCEDES":"mercedes",
+  "MERCEDES-BENZ":"mercedes","MG":"mg","MINI":"mini",
+  "MITSUBISHI":"mitsubishi","NISSAN":"nissan","OPEL":"opel",
+  "PEUGEOT":"peugeot","POLESTAR":"polestar","PORSCHE":"porsche",
+  "RAM":"ram","RENAULT":"renault","ROLLS-ROYCE":"rollsroyce",
+  "SEAT":"seat","SKODA":"skoda","SMART":"smart","SUBARU":"subaru",
+  "SUZUKI":"suzuki","TESLA":"tesla","TOYOTA":"toyota","VAUXHALL":"vauxhall",
+  "VOLKSWAGEN":"volkswagen","VOLVO":"volvo",
+};
+// Brand colours for the monogram fallback (rough approximations of badge
+// colours -- correct enough that the monogram still feels like the marque).
+const MAKE_BG = {
+  "ALFA ROMEO":"#a32f3e","AUDI":"#bb0a30","BMW":"#1c69d4","CITROEN":"#a4232c",
+  "DACIA":"#646b52","FIAT":"#a51b21","FORD":"#003478","HONDA":"#c8102e",
+  "HYUNDAI":"#002c5f","JAGUAR":"#0a2342","KIA":"#05141f","LAND ROVER":"#1a4d2e",
+  "LEXUS":"#1a1a1a","MAZDA":"#101820","MERCEDES-BENZ":"#1a1a1a","MG":"#bb0a30",
+  "MINI":"#000000","NISSAN":"#c3002f","PEUGEOT":"#0a2342","PORSCHE":"#101820",
+  "RENAULT":"#efdf00","SEAT":"#b6373a","SKODA":"#0e3a2f","SUBARU":"#0072ce",
+  "SUZUKI":"#0099d8","TESLA":"#cc0000","TOYOTA":"#eb0a1e","VAUXHALL":"#cf102d",
+  "VOLKSWAGEN":"#1f3a8a","VOLVO":"#1a3668",
+};
+// Brand SVG markup, inlined server-side from src/streettracker/web/static/
+// brands/. The markup ships INSIDE the HTML response -- no <img> tag, no
+// fetch, no events, no cache layer or extension between the user and the
+// logo. Either the SVG renders here directly, or the monogram fallback does.
+const BRAND_SVG = {{ brand_svgs | tojson }};
+function makeIcon(make){
+  const key = (make || "").toUpperCase();
+  const slug = MAKE_SLUG[key];
+  const svg = slug && BRAND_SVG[slug];
+  if (svg) return `<span class="mwrap" aria-label="${key}">${svg}</span>`;
+  // No bundled mark -- coloured letter monogram with the brand's hex.
+  const bg = MAKE_BG[key] || "#3a4150";
+  const letter = (make ? make[0] : "?").toUpperCase();
+  return `<span class="mwrap"><span class="mmono" style="background:${bg}">${letter}</span></span>`;
+}
 
 function init(){
   if(!STATS || !STATS.overall || !STATS.overall.total_journeys) return;
@@ -234,7 +306,7 @@ function init(){
   const def = (STATS.overall.busiest_date && STATS.overall.busiest_date.date) || (STATS.daily.at(-1)||{}).date;
   if(def){ sel.value=def; }
   renderDaily(); renderDow(); renderQuarter(sel.value); renderHeatmap(); renderSpeed();
-  hbars("makes", STATS.makes);
+  hbars("makes", STATS.makes, {prefix: makeIcon});
   hbars("colours", STATS.colours, {swatch: colHex, fill: colHex});
 }
 init();

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import re
 import sys
@@ -52,6 +53,16 @@ from streettracker.web.stats import (
 # A snap filename is ``<prefix>_<id>[_main_<n>|_hq].jpg`` -- word chars + a
 # single ``.jpg``. No path separators, no ``..``, nothing but a leaf JPEG.
 _SAFE_IMAGE = re.compile(r"^[A-Za-z0-9_]+\.jpg$")
+
+# A brand slug. Lowercase alphanumeric, optional single hyphens. Used by
+# /brand/{slug}.svg; the regex stops a slug carrying anything resembling a
+# path traversal or scheme component before it ever hits the filesystem.
+_BRAND_SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+_BRAND_MAX_SLUG = 32
+# Directory of bundled SVG brand marks. Ships with the package; slugs are
+# typically the Simple Icons name (CC0) or a custom hand-drawn match for
+# brands SI doesn't cover (e.g. Mercedes-Benz, Land Rover).
+_BRANDS_DIR = Path(__file__).resolve().parent / "static" / "brands"
 
 
 @dataclass
@@ -84,6 +95,23 @@ class _State:
 STATE: web.AppKey[_State] = web.AppKey("state", _State)
 META_STORE: web.AppKey[MetadataStore] = web.AppKey("meta_store", MetadataStore)
 JINJA: web.AppKey[jinja2.Environment] = web.AppKey("jinja", jinja2.Environment)
+BRAND_SVGS: web.AppKey[dict[str, str]] = web.AppKey("brand_svgs", dict)
+
+
+def _load_brand_svgs() -> dict[str, str]:
+    """Return ``{slug: svg_markup}`` for every bundled brand SVG.
+
+    Read once at app startup and inlined into the stats page so the brand
+    marks are part of the HTML response itself. No image-load events, no
+    separate HTTP request, no browser cache or extension between the user
+    and the logo -- the SVG markup ships with the page. Source files live
+    under :data:`_BRANDS_DIR` and are version-controlled."""
+    out: dict[str, str] = {}
+    if _BRANDS_DIR.is_dir():
+        for p in sorted(_BRANDS_DIR.glob("*.svg")):
+            with contextlib.suppress(OSError):
+                out[p.stem] = p.read_text(encoding="utf-8")
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +192,16 @@ def _stats(cars: list[dict[str, Any]]) -> dict[str, int]:
 
 def _render(request: web.Request, template: str, **ctx: Any) -> web.Response:
     tmpl = request.app[JINJA].get_template(template)
-    return web.Response(text=tmpl.render(**ctx), content_type="text/html")
+    # ``no-store`` keeps browsers from serving a stale HTML page across server
+    # restarts -- a real wart after a code change, since the embedded JS (e.g.
+    # MAKE_SLUG, makeIcon URLs) would otherwise come from a prior version.
+    # The static SVGs / images served by other routes keep their own cache
+    # headers; this only suppresses HTML caching.
+    return web.Response(
+        text=tmpl.render(**ctx),
+        content_type="text/html",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 async def _gallery(request: web.Request) -> web.Response:
@@ -215,7 +252,12 @@ async def _api_set_metadata(request: web.Request) -> web.Response:
 
 async def _stats_page(request: web.Request) -> web.Response:
     stats = request.app[STATE].stats
-    return _render(request, "stats.html", stats=stats.to_json_dict() if stats else {})
+    return _render(
+        request,
+        "stats.html",
+        stats=stats.to_json_dict() if stats else {},
+        brand_svgs=request.app[BRAND_SVGS],
+    )
 
 
 async def _api_stats(request: web.Request) -> web.Response:
@@ -240,6 +282,35 @@ async def _serve_image(request: web.Request) -> web.StreamResponse:
     if base != path.parent or not path.is_file():
         raise web.HTTPNotFound()
     return web.FileResponse(path)
+
+
+async def _brand_svg(request: web.Request) -> web.StreamResponse:
+    """Serve a make's brand mark from the bundled SVG set.
+
+    The whole set lives under :data:`_BRANDS_DIR` and ships with the package
+    (Simple Icons SVGs for the brands SI covers, hand-drawn monochrome SVGs
+    for the gaps -- Mercedes-Benz, Land Rover, Alfa Romeo, Lexus, Jaguar,
+    Cupra). Brands with no bundled file 404; the template's monogram
+    fallback handles those.
+
+    No network, no caching layer: just static-file serving. The slug regex +
+    length cap + resolve-and-compare are belt-and-braces against any
+    path-traversal attempt via a hostile slug.
+    """
+    slug = request.match_info["slug"]
+    if len(slug) > _BRAND_MAX_SLUG or not _BRAND_SLUG.match(slug):
+        raise web.HTTPNotFound()
+    path = (_BRANDS_DIR / f"{slug}.svg").resolve()
+    if path.parent != _BRANDS_DIR or not path.is_file():
+        raise web.HTTPNotFound()
+    return web.FileResponse(
+        path,
+        headers={
+            "Content-Type": "image/svg+xml",
+            # Bundled SVGs are write-once per release; long cache is fine.
+            "Cache-Control": "public, max-age=604800",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +340,7 @@ def build_app(
         metadata_path if metadata_path is not None else output_root / DEFAULT_FILENAME
     )
     app[JINJA] = _make_jinja()
+    app[BRAND_SVGS] = _load_brand_svgs()
 
     app.router.add_get("/", _gallery)
     app.router.add_get("/stats", _stats_page)
@@ -279,6 +351,7 @@ def build_app(
     app.router.add_get("/api/stats", _api_stats)
     app.router.add_post("/api/refresh", _api_refresh)
     app.router.add_get("/images/{session}/{filename}", _serve_image)
+    app.router.add_get("/brand/{slug}.svg", _brand_svg)
     return app
 
 
