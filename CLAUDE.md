@@ -566,24 +566,38 @@ card unchanged; next `enable --now` starts a fresh session.
 
 ## JetPack 7 upgrade plan
 
-NVIDIA's JP7 release for Orin Nano (Jetson Linux 38.2, Ubuntu 24.04, Py
-3.12 native) is expected mid-2026. Before flashing, five repo edits
-have to land or the redeploy will fail at `uv sync`:
+NVIDIA's JP7 for Orin Nano has shipped as **JetPack 7.2** (Jetson Linux
+39.2, CUDA 13.2.1, TensorRT 10.16.2, Ubuntu 24.04, Py 3.12 native;
+verified 2026-06-07). Before flashing, five repo edits have to land or
+the redeploy will fail at `uv sync` — and the hard prerequisite gating
+all of it is **torch-wheel availability** (see the go/no-go gate below):
 
 | What | Where | JP6 today | JP7 target |
 |---|---|---|---|
 | Python pin | `.python-version` | `3.10` | `3.12` |
-| Jetson torch wheel index | `pyproject.toml` `[[tool.uv.index]]` | `https://pypi.jetson-ai-lab.io/jp6/cu126/+simple/` | `https://pypi.jetson-ai-lab.io/jp7/cu130/+simple/` (verify when published) |
+| Jetson torch wheel index | `pyproject.toml` `[[tool.uv.index]]` | `https://pypi.jetson-ai-lab.io/jp6/cu126/+simple/` | `https://pypi.jetson-ai-lab.io/jp7/cu13x/+simple/` (CUDA 13.2 → `cu132`/`cu130`; **not published as of 2026-06-07** — gate-check via `scripts/check_jp7_wheel.ps1`) |
 | cuDSS dep | `pyproject.toml` `nvidia-cudss-cu12` | `cu12` | `cu13` if JP7 ships CUDA 13.x (confirm) |
 | CUDA lib path | `scripts/setup_orin.sh` `CUDA_LIB=...` | `/usr/local/cuda-12.6/lib64` | auto-detect or hardcode `cuda-13.x` |
 | Systemd LD_LIBRARY_PATH | `scripts/systemd/streettracker.service` Environment | `cuda-12.6/lib64` + `python3.10/site-packages/nvidia/cu12/lib` | both paths shift |
 
-**Recommended timing.** Don't pre-empt JP7. When the release lands:
-spin up `claude/jp7-readiness`, make the five edits, verify on a
-*test* Orin (separate from live), only then flash JP7 on the live Orin
-and run the [Fresh deployment procedure](#fresh-deployment-procedure).
-PR #15 hardening (forgiving stream-name lookup + engine-path validation)
-means small config drift won't block the redeploy.
+**Go/no-go gate.** JP7.2 is out, but **don't flash until the wheel gate
+is green**: run `scripts/check_jp7_wheel.ps1` from the dev box (exit 0 =
+a `jp7`/CUDA-13.x `cp312`+`aarch64` torch **and** torchvision wheel is
+published on jetson-ai-lab — the only `sm_87`-safe source; the official
+PyTorch SBSA `cu126` wheel has `sm_87` gaps → silent NaN). **NOT YET as
+of 2026-06-07** (`jp7/` 404s); stay on JP6 meanwhile — the live service
+is safe (`--no-sync` blocks resync against the decaying JP6 index).
+
+**When the gate is green.** Spin up `claude/jp7-readiness`, make the five
+edits, then flash and run the [Fresh deployment
+procedure](#fresh-deployment-procedure). **Caveat — there is only ONE
+Orin, no separate test box** (the earlier "verify on a test Orin" plan is
+infeasible): flash JP7.2 onto a *second* NVMe and keep the current JP6
+drive physically intact as the rollback + `output/` backstop; a
+major-version flash also rewrites the module QSPI bootloader, so
+reverting = re-flash QSPI to JP6 + reinsert the old drive (downtime, not
+a swap). PR #15 hardening (forgiving stream-name lookup + engine-path
+validation) means small config drift won't block the redeploy.
 
 ## Snap gate (road polygon + axis triggers)
 
