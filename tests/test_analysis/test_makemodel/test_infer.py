@@ -141,3 +141,57 @@ def test_cli_main_missing_checkpoint_returns_1(tmp_path: Path) -> None:
 
 def test_cli_main_not_a_dir_returns_2(tmp_path: Path) -> None:
     assert main([str(tmp_path / "missing"), "--model", str(_checkpoint(tmp_path))]) == 2
+
+
+# ----------------------------------------------------------------------
+# UK make-only checkpoint (streettracker makemodel-train-uk) -- the
+# production UK model. make head only; metadata carries make_names +
+# input_size; emits make-only candidates (model/year None).
+
+_UK_MAKES = ("AUDI", "BMW", "FORD")
+
+
+def _uk_checkpoint(tmp_path: Path, *, input_size: int = 512, with_make_names: bool = True) -> Path:
+    net = MakeModelNet({"make": len(_UK_MAKES)}, pretrained=False)
+    meta: dict = {"kind": "uk_make", "input_size": input_size}
+    if with_make_names:
+        meta["make_names"] = list(_UK_MAKES)
+    ckpt = tmp_path / "uk.pt"
+    save_checkpoint(net, ckpt, metadata=meta)
+    return ckpt
+
+
+def test_make_only_checkpoint_classifies_makes(tmp_path: Path) -> None:
+    clf = MakeModelClassifier(_uk_checkpoint(tmp_path), device="cpu", top_k=2)
+    assert clf.make_only is True
+    assert clf.input_size == 512  # picked up from checkpoint metadata
+    cands = clf.classify(np.zeros((300, 400, 3), dtype=np.uint8), (50, 40, 200, 180))
+    assert len(cands) == 2
+    assert cands[0].conf >= cands[1].conf
+    for c in cands:
+        assert c.make in _UK_MAKES
+        assert c.model is None and c.year is None  # make-only model has no model/year head
+
+
+def test_make_only_missing_make_names_raises(tmp_path: Path) -> None:
+    ckpt = _uk_checkpoint(tmp_path, with_make_names=False)
+    with pytest.raises(ValueError, match="make_names"):
+        MakeModelClassifier(ckpt, device="cpu")
+
+
+def test_input_size_arg_overrides_checkpoint_metadata(tmp_path: Path) -> None:
+    clf = MakeModelClassifier(
+        _uk_checkpoint(tmp_path, input_size=512), device="cpu", input_size=384
+    )
+    assert clf.input_size == 384
+
+
+def test_cli_main_make_only_writes_null_model(tmp_path: Path) -> None:
+    rc = main([str(_session(tmp_path)), "--model", str(_uk_checkpoint(tmp_path)), "--cpu"])
+    assert rc == 0
+    by_track = json.loads(
+        (tmp_path / "session_x" / "session_x_makemodel_by_track.json").read_text()
+    )
+    t = by_track["tracks"][0]
+    assert t["track_id"] == 1
+    assert t["model"] is None  # make-only: model stays null whatever the confidence

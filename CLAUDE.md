@@ -126,7 +126,7 @@ uv run streettracker makemodel output/<session>          # CNN make/model infere
 # Mine the Orin -> grow the UK make-classifier corpus (run pull from PowerShell):
 uv run streettracker pull --session <S> --only-main      # pull a session's 4K snaps from the Orin
 uv run streettracker makemodel-build-uk runs/uk_crops --output-size 512  # DVSA-labelled UK make crops @512 (auto-discovers sessions)
-uv run streettracker makemodel-train-uk runs/uk_crops --input-size 512   # train the UK make classifier (B0@512 = 37.6% make@1; +--backbone b4/b5)
+uv run streettracker makemodel-train-uk runs/uk_crops --input-size 512   # train the UK make classifier (B0@512; +--backbone b4/b5). honest make@1 ~28% on 1229 cars (old "37.6%" was small-val optimism)
 ```
 
 **Windows + Git Bash gotcha for `streettracker pull`**: MSYS rewrites
@@ -256,7 +256,7 @@ names differ from the example.
 | Per-car aliasing-free | **~78 %** — intrinsic floor of camera + scene, verified across two sessions. Further snap-budget tuning will not move it. |
 | Misclassification | Confidence-weighted class voting (PR #23) defends single-frame flips; consistent model errors still possible. |
 | Direction-aware throttling | Deployed 2026-05-27 (`pipeline_interval_ms_by_direction={forward:300, reverse:400}`). Validation soak pending. |
-| Dataset-level pivot | `vehicles` aggregator (Step 12) + fuzzy clustering (Step 14). **Make/model DVSA-first prong shipped** (PRs #41/#42/#43): `dvsa-label`→`dvsa-apply`→`vehicles` (+`--across`); covers the readable ~25-30 % of cars. **Universal CNN: CompCars trained (#46) but failed UK validation** (domain gap, ~1 %); **pivoted to a UK-native make classifier** (#47) trained on DVSA-auto-labelled local crops — the earlier "~21 % task-bound ceiling" was **wrong** — it was **resolution-bound** (the cropper hardcoded 224 px output, capping every prior lever). Lifting input resolution breaks it: **B0 @224/384/512 = 22 / 32 / 38 % make@1** (2026-06-03); bigger backbones (B4/B5) overfit 800 cars and don't beat B0. **Production-viable CNN = EfficientNet-B0 @512, 37.6 % make@1**; remaining lever is data, not tuning. See [Make/model classification](#makemodel-classification). Learned recolor + visual re-id still to do. |
+| Dataset-level pivot | `vehicles` aggregator (Step 12) + fuzzy clustering (Step 14). **Make/model DVSA-first prong shipped** (PRs #41/#42/#43): `dvsa-label`→`dvsa-apply`→`vehicles` (+`--across`); covers the readable ~25-30 % of cars. **Universal CNN: CompCars trained (#46) but failed UK validation** (domain gap, ~1 %); **pivoted to a UK-native make classifier** (#47) trained on DVSA-auto-labelled local crops — the earlier "~21 % task-bound ceiling" was **wrong** — it was **resolution-bound** (the cropper hardcoded 224 px output, capping every prior lever). Lifting input resolution breaks it: **B0 @224/384/512 = 22 / 32 / 38 % make@1** (2026-06-03); bigger backbones (B4/B5) overfit 800 cars and don't beat B0. **Production UK model = EfficientNet-B0 @512** (`make_model_source="cnn"`); honest make@1 ≈**28 %** on a 1,229-car corpus (2026-06-08) — the "37.6 %" was small-val optimism (audit: baseline scored 0.207 on unseen cars). Data IS a lever. See [Make/model classification](#makemodel-classification). Learned recolor + visual re-id still to do. |
 
 **Conclusion:** ANPR coverage objective is met. The 78 % aliasing-free
 floor is camera-geometry-bound (oblique angles, motion blur, occlusion),
@@ -320,9 +320,11 @@ The dataset-level enrichment pivot. Two prongs:
     **B0 is right-sized**. The three "negatives" at 224 were all
     resolution-capped, not task limits — best-view collapsed to 9-10 %
     precisely because fewer-crops-at-224 starves a resolution-starved
-    model further. **Production-viable CNN = EfficientNet-B0 @512 px,
-    37.6 % make@1** (~2.8× majority-class ~13 %); predictions carry
-    `make_model_source = "cnn"`, distinct from the `"dvsa"` ground truth.
+    model further. **EfficientNet-B0 @512 px is the production UK model**
+    (37.6 % on the 06/03 ~108-car val — but **small-val-inflated; honest
+    cross-session make@1 ≈28 %**, see the 2026-06-08 UPDATE below);
+    predictions carry `make_model_source = "cnn"`, distinct from the
+    `"dvsa"` ground truth.
   - **Only untapped lever is data.** B5's overfitting means capacity is
     data-starved: growing the 800-car corpus is what would let a bigger
     backbone push past 37.6 % (a collection effort — mine more Orin
@@ -341,6 +343,23 @@ The dataset-level enrichment pivot. Two prongs:
     (keeps JSON) — pull + process within the week or the training images
     are gone. Don't run `alpr-run` on the Orin (compute-bound running the
     live tracker); pull to the dev-box 3080.
+
+  - **UPDATE 2026-06-08 — the 37.6 % was small-val optimism; data IS a
+    lever (it lifted *honest* make@1 ~21 → ~28 %).** Pulled + enriched 2
+    big new sessions (incl. the 3-day `session_20260601_173815`); corpus
+    grew **539 → 1,229 cropped cars / 24 → 29 makes / 3,952 → 9,841
+    crops**. Retrained B0@512 b16: **make@1 0.271 (29 makes) / 0.284 (24
+    makes, apples-to-apples)** — *looked* like a drop from 0.376, but a
+    **leakage-free audit** (`runs/eval_gen.py`) shows the 06/03 baseline
+    reproduces 0.3755 on its own ~108-car val yet scores only **0.207 on
+    659 unseen cars** — so 0.376 was a small-val artifact and the true
+    cross-session make@1 rose ~0.21 → ~0.28 on the bigger, more honest
+    val. **Lesson: size the val (>~200 cars) before trusting make@1.** The
+    `--backbone b4/b5` re-test on 1,229 cars is the live experiment (the
+    old "overfits 800 cars" verdict may not hold at 2.3× data). Inference
+    is now **UK-aware**: `streettracker makemodel` auto-detects a make-only
+    checkpoint + reads its `input_size` from metadata; the default model
+    is the new 29-make B0@512 (`make_model_source="cnn"`).
 
 ### Step trajectory
 

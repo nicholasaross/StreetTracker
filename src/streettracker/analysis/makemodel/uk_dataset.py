@@ -366,6 +366,7 @@ def train_uk_make(dataset_dir: str | Path, out_dir: str | Path, config: TrainCon
                 metadata={
                     "kind": "uk_make",
                     "make_names": list(make_names),
+                    "input_size": config.input_size,
                     "epoch": epoch,
                     "val_make_top1": round(m1, 4),
                 },
