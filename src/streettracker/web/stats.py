@@ -107,7 +107,7 @@ def _empty_stats(unit: str) -> Stats:
         dow={d: {"l2r": 0, "r2l": 0, "total": 0} for d in _DOW},
         by_day_15min={},
         heatmap=[[0] * 24 for _ in range(7)],
-        speed={"hist": [], "avg_l2r": 0, "avg_r2l": 0, "unit": unit, "fastest": []},
+        speed={"hist": [], "avg_all": 0, "avg_l2r": 0, "avg_r2l": 0, "unit": unit, "fastest": []},
         makes=[],
         colours=[],
         speed_unit=unit,
@@ -224,6 +224,7 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
 
     speed = {
         "hist": _speed_hist(all_speeds, factor),
+        "avg_all": _disp(sum(all_speeds) / len(all_speeds), factor) if all_speeds else 0,
         "avg_l2r": _disp(sum(speeds_l2r) / len(speeds_l2r), factor) if speeds_l2r else 0,
         "avg_r2l": _disp(sum(speeds_r2l) / len(speeds_r2l), factor) if speeds_r2l else 0,
         "unit": unit,
