@@ -34,6 +34,9 @@ from streettracker.analysis.snap_assets import (
 from streettracker.analysis.snap_assets import (
     resolve_bbox_hint as _resolve_bbox_hint,
 )
+from streettracker.analysis.snap_assets import (
+    resolve_bbox_hint_window as _resolve_bbox_hint_window,
+)
 
 # Default location for the bespoke detector weights. The repo's
 # top-level ``.gitignore`` carries ``*.pt`` so anything under here stays
@@ -122,6 +125,23 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     ap.add_argument(
+        "--hint-lookahead",
+        type=int,
+        default=3,
+        help=(
+            "Build each snap's pre-crop hint as the UNION of the track's "
+            "fire-time bboxes for snaps i..i+N (default 3). The 4K HTTP "
+            "snap lands ~0.7-1.3s after the fire decision (p50 710ms) and "
+            "a moving car exits its fire-time bbox in that gap -- the "
+            "2026-06-10 triage of 99 R->L failures attributed 96%% of "
+            "them to exactly this. Consecutive fires are 300-400ms apart, "
+            "so the i..i+3 union covers the car's real observed positions "
+            "over the latency window; at end-of-track the window is "
+            "extrapolated from the last observed step instead. 0 restores "
+            "the single-bbox legacy hint."
+        ),
+    )
+    ap.add_argument(
         "--ghost-mask",
         type=Path,
         default=None,
@@ -189,7 +209,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[alpr] running pipeline: {runner.name}")
         crop_dir = crops_root / runner.name
         for i, (image_path, tid, snap_index, cls) in enumerate(snaps, 1):
-            hint = _resolve_bbox_hint(image_path, tid, snap_index, bbox_index, sub_size)
+            if args.hint_lookahead > 0:
+                hint = _resolve_bbox_hint_window(
+                    image_path, tid, snap_index, bbox_index, sub_size,
+                    lookahead=args.hint_lookahead,
+                )
+            else:
+                hint = _resolve_bbox_hint(image_path, tid, snap_index, bbox_index, sub_size)
             result = runner.run(
                 image_path, tid, snap_index, cls, crop_dir,
                 bbox_hint=hint,
@@ -274,6 +300,9 @@ def _build_pipelines(args: argparse.Namespace) -> list[PipelineRunner]:
         wrapped = PreCropDetector(
             plate_detector=detector,
             vehicle_model=args.vehicle_model,
+            # Motion-window hints are wide; restore tight-crop resolution
+            # by vehicle-detecting INSIDE the window before plate-detection.
+            vehicle_stage_in_hint=args.hint_lookahead > 0,
         )
         # Override the wrapper name so pipeline labels stay terse.
         wrapped.name = f"precrop-{suffix}"

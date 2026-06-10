@@ -35,7 +35,7 @@ original image without modification.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from streettracker.analysis.alpr.base import PlateDetection
 
@@ -81,13 +81,26 @@ class PreCropDetector:
         vehicle_conf: float = 0.25,
         pad_frac: float = 0.15,
         pad_max_px: int = 30,
+        vehicle_stage_in_hint: bool = False,
     ) -> None:
         self._plate_detector = plate_detector
         self._vehicle_model_spec = str(vehicle_model)
         self._vehicle_conf = vehicle_conf
         self._pad_frac = pad_frac
         self._pad_max_px = pad_max_px
-        self._yolo = None
+        # When the hint is a motion WINDOW (union of fire-time bboxes over
+        # the snap-latency horizon, see snap_assets.resolve_bbox_hint_window)
+        # rather than a tight vehicle bbox, run the YOLO vehicle stage
+        # INSIDE the hinted region and plate-detect on the tight vehicle
+        # crop. The window solves "where is the car at capture time"; the
+        # vehicle stage restores the tight-crop resolution the plate
+        # detector needs (a 2000-px window downscaled to the detector's
+        # 640-px input pushes far plates below its size floor -- the
+        # window-only A/B on session_20260530_165958 lost 15 pp of R->L
+        # detections to exactly this).
+        self._vehicle_stage_in_hint = vehicle_stage_in_hint
+        # ultralytics YOLO, lazy-loaded; Any keeps mypy off the deferred import.
+        self._yolo: Any = None
         self.name = f"precrop-{getattr(plate_detector, 'name', 'unknown')}"
 
     def _ensure_loaded(self) -> None:
@@ -220,6 +233,19 @@ class PreCropDetector:
             return self._plate_detector.detect(image)
 
         crop = image[cy1:cy2, cx1:cx2]
+
+        if self._vehicle_stage_in_hint:
+            det = self._plate_via_vehicle_stage(crop)
+            if det is not None:
+                px1, py1, px2, py2 = det.bbox
+                return PlateDetection(
+                    bbox=(px1 + cx1, py1 + cy1, px2 + cx1, py2 + cy1),
+                    det_confidence=det.det_confidence,
+                )
+            # No vehicle (or no plate on any vehicle) inside the window:
+            # fall through to plate-detecting the whole hinted region, the
+            # window-only behaviour. Covers cars the COCO detector misses.
+
         det = self._plate_detector.detect(crop)
         if det is None:
             return None
@@ -228,3 +254,42 @@ class PreCropDetector:
             bbox=(px1 + cx1, py1 + cy1, px2 + cx1, py2 + cy1),
             det_confidence=det.det_confidence,
         )
+
+    def _plate_via_vehicle_stage(self, region: np.ndarray) -> PlateDetection | None:
+        """Vehicle-detect inside ``region``, plate-detect on each tight
+        vehicle crop (largest first). Returned bbox is region-relative."""
+        import numpy as np
+
+        self._ensure_loaded()
+        rh, rw = region.shape[:2]
+        result = self._yolo.predict(
+            region,
+            classes=list(_VEHICLE_COCO_CLASSES),
+            conf=self._vehicle_conf,
+            verbose=False,
+        )[0]
+        boxes = result.boxes
+        if len(boxes) == 0:
+            return None
+        xy = boxes.xyxy.cpu().numpy()
+        areas = (xy[:, 2] - xy[:, 0]) * (xy[:, 3] - xy[:, 1])
+        for i in np.argsort(-areas):
+            x1, y1, x2, y2 = xy[int(i)]
+            bw, bh = x2 - x1, y2 - y1
+            pad_x = min(bw * self._pad_frac, self._pad_max_px)
+            pad_y = min(bh * self._pad_frac, self._pad_max_px)
+            tx1 = max(0, int(x1 - pad_x))
+            ty1 = max(0, int(y1 - pad_y))
+            tx2 = min(rw, int(x2 + pad_x))
+            ty2 = min(rh, int(y2 + pad_y))
+            if tx2 <= tx1 or ty2 <= ty1:
+                continue
+            det = self._plate_detector.detect(region[ty1:ty2, tx1:tx2])
+            if det is None:
+                continue
+            px1, py1, px2, py2 = det.bbox
+            return PlateDetection(
+                bbox=(px1 + tx1, py1 + ty1, px2 + tx1, py2 + ty1),
+                det_confidence=det.det_confidence,
+            )
+        return None

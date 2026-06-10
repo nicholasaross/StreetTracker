@@ -86,20 +86,13 @@ def load_bbox_index(
     return bbox_index, sub_size
 
 
-def resolve_bbox_hint(
+def _scale_bbox_to_image(
     image_path: Path,
-    track_id: int,
-    snap_index: int,
-    bbox_index: dict[tuple[int, int], tuple[int, int, int, int]],
-    sub_size: tuple[int, int] | None,
+    bbox: tuple[float, float, float, float],
+    sub_size: tuple[int, int],
 ) -> tuple[int, int, int, int] | None:
-    """Look up the per-snap bbox and scale it from sub-stream coords
-    into the snap's pixel coords. Returns ``None`` if no bbox is known
-    for this snap, or if we don't know the sub-stream frame size
-    (can't scale safely without it)."""
-    sub_bbox = bbox_index.get((track_id, snap_index))
-    if sub_bbox is None or sub_size is None:
-        return None
+    """Scale a sub-stream-coord bbox into ``image_path``'s pixel coords.
+    Returns ``None`` when the image header can't be read."""
     sub_w, sub_h = sub_size
     if sub_w <= 0 or sub_h <= 0:
         return None
@@ -118,5 +111,96 @@ def resolve_bbox_hint(
     # scale x and y independently rather than picking a single ratio.
     sx = w / sub_w
     sy = h / sub_h
-    x1, y1, x2, y2 = sub_bbox
+    x1, y1, x2, y2 = bbox
     return (int(x1 * sx), int(y1 * sy), int(x2 * sx), int(y2 * sy))
+
+
+def resolve_bbox_hint(
+    image_path: Path,
+    track_id: int,
+    snap_index: int,
+    bbox_index: dict[tuple[int, int], tuple[int, int, int, int]],
+    sub_size: tuple[int, int] | None,
+) -> tuple[int, int, int, int] | None:
+    """Look up the per-snap bbox and scale it from sub-stream coords
+    into the snap's pixel coords. Returns ``None`` if no bbox is known
+    for this snap, or if we don't know the sub-stream frame size
+    (can't scale safely without it)."""
+    sub_bbox = bbox_index.get((track_id, snap_index))
+    if sub_bbox is None or sub_size is None:
+        return None
+    return _scale_bbox_to_image(image_path, sub_bbox, sub_size)
+
+
+# Cap on how far the end-of-track extrapolation may shift the window,
+# as a multiple of the bbox's own dimension per axis. Guards against a
+# BotSORT glitch step (huge bbox jump) blowing the window up to most of
+# the frame -- which would resurrect the parked-car aliasing the bbox
+# hints exist to prevent.
+_WINDOW_MAX_SHIFT_BBOXES = 2.5
+
+
+def resolve_bbox_hint_window(
+    image_path: Path,
+    track_id: int,
+    snap_index: int,
+    bbox_index: dict[tuple[int, int], tuple[int, int, int, int]],
+    sub_size: tuple[int, int] | None,
+    *,
+    lookahead: int = 3,
+) -> tuple[int, int, int, int] | None:
+    """Motion-aware crop window: the union of this snap's bbox with the
+    track's next ``lookahead`` fire-time bboxes, scaled to snap pixels.
+
+    The 2026-06-10 R->L failure triage (99 hand-labelled failures) found
+    96 % of no-read snaps were caused by snap latency: the 4K HTTP snap
+    lands ~0.7-1.3 s after the fire decision (p50 710 ms, p99 1.2 s),
+    by which time the car has left its fire-time bbox entirely -- the
+    plate detector was being shown empty road. Consecutive pipeline
+    fires are 300-400 ms apart, so the union of bboxes ``i..i+3`` spans
+    the car's real observed positions over ~0-1.2 s -- exactly the
+    window the image could have been captured in. No velocity model,
+    just positions BotSORT actually measured.
+
+    At end-of-track (no later bboxes -- the worst case: the car is
+    leaving the band at speed) the window is instead extrapolated
+    linearly from the last observed inter-snap step, capped at
+    ``_WINDOW_MAX_SHIFT_BBOXES`` bbox-dimensions per axis.
+
+    ``lookahead=0`` degrades to :func:`resolve_bbox_hint` exactly.
+    Returns ``None`` under the same conditions as the single-bbox
+    resolver (no bbox for this snap / unknown sub-stream size).
+    """
+    base = bbox_index.get((track_id, snap_index))
+    if base is None or sub_size is None:
+        return None
+
+    boxes: list[tuple[float, float, float, float]] = [base]
+    for k in range(1, max(0, lookahead) + 1):
+        nxt = bbox_index.get((track_id, snap_index + k))
+        if nxt is not None:
+            boxes.append(nxt)
+
+    if len(boxes) == 1 and lookahead > 0:
+        prev = bbox_index.get((track_id, snap_index - 1))
+        if prev is not None:
+            # Last snap of the track: extrapolate the window along the
+            # final observed step instead of giving up.
+            bw, bh = base[2] - base[0], base[3] - base[1]
+            dx = float(base[0] - prev[0] + base[2] - prev[2]) / 2.0
+            dy = float(base[1] - prev[1] + base[3] - prev[3]) / 2.0
+            sx = max(
+                -_WINDOW_MAX_SHIFT_BBOXES * bw, min(_WINDOW_MAX_SHIFT_BBOXES * bw, dx * lookahead)
+            )
+            sy = max(
+                -_WINDOW_MAX_SHIFT_BBOXES * bh, min(_WINDOW_MAX_SHIFT_BBOXES * bh, dy * lookahead)
+            )
+            boxes.append((base[0] + sx, base[1] + sy, base[2] + sx, base[3] + sy))
+
+    window = (
+        min(b[0] for b in boxes),
+        min(b[1] for b in boxes),
+        max(b[2] for b in boxes),
+        max(b[3] for b in boxes),
+    )
+    return _scale_bbox_to_image(image_path, window, sub_size)

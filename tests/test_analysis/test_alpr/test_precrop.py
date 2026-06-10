@@ -320,3 +320,64 @@ def test_pre_crop_name_decorates_underlying_detector_name() -> None:
     plate = _FakePlateDetector(detection=None)
     pre = PreCropDetector(plate_detector=plate)
     assert pre.name == "precrop-fake-plate-det"
+
+
+# ----------------------------------------------------------------------
+# Vehicle stage inside a motion-window hint (Step 16).
+
+
+def test_window_hint_vehicle_stage_projects_through_both_offsets() -> None:
+    """With ``vehicle_stage_in_hint``, the wide window hint is vehicle-
+    detected first and the plate detector runs on the TIGHT vehicle crop
+    (restoring plate pixels); the plate bbox projects back through the
+    vehicle-crop offset AND the window offset."""
+    plate = _FakePlateDetector(
+        detection=PlateDetection(bbox=(10, 20, 90, 50), det_confidence=0.7)
+    )
+    pre = PreCropDetector(
+        plate_detector=plate, pad_frac=0.0, vehicle_stage_in_hint=True
+    )
+    # Vehicle found at (300,100)-(700,300) RELATIVE to the window crop.
+    _inject_fake_yolo(pre, np.array([[300.0, 100.0, 700.0, 300.0]]))
+
+    out = pre.detect(_make_image(), bbox_hint=(1000, 500, 3000, 900))
+
+    assert out is not None
+    # Plate detector saw the tight 400x200 vehicle crop, not the 2000px window.
+    assert plate.last_input_shape == (200, 400)
+    # bbox = plate (10,20) + vehicle offset (300,100) + window offset (1000,500).
+    assert out.bbox == (1310, 620, 1390, 650)
+
+
+def test_window_hint_vehicle_stage_falls_back_to_window_when_no_vehicle() -> None:
+    """COCO vehicle detector finding nothing inside the window must not
+    lose the read entirely -- fall back to plate-detecting the window."""
+    plate = _FakePlateDetector(
+        detection=PlateDetection(bbox=(5, 5, 50, 25), det_confidence=0.4)
+    )
+    pre = PreCropDetector(
+        plate_detector=plate, pad_frac=0.0, vehicle_stage_in_hint=True
+    )
+    _inject_fake_yolo(pre, np.empty((0, 4)))
+
+    out = pre.detect(_make_image(), bbox_hint=(1000, 500, 3000, 900))
+
+    assert out is not None
+    # Fell back to the whole 2000x400 window crop.
+    assert plate.last_input_shape == (400, 2000)
+    assert out.bbox == (1005, 505, 1050, 525)
+
+
+def test_legacy_hint_path_unchanged_without_flag() -> None:
+    """Default construction (flag off) keeps the v1 behaviour: plate
+    detector runs directly on the hinted crop, no vehicle stage."""
+    plate = _FakePlateDetector(
+        detection=PlateDetection(bbox=(1, 1, 9, 5), det_confidence=0.9)
+    )
+    pre = PreCropDetector(plate_detector=plate, pad_frac=0.0)
+    # No fake YOLO injected: the vehicle stage would crash if invoked.
+
+    out = pre.detect(_make_image(), bbox_hint=(100, 100, 300, 200))
+
+    assert out is not None
+    assert plate.last_input_shape == (100, 200)

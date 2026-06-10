@@ -252,7 +252,7 @@ names differ from the example.
 |---|---|
 | 4K capture coverage | Solved. 98 % cars get ≥1 snap. Pipeline mode dominates (`pipeline_interval_ms=400`, `pipeline_max_per_track=15`); trigger geometry is minor. |
 | Ghost-plate aliasing | Solved (Step 10). Parked-car mask + padding cap eliminate all 5 ghost plates (138 tracks). |
-| Per-image high-conf | 58.8 % (L→R 88.6 %, R→L 28.7 %) — after Step 11 trim. R→L gated by detector quality, not geometry. |
+| Per-image high-conf | 58.8 % (L→R 88.6 %, R→L 28.7 %) after Step 11 — but that row's "R→L gated by detector quality" verdict was **wrong**: the 06-10 failure triage (Step 16) showed **96 % of R→L failures were snap latency** (stale fire-time bbox), and motion-window hints lift the A/B session to L→R 75.7 % canonical/image with canonical cars/session +130 %. Full-corpus re-run in progress. |
 | Per-car aliasing-free | **~78 %** — intrinsic floor of camera + scene, verified across two sessions. Further snap-budget tuning will not move it. |
 | Misclassification | Confidence-weighted class voting (PR #23) defends single-frame flips; consistent model errors still possible. |
 | Direction-aware throttling | Deployed 2026-05-27 (`pipeline_interval_ms_by_direction={forward:300, reverse:400}`). Validation soak pending. |
@@ -379,9 +379,15 @@ The dataset-level enrichment pivot. Two prongs:
 | 13b | 05-27 | Multi-frame plate consensus (`analysis/alpr/consensus.py`) — confidence-weighted character voting across a track's reads | **Negative result on this scene** (-43 pp vs best-of-N at conf 0.9). Per-image reads of one track frequently capture DIFFERENT physical plates (parked cars vs tracked car vs mask leakage), so voting dilutes. Primitive kept as infra. | — |
 | 14 | 05-27 | Fuzzy plate clustering in `vehicles.py` (rapidfuzz, ratio default 85, same-length only); no temporal-overlap rejection | `LD22BWG`/`LD22BMG` correctly merged (BotSORT ID-switch on same silver hatchback); Step 11 recurring 6 → 8. | PRs #33/#34 |
 | 15 | 05-31 | Reolink **Anti-Smearing** exposure + shutter cap (`125→32`) to freeze near-camera motion blur; validation soak ran a widened `[0.10,0.60]` band, assessed + reverted 06-01 | **Falsified.** Canonical read-rate ~halved (matched midday daylight 48.5 → 25.1 %, -23 pp, both directions); near-camera zone did not recover. Faster shutter → higher gain → sensor noise costs more than the motion blur it removes (mid-road reads were never blur-limited). Reverted ISP to Auto/125 + band to `[0.10,0.45]`. **Capture-side levers (band position + exposure) exhausted.** | — |
+| 16 | 06-10 | **Stale-bbox fix.** Operator triage of 99 R→L failed snaps (`.claude/triage_rl.py` labelling site) → **96 % were snap latency**: the 4K HTTP snap lands ~0.7-1.3 s after fire (p50 710 ms), the car exits its fire-time bbox (+≤30 px pad) and the plate detector was shown empty road; the fastest cars exit the *frame* (the 11 % "no car" bucket had the highest host speeds). Zero smeared, zero sharp-unread — optics/OCR were never the limit. Fix: **motion-window hints** (`snap_assets.resolve_bbox_hint_window` — union of fire-time bboxes `i..i+3` ≈ the latency horizon; linear extrapolation at end-of-track, shift capped at 2.5 bbox-dims) + **vehicle stage inside the window** (`PreCropDetector(vehicle_stage_in_hint=True)`; window-only A/B *lost* 15 pp R→L detection to input downscale — tight vehicle crops restore plate pixels). `alpr-run --hint-lookahead N` (default 3, 0 = legacy). | A/B on `session_20260530_165958` (`.claude/measure_hint_window_ab.py`): **canonical cars/session 43 → 99 (+130 %)**; L→R detection 49 → 90 %, canonical/image 32.4 → 75.7 %; R→L canonical cars 4 → 11 (~2.8×; residual = far-band plate size + out-of-frame escapes → per-direction band / latency-aware firing are the next capture levers). Parked-beacon count flat — no aliasing cost. Related same-day work: **parked-plate beacon suppression** (PRs #57/#58) — a parked Duster read 99×/69 tracks had become the showcase's phantom #1 "regular" (55 visits); now suppressed into a `parked_episodes` record, with `dvsa-label` harvests scrubbed (replace + orphan-clear `track_ids` semantics) and the corpus rebuilt (1,311 cars / 8,067 crops / 29 makes in `runs/uk_crops_0610_512`). | PR #59 |
 
 Aggregation scripts that re-produce each measurement table live at
-`.claude/aggregate_step{8,10,11}.py` and `.claude/measure_consensus.py`.
+`.claude/aggregate_step{8,10,11}.py`, `.claude/measure_consensus.py`,
+and `.claude/measure_hint_window_ab.py` (Step 16 A/B; expects the
+`_alpr.baseline_prewindow.json` backup next to the session's live
+output). The Step 16 failure-triage labelling site is
+`.claude/triage_rl.py` (`--select` builds the sample, then serves on
+:8091; labels persist to `.claude/triage/labels.json`).
 
 ### Pipeline mode (the dominant capture mechanism)
 
