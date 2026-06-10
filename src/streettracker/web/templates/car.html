@@ -48,6 +48,22 @@
       </table>
     </div>
 
+    {% if car.parked_episodes %}
+    <div class="panel" style="margin-bottom:18px">
+      <h3>Parked in view</h3>
+      <ul class="timeline">
+        {% for ep in car.parked_episodes %}
+        <li><span>{{ ep.first_seen | fmt_dt }} → {{ ep.last_seen | fmt_dt }}</span>
+            <span class="muted">~{{ ep.duration_minutes | round | int }} min ·
+              plate read {{ ep.n_reads }}× from {{ ep.n_tracks }} passing tracks</span></li>
+        {% endfor %}
+      </ul>
+      <p class="muted" style="font-size:12px;margin:8px 0 0">
+        While parked in view, this car's plate was picked up by snaps of
+        passing traffic; those reads are excluded from the sighting count.</p>
+    </div>
+    {% endif %}
+
     <div class="panel">
       <h3>Your notes</h3>
       <form id="metaForm" onsubmit="return saveMeta(event)">

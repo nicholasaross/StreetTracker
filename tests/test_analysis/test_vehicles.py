@@ -25,6 +25,7 @@ def _write_session(
     tracks: list[TrackRecord],
     alpr_by_track: dict | None = None,
     dvsa_labels: dict | None = None,
+    alpr_images: list[dict] | None = None,
 ) -> Path:
     session = tmp_path / "session_test"
     session.mkdir()
@@ -38,6 +39,8 @@ def _write_session(
         (session / "session_test_dvsa_labels.json").write_text(
             json.dumps(dvsa_labels)
         )
+    if alpr_images is not None:
+        (session / "session_test_alpr.json").write_text(json.dumps(alpr_images))
     return session
 
 
@@ -757,3 +760,110 @@ def test_cross_session_fuzzy_merges_variants_across_sessions(
     assert "AB12CXE" in c.plate_variants  # merged variant
     assert c.kind == "different-day"
     assert c.n_visits == 2
+
+
+# ----------------------------------------------------------------------
+# Stationary-beacon (parked plate) suppression.
+
+
+def _image_read(
+    tid: int, snap: int, text: str, conf: float, cx: float, cy: float
+) -> dict:
+    """One per-image ``_alpr.json`` read at centre (cx, cy)."""
+    x1, y1 = cx - 65.0, cy - 17.0
+    return {
+        "image": f"vehicle_{tid}_main_{snap}.jpg",
+        "track_id": tid,
+        "snap_index": snap,
+        "pipeline": "preferred",
+        "det_bbox": [x1, y1, x1 + 130.0, y1 + 34.0],
+        "det_conf": 0.8,
+        "ocr_text": text,
+        "ocr_conf": conf,
+        "error": None,
+    }
+
+
+def _parked_session(tmp_path: Path, sample_track: TrackRecord) -> Path:
+    """5 passing cars all 'read' a parked car's plate at one fixed spot
+    (one of them, 42, also read its own plate); track 90 is the parked
+    car's slow departure, reading the same plate away from the spot."""
+    hosts = [
+        replace(
+            sample_track,
+            track_id=tid,
+            time_start=f"2026-06-02T11:{4 + i * 8:02d}:00+01:00",
+            time_start_unix=sample_track.time_start_unix + i * 480,
+            time_end_unix=sample_track.time_end_unix + i * 480,
+        )
+        for i, tid in enumerate((42, 43, 44, 45, 46))
+    ]
+    departure = replace(
+        sample_track,
+        track_id=90,
+        speed_px_s=1.0,
+        time_start="2026-06-02T11:48:40+01:00",
+        time_start_unix=sample_track.time_start_unix + 2680,
+        time_end_unix=sample_track.time_end_unix + 2680,
+    )
+    by_track = {
+        "tracks": [
+            {
+                "track_id": tid,
+                "best_preferred": {
+                    "track_id": tid, "snap_index": 1,
+                    "image": f"vehicle_{tid}_main_1.jpg",
+                    "ocr_text": "LX19PXR", "ocr_conf": 0.99, "det_conf": 0.9,
+                },
+            }
+            for tid in (42, 43, 44, 45, 46, 90)
+        ],
+    }
+    images = [
+        _image_read(tid, 1, "LX19PXR", 0.99, 2080, 455)
+        for tid in (42, 43, 44, 45, 46)
+    ]
+    images.append(_image_read(42, 2, "AB12CDE", 0.95, 900, 700))
+    images.append(_image_read(90, 1, "LX19PXR", 0.99, 2664, 300))
+    return _write_session(
+        tmp_path, hosts + [departure], by_track, alpr_images=images
+    )
+
+
+def test_parked_beacon_suppressed_into_episode(
+    tmp_path: Path, sample_track: TrackRecord
+) -> None:
+    session = _parked_session(tmp_path, sample_track)
+
+    vehicles = build_vehicles(session)
+
+    by_plate = {v.plate: v for v in vehicles if v.plate}
+    # The parked car keeps exactly one genuine visit (its departure) and
+    # gains the parked episode the aliasing was hiding.
+    lx = by_plate["LX19PXR"]
+    assert lx.n_visits == 1
+    assert lx.track_ids == [90]
+    assert len(lx.parked_episodes) == 1
+    ep = lx.parked_episodes[0]
+    assert ep["n_tracks"] == 5
+    assert ep["track_ids"] == [42, 43, 44, 45, 46]
+    assert ep["first_seen"].startswith("2026-06-02T11:04")
+    assert ep["last_seen"].startswith("2026-06-02T11:36")
+    assert ep["duration_minutes"] == pytest.approx(32.0)
+    # Host 42 re-anchors to its own remaining read; 43-46 become unread.
+    assert by_plate["AB12CDE"].track_ids == [42]
+    assert sum(1 for v in vehicles if v.plate is None) == 4
+
+
+def test_parked_suppression_disabled_restores_phantom_visits(
+    tmp_path: Path, sample_track: TrackRecord
+) -> None:
+    session = _parked_session(tmp_path, sample_track)
+
+    vehicles = build_vehicles(session, suppress_parked=False)
+
+    by_plate = {v.plate: v for v in vehicles if v.plate}
+    lx = by_plate["LX19PXR"]
+    assert lx.n_visits == 6              # the pre-fix phantom behaviour
+    assert lx.parked_episodes == []
+    assert "AB12CDE" not in by_plate

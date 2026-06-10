@@ -42,6 +42,12 @@ from streettracker.analysis.dvsa import (
     MotLookupResult,
     is_canonical_uk_plate,
 )
+from streettracker.analysis.parked import (
+    ParkedDetection,
+    best_unsuppressed_read,
+    detect_parked,
+    load_alpr_entries,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +109,19 @@ def _build_parser() -> argparse.ArgumentParser:
             "list for inspection."
         ),
     )
+    ap.add_argument(
+        "--no-parked-suppression",
+        action="store_true",
+        help=(
+            "Disable the stationary-beacon filter. By default, tracks "
+            "whose best read came from a PARKED car's static plate "
+            "(same plate at a fixed image position across >=4 distinct "
+            "moving tracks) are re-anchored to their own next-best read "
+            "before plates are grouped -- otherwise dozens of passing "
+            "cars inherit the parked car's plate and the make/model "
+            "training corpus is mislabelled accordingly."
+        ),
+    )
     return ap
 
 
@@ -121,6 +140,7 @@ def _collect_plate_requests(
     conf_threshold: float,
     *,
     canonical_only: bool = True,
+    detection: ParkedDetection | None = None,
 ) -> tuple[list[_PlateRequest], list[str]]:
     """Walk ``alpr_by_track.json`` and group its tracks by best-read
     plate. Per-plate aggregation avoids billing 80 lookups for the same
@@ -139,6 +159,23 @@ def _collect_plate_requests(
         best = track.get("best_preferred")
         if not best:
             continue
+        if detection is not None:
+            try:
+                key = (int(track["track_id"]), int(best.get("snap_index")))
+            except (KeyError, TypeError, ValueError):
+                key = None
+            if key is not None and key in detection.suppressed:
+                # Beacon read: the plate belongs to a parked car, not
+                # this passing track. Re-anchor to the track's own best
+                # remaining read, or drop the track from attribution.
+                best = best_unsuppressed_read(
+                    detection.reads_by_track.get(key[0], []),
+                    detection.suppressed,
+                    conf_threshold=conf_threshold,
+                    canonical_only=canonical_only,
+                )
+                if best is None:
+                    continue
         plate = (best.get("ocr_text") or "").strip().upper().replace(" ", "")
         conf = float(best.get("ocr_conf") or 0.0)
         if not plate or conf < conf_threshold:
@@ -256,10 +293,36 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = DvsaConfig.from_json_file(args.config)
     by_track = json.loads(by_track_path.read_text(encoding="utf-8"))
+
+    # Stationary-beacon suppression: keep parked cars' plates from being
+    # attributed (and DVSA-labelled) onto every track that drove past
+    # them. Needs the per-image reads + track records; silently skipped
+    # when either file is absent.
+    detection: ParkedDetection | None = None
+    if not args.no_parked_suppression:
+        entries = load_alpr_entries(session_dir)
+        data_path = session_dir / f"{session_label}_data.json"
+        if entries and data_path.exists():
+            try:
+                records = json.loads(data_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                records = []
+            if records:
+                detection = detect_parked(entries, records)
+                if detection.episodes:
+                    n_tracks = len({k[0] for k in detection.suppressed})
+                    print(
+                        f"[dvsa-label] parked-plate suppression: "
+                        f"{len(detection.episodes)} beacon(s); "
+                        f"{len(detection.suppressed)} reads across "
+                        f"{n_tracks} passing tracks re-anchored or dropped"
+                    )
+
     requests_, skipped_non_canonical = _collect_plate_requests(
         by_track,
         args.conf_threshold,
         canonical_only=not args.include_non_canonical,
+        detection=detection,
     )
     n_tracks_billed = sum(len(r.track_ids) for r in requests_)
     print(
@@ -298,11 +361,15 @@ def main(argv: list[str] | None = None) -> int:
             break
         processed += 1
         if req.plate in existing_labels or req.plate in existing_unknown:
-            # Already known -- still refresh track_ids in case BotSORT
-            # surfaced new tracks pointing at the same plate this run.
+            # Already known -- still refresh track_ids without an API
+            # call. REPLACE rather than union: the request set is
+            # recomputed in full from the current rollup each run, so a
+            # plain re-run both picks up newly-surfaced tracks and scrubs
+            # stale attributions (e.g. parked-beacon hosts suppressed by
+            # the stationary-plate filter) from an older harvest.
             if req.plate in existing_labels:
                 row = existing_labels[req.plate]
-                row["track_ids"] = sorted(set(row.get("track_ids", [])) | set(req.track_ids))
+                row["track_ids"] = sorted(set(req.track_ids))
             continue
         try:
             result = client.lookup_plate(req.plate)

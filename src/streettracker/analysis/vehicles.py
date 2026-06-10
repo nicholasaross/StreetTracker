@@ -63,6 +63,14 @@ from pathlib import Path
 from typing import Any
 
 from streettracker.analysis.dvsa import is_canonical_uk_plate
+from streettracker.analysis.parked import (
+    ParkedDetection,
+    best_unsuppressed_read,
+    detect_parked,
+    load_alpr_entries,
+    merge_episodes,
+    normalize_plate,
+)
 
 CONF_THRESHOLD = 0.9
 
@@ -136,6 +144,12 @@ class Vehicle:
     model: str | None = None
     year: int | None = None
     make_model_source: str | None = None
+    # Parked-car stints attributed to this plate by the stationary-beacon
+    # detector (``analysis.parked``): the car sat in view while its static
+    # plate was read across many passing tracks. Those reads are
+    # suppressed from ``visits``; the episode records the parked window
+    # instead (JSON dicts, see :meth:`ParkedEpisode.to_json_dict`).
+    parked_episodes: list[dict[str, Any]] = field(default_factory=list)
 
     def to_json_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -279,6 +293,7 @@ def build_vehicles(
     fuzzy_ratio: int | None = FUZZY_RATIO_DEFAULT,
     canonical_only: bool = True,
     dvsa_labels_path: Path | None = None,
+    suppress_parked: bool = True,
 ) -> list[Vehicle]:
     """Build per-vehicle aggregations from a closed session's outputs.
 
@@ -313,6 +328,16 @@ def build_vehicles(
     the plate-keyed labels (``make_model_source="dvsa"``); an absent
     file leaves them ``None``.
 
+    ``suppress_parked`` (default ``True``) runs the stationary-beacon
+    detector (:mod:`streettracker.analysis.parked`) over the session's
+    per-image ``_alpr.json``. A plate read at a fixed image position
+    across many moving tracks is a parked car aliasing onto passing
+    traffic; those reads are dropped as identity anchors (each affected
+    track falls back to its own best remaining read, or unread) and the
+    parked stint is attached to the plate's Vehicle as a
+    ``parked_episodes`` entry instead. Sessions without ``_alpr.json``
+    are unaffected.
+
     Cars only -- ``class_name == "car"`` tracks. Person tracks are
     skipped (snaps are anatomically wrong for ALPR).
 
@@ -327,6 +352,14 @@ def build_vehicles(
         alpr_rollup = json.loads(alpr_by_track_path.read_text())
     else:
         alpr_rollup = {"tracks": []}
+
+    # Stationary-beacon detection over the per-image reads. Empty
+    # detection (no _alpr.json, or suppression disabled) is a no-op.
+    detection = ParkedDetection()
+    if suppress_parked:
+        entries = load_alpr_entries(session_dir)
+        if entries:
+            detection = detect_parked(entries, data)
 
     # tid -> anchor read dict. Use the per-image best as the default
     # anchor (max-conf single read). Substitute the consensus rollup
@@ -353,6 +386,26 @@ def build_vehicles(
             # whose alpr_by_track.json doesn't carry
             # ``canonical_uk_shape`` still work: we re-derive it from
             # ``ocr_text`` here rather than trusting the absent field.
+            continue
+        tid = int(t["track_id"])
+        try:
+            best_key = (tid, int(best.get("snap_index")))
+        except (TypeError, ValueError):
+            best_key = None
+        if best_key is not None and best_key in detection.suppressed:
+            # The rollup anchor is a parked-car beacon read -- the plate
+            # belongs to a stationary car, not this passing track.
+            # Re-anchor to the track's own best remaining read (the
+            # consensus is not trusted here either: it aggregated the
+            # same contaminated reads).
+            fallback = best_unsuppressed_read(
+                detection.reads_by_track.get(tid, []),
+                detection.suppressed,
+                conf_threshold=conf_threshold,
+                canonical_only=canonical_only,
+            )
+            if fallback is not None:
+                best_by_tid[t["track_id"]] = fallback
             continue
         consensus = t.get("consensus_preferred")
         anchor = best
@@ -456,7 +509,57 @@ def build_vehicles(
         else session_dir / f"{session}_dvsa_labels.json"
     )
     _attach_dvsa_labels(out, _load_dvsa_labels(labels_path))
+
+    if detection.episodes:
+        _attach_parked_episodes(out, detection, fuzzy_ratio)
     return out
+
+
+def _attach_parked_episodes(
+    vehicles: list[Vehicle],
+    detection: ParkedDetection,
+    fuzzy_ratio: int | None,
+) -> None:
+    """Attach merged parked episodes to the Vehicle owning that plate.
+
+    OCR spellings of one parked plate (the beacon is often read under 2+
+    variants) are folded with the same fuzzy clustering used for visit
+    grouping, seeded by the vehicles' anchor plates so an episode variant
+    lands on the surviving canonical spelling. Episodes whose plate has
+    no surviving Vehicle (the parked car never produced a genuine moving
+    read in this session) are currently dropped from the per-vehicle
+    output -- they still reach callers via ``detect_parked`` directly.
+    """
+    anchor_confs: dict[str, float] = {}
+    for v in vehicles:
+        if v.plate is None:
+            continue
+        norm = normalize_plate(v.plate)
+        anchor_confs[norm] = max(
+            anchor_confs.get(norm, 0.0), v.plate_conf or 0.0
+        )
+    joint = list(anchor_confs.items()) + [
+        (ep.plate, 0.0)
+        for ep in detection.episodes
+        if ep.plate not in anchor_confs
+    ]
+    if fuzzy_ratio is not None:
+        canonical = _cluster_plates_by_similarity(joint, ratio=fuzzy_ratio)
+    else:
+        canonical = {p: p for p, _c in joint}
+
+    by_norm: dict[str, Vehicle] = {}
+    for v in vehicles:
+        if v.plate is None:
+            continue
+        by_norm.setdefault(normalize_plate(v.plate), v)
+        for pv, _c in v.plate_variants:
+            by_norm.setdefault(normalize_plate(pv), v)
+
+    for ep in merge_episodes(detection.episodes, canonical):
+        target = by_norm.get(ep.plate)
+        if target is not None:
+            target.parked_episodes.append(ep.to_json_dict())
 
 
 def build_cross_session(
@@ -465,6 +568,7 @@ def build_cross_session(
     conf_threshold: float = CONF_THRESHOLD,
     fuzzy_ratio: int | None = FUZZY_RATIO_DEFAULT,
     canonical_only: bool = True,
+    suppress_parked: bool = True,
 ) -> list[CrossVehicle]:
     """Pool plated vehicles across sessions, classifying repeats by date.
 
@@ -484,6 +588,7 @@ def build_cross_session(
             conf_threshold=conf_threshold,
             fuzzy_ratio=fuzzy_ratio,
             canonical_only=canonical_only,
+            suppress_parked=suppress_parked,
         ):
             if v.plate is None:
                 continue
@@ -501,6 +606,8 @@ def build_cross_session(
 
     pool: dict[str, dict[str, Any]] = {}
     for sname, v in plated:
+        if v.plate is None:  # filtered above; narrows the type for mypy
+            continue
         key = canonical.get(v.plate, v.plate)
         rec = pool.setdefault(
             key,
@@ -679,6 +786,19 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     ap.add_argument(
+        "--no-parked-suppression",
+        action="store_true",
+        help=(
+            "Disable the stationary-beacon detector. By default a plate "
+            "read at a fixed image position across >=4 distinct moving "
+            "tracks is treated as a PARKED car aliasing onto passing "
+            "traffic: those reads stop counting as visits (affected "
+            "tracks re-anchor to their own next-best read) and the "
+            "parked stint is reported as a parked_episodes entry on the "
+            "plate's vehicle instead."
+        ),
+    )
+    ap.add_argument(
         "--across",
         type=Path,
         nargs="+",
@@ -715,6 +835,7 @@ def _run_cross(args: argparse.Namespace) -> int:
         conf_threshold=args.conf,
         fuzzy_ratio=None if args.no_fuzzy else args.fuzzy_ratio,
         canonical_only=not args.include_non_canonical,
+        suppress_parked=not args.no_parked_suppression,
     )
     out_path = args.out or (args.session_dir.parent / "cross_session_repeats.json")
     out_path.write_text(json.dumps([c.to_json_dict() for c in cross], indent=2))
@@ -774,6 +895,7 @@ def main(argv: list[str] | None = None) -> int:
         include_unread=not args.no_unread,
         fuzzy_ratio=None if args.no_fuzzy else args.fuzzy_ratio,
         canonical_only=not args.include_non_canonical,
+        suppress_parked=not args.no_parked_suppression,
     )
 
     session = session_dir.name
@@ -794,6 +916,15 @@ def main(argv: list[str] | None = None) -> int:
     merged = [v for v in plated if v.plate_variants]
     if merged:
         print(f"  fuzzy-merged: {len(merged)}  (OCR variants collapsed)")
+    episodes = [(v.plate, ep) for v in plated for ep in v.parked_episodes]
+    if episodes:
+        print(f"  parked episodes: {len(episodes)}  (beacon reads excluded from visits)")
+        for plate, ep in episodes[:5]:
+            print(
+                f"    {plate}  {ep['first_seen'][:16]} -> {ep['last_seen'][11:16]}"
+                f"  ~{ep['duration_minutes']:.0f} min  "
+                f"read {ep['n_reads']}x across {ep['n_tracks']} passing tracks"
+            )
     if recurring:
         print("  top recurring:")
         for v in sorted(recurring, key=lambda x: -x.n_visits)[:5]:
