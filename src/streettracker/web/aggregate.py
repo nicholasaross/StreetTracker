@@ -102,6 +102,12 @@ class ShowcaseCar:
     directions: dict[str, int] = field(default_factory=dict)
     colors: dict[str, int] = field(default_factory=dict)
     plate_variants: list[str] = field(default_factory=list)
+    # Parked-car stints from the stationary-beacon detector (one dict per
+    # episode, see ``analysis.parked.ParkedEpisode.to_json_dict``):
+    # windows where this car sat in view while its static plate was read
+    # across passing tracks. Those reads are already excluded from
+    # ``n_visits``/``images``; the episode documents the parked window.
+    parked_episodes: list[dict[str, Any]] = field(default_factory=list)
     images: list[ShowcaseImage] = field(default_factory=list)
 
     def to_json_dict(self) -> dict[str, Any]:
@@ -246,6 +252,7 @@ def build_showcase(
                 "plates": set(),
                 "directions": Counter(),
                 "colors": Counter(),
+                "parked": [],
                 "images": [],
             },
         )
@@ -265,6 +272,7 @@ def build_showcase(
             )
         rec["directions"].update(v.directions)
         rec["colors"].update(v.colors)
+        rec["parked"].extend(v.parked_episodes)
         for visit in v.visits:
             rec["dates"].add(visit.time_start[:10])
             rec["images"].append(_image_urls(output_root, sname, visit))
@@ -305,6 +313,9 @@ def build_showcase(
                 directions=dict(rec["directions"]),
                 colors=dict(rec["colors"]),
                 plate_variants=variants,
+                parked_episodes=sorted(
+                    rec["parked"], key=lambda e: e.get("first_seen") or ""
+                ),
                 images=images,
             )
         )

@@ -510,3 +510,49 @@ def test_main_include_non_canonical_flag_queries_garbage(tmp_path: Path) -> None
     assert payload["n_skipped_non_canonical"] == 0
     assert payload["n_unknown"] == 1
     assert payload["unknown"] == ["123889"]
+
+
+# ----------------------------------------------------------------------
+# Stationary-beacon suppression keeps a parked car's plate from being
+# attributed (and DVSA-labelled) onto every track that drove past it.
+
+
+def test_collect_plate_requests_parked_suppression() -> None:
+    from streettracker.analysis.parked import ParkedDetection
+
+    def _read(tid: int, snap: int, text: str, conf: float) -> dict:
+        return {
+            "track_id": tid, "snap_index": snap,
+            "image": f"vehicle_{tid}_main_{snap}.jpg",
+            "ocr_text": text, "ocr_conf": conf, "det_conf": 0.9,
+        }
+
+    def _track(tid: int, snap: int) -> dict:
+        return {
+            "track_id": tid,
+            "best_preferred": _read(tid, snap, "LX19PXR", 0.99),
+        }
+
+    # Tracks 1 + 2 are passing cars anchored to a parked car's beacon
+    # read; track 9 read the same plate away from the beacon (the parked
+    # car's genuine departure).
+    by_track = {"tracks": [_track(1, 1), _track(2, 1), _track(9, 5)]}
+    detection = ParkedDetection(
+        suppressed={(1, 1), (2, 1)},
+        reads_by_track={
+            1: [_read(1, 1, "LX19PXR", 0.99), _read(1, 2, "AB12CDE", 0.95)],
+            2: [_read(2, 1, "LX19PXR", 0.99)],
+            9: [_read(9, 5, "LX19PXR", 0.99)],
+        },
+    )
+
+    requests_, skipped = dvsa_label._collect_plate_requests(
+        by_track, 0.9, canonical_only=True, detection=detection
+    )
+
+    by_plate = {r.plate: r for r in requests_}
+    assert by_plate["LX19PXR"].track_ids == [9]   # only the genuine read
+    assert by_plate["AB12CDE"].track_ids == [1]   # re-anchored to own plate
+    assert skipped == []
+    all_tids = [t for r in requests_ for t in r.track_ids]
+    assert 2 not in all_tids                      # nothing genuine left -> dropped
