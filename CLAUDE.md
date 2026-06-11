@@ -252,7 +252,7 @@ names differ from the example.
 |---|---|
 | 4K capture coverage | Solved. 98 % cars get ≥1 snap. Pipeline mode dominates (`pipeline_interval_ms=400`, `pipeline_max_per_track=15`); trigger geometry is minor. |
 | Ghost-plate aliasing | Solved (Step 10). Parked-car mask + padding cap eliminate all 5 ghost plates (138 tracks). |
-| Per-image high-conf | 58.8 % (L→R 88.6 %, R→L 28.7 %) after Step 11 — but that row's "R→L gated by detector quality" verdict was **wrong**: the 06-10 failure triage (Step 16) showed **96 % of R→L failures were snap latency** (stale fire-time bbox), and motion-window hints lift the A/B session to L→R 75.7 % canonical/image with canonical cars/session +130 %. Full-corpus re-run in progress. |
+| Per-image high-conf | 58.8 % (L→R 88.6 %, R→L 28.7 %) after Step 11 — but that row's "R→L gated by detector quality" verdict was **wrong**: the 06-10 failure triage (Step 16) showed **96 % of R→L failures were snap latency** (stale fire-time bbox). **Full-corpus re-run with motion-window hints (06-11): per-snapped-car canonical 41-46 % → 63.9 % pooled (R→L 69.0 %, L→R 58.6 %)** — the direction asymmetry *inverted*; the old "R→L ~14 % ceiling at any position" was a stale-hint measurement artifact. One outlier: the band-2 [0.25,0.60] session's R→L stays collapsed at 7.6 % — the near-zone R→L question is open again, now untangled from staleness. |
 | Per-car aliasing-free | **~78 %** — intrinsic floor of camera + scene, verified across two sessions. Further snap-budget tuning will not move it. |
 | Misclassification | Confidence-weighted class voting (PR #23) defends single-frame flips; consistent model errors still possible. |
 | Direction-aware throttling | Deployed 2026-05-27 (`pipeline_interval_ms_by_direction={forward:300, reverse:400}`). Validation soak pending. |
@@ -264,6 +264,14 @@ not solvable by more snaps. Pivoted to dataset-level enrichment.
 Capture-side read-rate tuning is likewise exhausted — near-camera band
 position and camera exposure/shutter (Step 15) were both tried and
 falsified.
+
+**Step 16 addendum (2026-06-11):** the "exhausted"/"floor" framing above
+predates the stale-bbox discovery. The honest per-snapped-car canonical
+rate is now **63.9 %** (was 41-46 %) from an offline-only fix, and every
+pre-Step-16 position/band conclusion (incl. the band-2 near-camera
+collapse + "R→L ceiling") was measured through stale hints and needs
+re-deriving before being trusted. The Anti-Smearing falsification
+stands (same-hint A/B).
 
 ### Make/model classification
 
