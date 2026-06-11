@@ -6,6 +6,12 @@ Computes volume + temporal patterns over **all vehicle tracks** (every
 JSON-only sessions still carry ``data.json``, so the stats reach further back
 than the images do.)
 
+The same pass also aggregates **person tracks** (``class_name == "person"``)
+into the ``people`` block: walk counts, direction split, weekday x hour
+heatmap, and a time-in-view (dwell) distribution. One person track ~= one
+walk past, with the same BotSORT-split caveat as cars; a bicycle rider
+detects as a person.
+
 One car ``TrackRecord`` is treated as one "journey"/pass. BotSORT can split a
 single pass into two tracks, so counts are approximate -- surfaced as a caveat
 in the UI.
@@ -47,6 +53,11 @@ _DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 N_FASTEST = 8
 N_TOP_MAKES = 12
 N_TOP_COLOURS = 10
+# Dwell (time-in-view) histogram: 10s buckets up to 60s, then one open
+# "60s+" bucket -- median walks sit ~12s on this scene, so six closed
+# buckets cover the bulk without flattening the chart.
+_DWELL_BUCKET_S = 10.0
+_DWELL_MAX_BUCKETS = 6
 # A track needs this many detections to be eligible for the "fastest" board --
 # guards against 2-3 frame BotSORT ID-switch glitches that produce a huge
 # net_disp / duration spike.
@@ -67,6 +78,7 @@ class Stats:
     speed: dict[str, Any]
     makes: list[list[Any]]  # [[make, n_distinct_cars], ...]
     colours: list[list[Any]]  # [[colour, n_journeys], ...]
+    people: dict[str, Any]  # person-track aggregates; see _empty_people()
     speed_unit: str  # "mph" | "px/s"
 
     def to_json_dict(self) -> dict[str, Any]:
@@ -86,6 +98,41 @@ def _speed_factor(m_per_px: float | None) -> float | None:
 def _disp(px_s: float, factor: float | None) -> float:
     """px/s -> display unit (mph if calibrated, else px/s), rounded."""
     return round(px_s * factor, 1) if factor is not None else round(px_s)
+
+
+def _empty_people() -> dict[str, Any]:
+    return {
+        "total": 0,
+        "n_days": 0,
+        "per_day_mean": 0,
+        "pct_l2r": 0,
+        "pct_r2l": 0,
+        "busiest_hour": None,
+        "dow": {d: {"l2r": 0, "r2l": 0, "total": 0} for d in _DOW},
+        "heatmap": [[0] * 24 for _ in range(7)],
+        "dwell": {"hist": [], "median_s": 0, "p90_s": 0},
+    }
+
+
+def _dwell_stats(durations: list[float]) -> dict[str, Any]:
+    """Time-in-view distribution: 10s buckets, open-ended past 60s."""
+    if not durations:
+        return {"hist": [], "median_s": 0, "p90_s": 0}
+    ds = sorted(durations)
+    median = ds[len(ds) // 2]
+    p90 = ds[min(len(ds) - 1, int(0.9 * len(ds)))]
+    counts = [0] * (_DWELL_MAX_BUCKETS + 1)
+    for v in durations:
+        counts[min(int(v // _DWELL_BUCKET_S), _DWELL_MAX_BUCKETS)] += 1
+    hist = [
+        {
+            "lo": i * _DWELL_BUCKET_S,
+            "hi": None if i == _DWELL_MAX_BUCKETS else (i + 1) * _DWELL_BUCKET_S,
+            "n": c,
+        }
+        for i, c in enumerate(counts)
+    ]
+    return {"hist": hist, "median_s": round(median, 1), "p90_s": round(p90, 1)}
 
 
 def _empty_stats(unit: str) -> Stats:
@@ -110,6 +157,7 @@ def _empty_stats(unit: str) -> Stats:
         speed={"hist": [], "avg_all": 0, "avg_l2r": 0, "avg_r2l": 0, "unit": unit, "fastest": []},
         makes=[],
         colours=[],
+        people=_empty_people(),
         speed_unit=unit,
     )
 
@@ -141,6 +189,16 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
     total = 0
     dates: set[str] = set()
 
+    # People accumulators (person tracks; separate date set so the car
+    # per-day mean keeps its existing denominator).
+    p_total = 0
+    p_dates: set[str] = set()
+    p_dow = {d: {"l2r": 0, "r2l": 0, "total": 0} for d in _DOW}
+    p_heatmap = [[0] * 24 for _ in range(7)]
+    p_hour = [0] * 24
+    p_dir = {"l2r": 0, "r2l": 0}
+    p_durations: list[float] = []
+
     for d in sessions:
         name = d.name
         try:
@@ -148,7 +206,8 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
         except (OSError, json.JSONDecodeError):
             data = []
         for r in data:
-            if r.get("class_name") != "car":
+            cls = r.get("class_name")
+            if cls not in ("car", "person"):
                 continue
             ts = r.get("time_start")
             if not ts:
@@ -162,6 +221,20 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
             q = (dt.hour * 60 + dt.minute) // 15  # 0..95
             direction = r.get("direction")
             dkey = "l2r" if direction == _L2R else "r2l" if direction == _R2L else None
+
+            if cls == "person":
+                p_total += 1
+                p_dates.add(date)
+                p_dow[_DOW[wd]]["total"] += 1
+                p_heatmap[wd][dt.hour] += 1
+                p_hour[dt.hour] += 1
+                if dkey:
+                    p_dow[_DOW[wd]][dkey] += 1
+                    p_dir[dkey] += 1
+                dur = float(r.get("duration_visible") or 0.0)
+                if dur > 0:
+                    p_durations.append(dur)
+                continue
 
             total += 1
             dates.add(date)
@@ -234,6 +307,20 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
     makes = [[m, n] for m, n in Counter(makes_by_plate.values()).most_common(N_TOP_MAKES)]
     colours_out = [[c, n] for c, n in colours.most_common(N_TOP_COLOURS)]
 
+    p_directed = p_dir["l2r"] + p_dir["r2l"]
+    p_bh = max(range(24), key=lambda h: p_hour[h]) if p_total else None
+    people = {
+        "total": p_total,
+        "n_days": len(p_dates),
+        "per_day_mean": round(p_total / len(p_dates), 1) if p_dates else 0,
+        "pct_l2r": round(100 * p_dir["l2r"] / p_directed) if p_directed else 0,
+        "pct_r2l": round(100 * p_dir["r2l"] / p_directed) if p_directed else 0,
+        "busiest_hour": ({"hour": p_bh, "total": p_hour[p_bh]} if p_bh is not None else None),
+        "dow": p_dow,
+        "heatmap": p_heatmap,
+        "dwell": _dwell_stats(p_durations),
+    }
+
     return Stats(
         overall=overall,
         daily=daily_list,
@@ -243,6 +330,7 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
         speed=speed,
         makes=makes,
         colours=colours_out,
+        people=people,
         speed_unit=unit,
     )
 
