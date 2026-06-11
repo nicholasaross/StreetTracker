@@ -26,6 +26,7 @@ def _write_session(
     alpr_by_track: dict | None = None,
     dvsa_labels: dict | None = None,
     alpr_images: list[dict] | None = None,
+    makemodel_by_track: dict | None = None,
 ) -> Path:
     session = tmp_path / "session_test"
     session.mkdir()
@@ -41,6 +42,10 @@ def _write_session(
         )
     if alpr_images is not None:
         (session / "session_test_alpr.json").write_text(json.dumps(alpr_images))
+    if makemodel_by_track is not None:
+        (session / "session_test_makemodel_by_track.json").write_text(
+            json.dumps(makemodel_by_track)
+        )
     return session
 
 
@@ -760,6 +765,69 @@ def test_cross_session_fuzzy_merges_variants_across_sessions(
     assert "AB12CXE" in c.plate_variants  # merged variant
     assert c.kind == "different-day"
     assert c.n_visits == 2
+
+
+# ----------------------------------------------------------------------
+# CNN make fill (the unread-plate majority).
+
+
+def _cnn_row(tid: int, make: str, conf: float) -> dict:
+    return {
+        "track_id": tid, "make": make, "model": None, "year": None,
+        "conf": conf, "n_high_conf_reads": 5, "n_reads": 6,
+    }
+
+
+def test_cnn_make_fills_vehicles_without_dvsa(
+    tmp_path: Path, sample_track: TrackRecord
+) -> None:
+    """An unread car (no plate) gets its make from the CNN rollup; a
+    DVSA-labelled car keeps the ground truth even when the CNN
+    disagrees."""
+    plated = replace(sample_track, track_id=50)
+    unread = replace(sample_track, track_id=51)
+    session = _write_session(
+        tmp_path,
+        [plated, unread],
+        _alpr_one(50, "AB12CDE", 0.98),
+        dvsa_labels={"labels": {"AB12CDE": {"make": "FORD", "model": "FOCUS", "year": 2017}}},
+        makemodel_by_track={"tracks": [
+            _cnn_row(50, "VAUXHALL", 0.99),   # disagrees with DVSA -> ignored
+            _cnn_row(51, "TOYOTA", 0.87),
+        ]},
+    )
+
+    vehicles = build_vehicles(session)
+
+    by_tid = {v.track_ids[0]: v for v in vehicles}
+    assert by_tid[50].make == "FORD"
+    assert by_tid[50].make_model_source == "dvsa"
+    assert by_tid[51].plate is None
+    assert by_tid[51].make == "TOYOTA"
+    assert by_tid[51].make_model_source == "cnn"
+
+
+def test_cnn_make_respects_conf_floor_and_flag(
+    tmp_path: Path, sample_track: TrackRecord
+) -> None:
+    low = replace(sample_track, track_id=60)
+    ok = replace(sample_track, track_id=61)
+    session = _write_session(
+        tmp_path,
+        [low, ok],
+        makemodel_by_track={"tracks": [
+            _cnn_row(60, "BMW", 0.31),        # below the 0.5 vote-share floor
+            _cnn_row(61, "KIA", 0.74),
+        ]},
+    )
+
+    vehicles = build_vehicles(session)
+    by_tid = {v.track_ids[0]: v for v in vehicles}
+    assert by_tid[60].make is None
+    assert by_tid[61].make == "KIA"
+
+    disabled = build_vehicles(session, cnn_make=False)
+    assert all(v.make is None for v in disabled)
 
 
 # ----------------------------------------------------------------------
