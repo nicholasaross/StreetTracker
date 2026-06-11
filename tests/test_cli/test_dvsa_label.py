@@ -556,3 +556,50 @@ def test_collect_plate_requests_parked_suppression() -> None:
     assert skipped == []
     all_tids = [t for r in requests_ for t in r.track_ids]
     assert 2 not in all_tids                      # nothing genuine left -> dropped
+
+
+def test_main_clears_track_ids_on_orphaned_labelled_plates(tmp_path: Path) -> None:
+    """A previously-labelled plate with no anchored tracks left in the
+    current rollup (e.g. a parked-beacon plate whose every read was
+    suppressed) keeps its DVSA data but loses its stale track
+    attributions -- otherwise the make/model corpus keeps cropping the
+    old host tracks under the parked car's make."""
+    session = _write_minimal_session(tmp_path)
+    cfg_path = tmp_path / "dvsa.json"
+    out_path = session / "session_demo_dvsa_labels.json"
+
+    # Prior harvest: an orphaned plate (no longer in the rollup) carrying
+    # stale host-track attributions, plus a plate still present.
+    out_path.write_text(
+        json.dumps(
+            {
+                "labels": {
+                    "ZZ99ZZZ": {
+                        "plate": "ZZ99ZZZ", "plate_conf": 0.99,
+                        "track_ids": [101, 102, 103],
+                        "make": "DACIA", "model": "DUSTER", "year": 2019,
+                    },
+                    "AE13SJX": {
+                        "plate": "AE13SJX", "plate_conf": 0.99,
+                        "track_ids": [55],
+                        "make": "PORSCHE", "model": "911", "year": 2013,
+                    },
+                },
+                "unknown": [],
+                "skipped_non_canonical": [],
+            }
+        )
+    )
+
+    with patch("streettracker.cli.dvsa_label.DvsaClient") as cls:
+        client = cls.return_value
+        client.lookup_plate.side_effect = lambda plate: _porsche_result(plate)
+        rc = dvsa_label.main([str(session), "--config", str(cfg_path)])
+
+    assert rc == 0
+    payload = json.loads(out_path.read_text())
+    orphan = payload["labels"]["ZZ99ZZZ"]
+    assert orphan["track_ids"] == []              # attributions scrubbed
+    assert orphan["make"] == "DACIA"              # DVSA data retained
+    # The still-present plate's track_ids reflect the current rollup.
+    assert payload["labels"]["AE13SJX"]["track_ids"] == [1]

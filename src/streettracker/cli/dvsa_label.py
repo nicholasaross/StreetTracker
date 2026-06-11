@@ -350,6 +350,24 @@ def main(argv: list[str] | None = None) -> int:
         existing_unknown.clear()
         existing_skipped = set(skipped_non_canonical)
 
+    # A labelled plate with NO anchored tracks in the current rollup keeps
+    # its DVSA data but loses its track attributions. Without this, a
+    # parked-beacon plate whose every read was suppressed (no genuine
+    # sighting left) would retain its stale host tracks from an older
+    # harvest -- and keep feeding mislabelled crops to the training
+    # corpus.
+    request_plates = {r.plate for r in requests_}
+    n_orphaned = 0
+    for plate, row in existing_labels.items():
+        if plate not in request_plates and row.get("track_ids"):
+            row["track_ids"] = []
+            n_orphaned += 1
+    if n_orphaned:
+        print(
+            f"[dvsa-label] cleared track_ids on {n_orphaned} labelled "
+            f"plate(s) with no remaining anchored tracks"
+        )
+
     client = DvsaClient(cfg)
 
     processed = 0
