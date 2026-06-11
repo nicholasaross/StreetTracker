@@ -16,6 +16,7 @@ from streettracker.analysis.snap_assets import (
     discover_vehicle_snaps,
     load_bbox_index,
     resolve_bbox_hint,
+    resolve_bbox_hint_window,
 )
 
 
@@ -73,3 +74,112 @@ def test_load_bbox_index_empty_for_older_session(tmp_path: Path) -> None:
     idx, sub = load_bbox_index(sess)
     assert idx == {}
     assert sub is None
+
+
+# ----------------------------------------------------------------------
+# Motion-aware hint window (snap latency vs fire-time bbox).
+
+
+def _window_session(tmp_path: Path, bboxes: list) -> tuple[Path, dict, tuple]:
+    """Session with one R->L-ish track whose per-snap bboxes march left.
+    Snap image is 400x300 against a 400x300 'sub-stream' so scaling is
+    identity and the window arithmetic is easy to assert."""
+    sess = tmp_path / "session_w"
+    sess.mkdir()
+    Image.new("RGB", (400, 300), (10, 10, 10)).save(sess / "vehicle_7_main_2.jpg")
+    sess.joinpath("session_w_data.json").write_text(
+        json.dumps(
+            [
+                {
+                    "track_id": 7,
+                    "main_snaps": list(range(1, len(bboxes) + 1)),
+                    "main_snap_bboxes": bboxes,
+                }
+            ]
+        )
+    )
+    sess.joinpath("session_w_meta.json").write_text(json.dumps({"frame_size": [400, 300]}))
+    idx, sub = load_bbox_index(sess)
+    return sess, idx, sub
+
+
+def test_window_unions_lookahead_bboxes(tmp_path: Path) -> None:
+    """Mid-track: the hint covers everywhere the car was actually
+    observed over the next ~1.2s of fires, not just the stale fire-time
+    box."""
+    # Car moving left, 40px per fire: snaps 1..5.
+    bboxes = [[200 - 40 * i, 100, 280 - 40 * i, 140] for i in range(5)]
+    sess, idx, sub = _window_session(tmp_path, bboxes)
+
+    hint = resolve_bbox_hint_window(sess / "vehicle_7_main_2.jpg", 7, 2, idx, sub, lookahead=3)
+
+    # Union of snaps 2,3,4,5: x from (200-160)=40 .. (280-40)=240.
+    assert hint == (40, 100, 240, 140)
+
+
+def test_window_lookahead_zero_matches_legacy(tmp_path: Path) -> None:
+    bboxes = [[200 - 40 * i, 100, 280 - 40 * i, 140] for i in range(5)]
+    sess, idx, sub = _window_session(tmp_path, bboxes)
+    img = sess / "vehicle_7_main_2.jpg"
+
+    assert resolve_bbox_hint_window(img, 7, 2, idx, sub, lookahead=0) == resolve_bbox_hint(
+        img, 7, 2, idx, sub
+    )
+
+
+def test_window_extrapolates_at_end_of_track(tmp_path: Path) -> None:
+    """Last snap of the track (the worst case: car leaving the band at
+    speed, no later fires exist) -- extend along the last observed step."""
+    bboxes = [[240, 100, 320, 140], [200, 100, 280, 140]]  # snap 1 -> 2: dx=-40
+    sess, idx, sub = _window_session(tmp_path, bboxes)
+
+    hint = resolve_bbox_hint_window(sess / "vehicle_7_main_2.jpg", 7, 2, idx, sub, lookahead=3)
+
+    # base (200..280) unioned with itself shifted by dx*3 = -120.
+    assert hint == (80, 100, 280, 140)
+
+
+def test_window_extrapolation_shift_is_capped(tmp_path: Path) -> None:
+    """A BotSORT glitch step (huge bbox jump) must not blow the window
+    up to most of the frame -- the shift caps at 2.5 bbox-dims/axis."""
+    bboxes = [[3200, 100, 3280, 140], [200, 100, 280, 140]]  # absurd dx=-3000
+    sess, idx, sub = _window_session(tmp_path, bboxes)
+
+    hint = resolve_bbox_hint_window(sess / "vehicle_7_main_2.jpg", 7, 2, idx, sub, lookahead=3)
+
+    # bbox width 80 -> max shift 200: window x1 = 200-200 = 0 (not -9000).
+    assert hint == (0, 100, 280, 140)
+
+
+def test_window_none_without_base_bbox_or_size(tmp_path: Path) -> None:
+    bboxes = [[200, 100, 280, 140]]
+    sess, idx, sub = _window_session(tmp_path, bboxes)
+    img = sess / "vehicle_7_main_2.jpg"
+
+    assert resolve_bbox_hint_window(img, 7, 9, idx, sub, lookahead=3) is None
+    assert resolve_bbox_hint_window(img, 7, 1, idx, None, lookahead=3) is None
+
+
+def test_window_scales_to_snap_pixels(tmp_path: Path) -> None:
+    """Same independent x/y scaling as the single-bbox resolver."""
+    sess = tmp_path / "session_s"
+    sess.mkdir()
+    Image.new("RGB", (400, 300), (10, 10, 10)).save(sess / "vehicle_1_main_1.jpg")
+    sess.joinpath("session_s_data.json").write_text(
+        json.dumps(
+            [
+                {
+                    "track_id": 1,
+                    "main_snaps": [1, 2],
+                    "main_snap_bboxes": [[64, 36, 128, 108], [128, 36, 192, 108]],
+                }
+            ]
+        )
+    )
+    sess.joinpath("session_s_meta.json").write_text(json.dumps({"frame_size": [640, 360]}))
+    idx, sub = load_bbox_index(sess)
+
+    hint = resolve_bbox_hint_window(sess / "vehicle_1_main_1.jpg", 1, 1, idx, sub, lookahead=3)
+
+    # Union in sub coords: (64,36,192,108); sx=0.625, sy=0.8333.
+    assert hint == (40, 30, 120, 90)
