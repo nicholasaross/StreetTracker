@@ -41,6 +41,7 @@ from streettracker.analysis.vehicles import (
     Vehicle,
     _cluster_plates_by_similarity,
     build_vehicles,
+    make_distinct_vehicle_checker,
 )
 
 
@@ -220,20 +221,28 @@ def build_showcase(
     plated: list[tuple[str, str, Vehicle]] = []
     conf_by_plate: dict[str, float] = {}
     extras_by_plate: dict[str, dict[str, Any]] = {}
+    colours_by_plate: dict[str, Counter] = {}
     for d in sessions:
         for v in build_vehicles(d, fuzzy_ratio=fuzzy_ratio):
             if v.plate is None:
                 continue
             plated.append((d.name, v.plate, v))
             conf_by_plate[v.plate] = max(conf_by_plate.get(v.plate, 0.0), v.plate_conf or 0.0)
+            colours_by_plate.setdefault(v.plate, Counter()).update(v.colors)
         for plate, row in _load_dvsa_extras(d).items():
             if isinstance(row, dict):
                 extras_by_plate.setdefault(plate, row)
 
     # Cross-session canonical map: collapse OCR variants of one physical plate
     # seen in different sessions (same fuzzy logic build_cross_session uses).
+    # The DVSA-distinct veto keeps provably different registered vehicles
+    # (e.g. a red UP and a white GOLF one character apart) on separate cards.
     if fuzzy_ratio is not None:
-        canonical = _cluster_plates_by_similarity(list(conf_by_plate.items()), ratio=fuzzy_ratio)
+        canonical = _cluster_plates_by_similarity(
+            list(conf_by_plate.items()),
+            ratio=fuzzy_ratio,
+            is_distinct=make_distinct_vehicle_checker(extras_by_plate, colours_by_plate),
+        )
     else:
         canonical = {p: p for p in conf_by_plate}
 

@@ -768,6 +768,136 @@ def test_cross_session_fuzzy_merges_variants_across_sessions(
 
 
 # ----------------------------------------------------------------------
+# DVSA-distinct veto: 1-char-apart plates that are provably DIFFERENT
+# registered vehicles must not fuzzy-merge.
+
+
+def _two_spelling_session(
+    tmp_path: Path,
+    sample_track: TrackRecord,
+    *,
+    colours_a: list[str],
+    colours_b: list[str],
+) -> Path:
+    """Two near spellings (GU65UGK / GU65UGM, ratio 85.7), each with its
+    own tracks coloured per ``colours_a``/``colours_b``, plus DVSA rows
+    registering a Red VW UP vs a White VW GOLF (the real-world case)."""
+    tracks = []
+    alpr_tracks = []
+    tid = 42
+    for plate, conf, colours in (
+        ("GU65UGK", 0.99, colours_a),
+        ("GU65UGM", 0.98, colours_b),
+    ):
+        for c in colours:
+            tracks.append(
+                replace(
+                    sample_track,
+                    track_id=tid,
+                    color=c,
+                    time_start_unix=sample_track.time_start_unix + tid,
+                    time_end_unix=sample_track.time_end_unix + tid,
+                )
+            )
+            alpr_tracks.append(
+                {
+                    "track_id": tid,
+                    "best_preferred": {
+                        "track_id": tid, "snap_index": 1,
+                        "image": f"vehicle_{tid}_main_1.jpg",
+                        "ocr_text": plate, "ocr_conf": conf, "det_conf": 0.9,
+                    },
+                }
+            )
+            tid += 1
+    dvsa = {
+        "labels": {
+            "GU65UGK": {
+                "make": "VOLKSWAGEN", "model": "UP", "year": 2015,
+                "primary_colour": "Red",
+            },
+            "GU65UGM": {
+                "make": "VOLKSWAGEN", "model": "GOLF", "year": 2015,
+                "primary_colour": "White",
+            },
+        }
+    }
+    return _write_session(tmp_path, tracks, {"tracks": alpr_tracks}, dvsa_labels=dvsa)
+
+
+def test_fuzzy_merge_vetoed_for_distinct_registered_vehicles(
+    tmp_path: Path, sample_track: TrackRecord
+) -> None:
+    """Both spellings resolve on DVSA with different colours AND each
+    spelling's sightings corroborate its own register -> two vehicles."""
+    session = _two_spelling_session(
+        tmp_path, sample_track, colours_a=["red", "red"], colours_b=["white", "grey"]
+    )
+
+    vehicles = build_vehicles(session)
+
+    by_plate = {v.plate: v for v in vehicles if v.plate}
+    assert set(by_plate) == {"GU65UGK", "GU65UGM"}
+    assert by_plate["GU65UGK"].model == "UP"
+    assert by_plate["GU65UGM"].model == "GOLF"
+    assert by_plate["GU65UGK"].plate_variants == []
+    assert by_plate["GU65UGM"].plate_variants == []
+
+
+def test_fuzzy_merge_kept_without_colour_corroboration(
+    tmp_path: Path, sample_track: TrackRecord
+) -> None:
+    """A misread can RESOLVE to some other real car on the register --
+    but the misread spelling's sightings are of the true car, so the
+    observed colours corroborate at most one side and the merge
+    proceeds (the LD22BWG/BMG one-car case stays one vehicle)."""
+    session = _two_spelling_session(
+        tmp_path, sample_track, colours_a=["silver"], colours_b=["silver"]
+    )
+
+    vehicles = build_vehicles(session)
+
+    plated = [v for v in vehicles if v.plate]
+    assert len(plated) == 1
+    assert plated[0].plate == "GU65UGK"  # higher-conf canonical
+    assert [p for p, _c in plated[0].plate_variants] == ["GU65UGM"]
+
+
+def test_fuzzy_veto_applies_cross_session(
+    tmp_path: Path, sample_track: TrackRecord
+) -> None:
+    """The veto holds when the two real cars appear in different
+    sessions and only meet at the cross-session pooling layer."""
+    dvsa_a = {"labels": {"GU65UGK": {
+        "make": "VOLKSWAGEN", "model": "UP", "year": 2015, "primary_colour": "Red"}}}
+    dvsa_b = {"labels": {"GU65UGM": {
+        "make": "VOLKSWAGEN", "model": "GOLF", "year": 2015, "primary_colour": "White"}}}
+    sa = _write_named_session(
+        tmp_path, "session_A",
+        [replace(sample_track, color="red")],
+        _alpr_one(42, "GU65UGK", 0.99), dvsa_labels=dvsa_a,
+    )
+    b_track = replace(
+        sample_track, track_id=43, color="white",
+        time_start="2026-05-18T09:00:00+01:00",
+        time_start_unix=sample_track.time_start_unix + 86400,
+        time_end_unix=sample_track.time_end_unix + 86400,
+    )
+    sb = _write_named_session(
+        tmp_path, "session_B", [b_track], _alpr_one(43, "GU65UGM", 0.98),
+        dvsa_labels=dvsa_b,
+    )
+
+    cross = build_cross_session([sa, sb])
+
+    plates = {c.plate for c in cross}
+    assert {"GU65UGK", "GU65UGM"} <= plates
+    by_plate = {c.plate: c for c in cross}
+    assert by_plate["GU65UGK"].plate_variants == []
+    assert by_plate["GU65UGM"].plate_variants == []
+
+
+# ----------------------------------------------------------------------
 # CNN make fill (the unread-plate majority).
 
 
