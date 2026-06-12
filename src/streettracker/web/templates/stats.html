@@ -123,10 +123,45 @@
   <div class="hbars" id="colours"></div>
 </div>
 
+{% if stats.people and stats.people.total %}
+{% set p = stats.people %}
+<h2 style="margin:34px 0 4px;font-size:18px">People</h2>
+<p class="hint" style="color:var(--muted);font-size:12.5px;margin:0 0 12px">
+  Pedestrians passing through the same view (anyone the detector classes as a
+  person — bicycle riders included).</p>
+<div class="tiles">
+  <div class="tile"><div class="big">{{ "{:,}".format(p.total) }}</div><div class="lbl">walks seen</div></div>
+  <div class="tile"><div class="big">{{ p.per_day_mean }}</div><div class="lbl">avg walks / day ({{ p.n_days }} day{{ 's' if p.n_days != 1 }})</div></div>
+  <div class="tile"><div class="big">{{ p.pct_l2r }}% / {{ p.pct_r2l }}%</div><div class="lbl">left→right / right→left</div></div>
+  {% if p.busiest_hour %}<div class="tile"><div class="big">{{ "%02d:00"|format(p.busiest_hour.hour) }}</div><div class="lbl">busiest walking hour ({{ p.busiest_hour.total }})</div></div>{% endif %}
+  <div class="tile"><div class="big">{{ p.dwell.median_s }}s</div><div class="lbl">median time in view</div></div>
+</div>
+
+<div class="row">
+  <div class="panel stat">
+    <h3>Walks by day of week</h3>
+    <div class="legend"><span><i style="background:#5b9dff"></i>left → right</span><span><i style="background:#1fb6a8"></i>right → left</span></div>
+    <div id="pdow"></div>
+  </div>
+  <div class="panel stat">
+    <h3>Time in view</h3>
+    <p class="hint">Seconds each person stayed in frame (median {{ p.dwell.median_s }}s, p90 {{ p.dwell.p90_s }}s).</p>
+    <div id="pdwell"></div>
+  </div>
+</div>
+
+<div class="panel stat">
+  <h3>When people walk</h3>
+  <p class="hint">Walks by weekday (rows) × hour of day (columns). Brighter = busier; hours with no foot traffic are hidden.</p>
+  <div class="scrollx" id="pheatmap"></div>
+</div>
+{% endif %}
+
 <p class="caveat">
   Stats cover all vehicle tracks across captured sessions (not 24/7 — the tracker
   pauses at night / in IR mode), so quiet periods may mean "not recording" rather
   than "no traffic". Each track ≈ one pass; brief ID-switches can double-count.
+  People figures share the same caveats, and a bicycle rider counts as a person.
   {% if stats.speed_unit == 'px/s' %}Speeds are pixels/second (relative, uncalibrated) — set a calibration to show mph.{% else %}Speeds in mph are approximate (single-point calibration; ignores perspective).{% endif %}
 </p>
 {% endif %}
@@ -194,8 +229,8 @@ function renderQuarter(date){
   el("quarter").innerHTML = buckets.length? html : '<p class="hint">No directional data for this day.</p>';
 }
 
-function renderHeatmap(){
-  const hm=STATS.heatmap, max=Math.max(1,...hm.flat());
+function heatmapHtml(hm, rgb){
+  const max=Math.max(1,...hm.flat());
   // Hide hour columns with zero traffic across every weekday.
   const hours=[]; for(let x=0;x<24;x++){ let s=0; for(let d=0;d<7;d++) s+=hm[d][x]; if(s>0) hours.push(x); }
   const cols=`38px repeat(${hours.length}, 1fr)`;
@@ -203,8 +238,24 @@ function renderHeatmap(){
   for(const x of hours) h+=`<div class="hm-h">${x}</div>`;
   for(let d=0;d<7;d++){ h+=`<div class="hm-d">${DOW[d]}</div>`;
     for(const x of hours){ const v=hm[d][x], a=v/max;
-      h+=`<div class="hm-c" title="${DOW[d]} ${x}:00 — ${v}" style="background:rgba(91,157,255,${(0.06+0.94*a).toFixed(3)})"></div>`; } }
-  el("heatmap").innerHTML=h+"</div>";
+      h+=`<div class="hm-c" title="${DOW[d]} ${x}:00 — ${v}" style="background:rgba(${rgb},${(0.06+0.94*a).toFixed(3)})"></div>`; } }
+  return h+"</div>";
+}
+
+function renderHeatmap(){ el("heatmap").innerHTML = heatmapHtml(STATS.heatmap, "91,157,255"); }
+
+function renderPeople(){
+  const p=STATS.people;
+  if(!p || !p.total) return;
+  el("pdow").innerHTML = barChart({labels:DOW, width:360, height:190, minBar:34,
+    series:[{name:"L→R",color:C_L2R,values:DOW.map(x=>p.dow[x].l2r)},
+            {name:"R→L",color:C_R2L,values:DOW.map(x=>p.dow[x].r2l)}]});
+  const hist=p.dwell.hist;
+  el("pdwell").innerHTML = hist.length? barChart({
+    labels:hist.map(b=> b.hi===null? `${Math.round(b.lo)}+` : String(Math.round(b.lo))),
+    width:360, height:190, minBar:24,
+    series:[{name:"seconds in view",color:C_R2L,values:hist.map(b=>b.n)}]}) : '<p class="hint">No data.</p>';
+  el("pheatmap").innerHTML = heatmapHtml(p.heatmap, "31,182,168");
 }
 
 function renderSpeed(){
@@ -308,6 +359,7 @@ function init(){
   renderDaily(); renderDow(); renderQuarter(sel.value); renderHeatmap(); renderSpeed();
   hbars("makes", STATS.makes, {prefix: makeIcon});
   hbars("colours", STATS.colours, {swatch: colHex, fill: colHex});
+  renderPeople();
 }
 init();
 </script>

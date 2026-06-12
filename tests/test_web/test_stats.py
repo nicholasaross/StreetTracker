@@ -340,3 +340,66 @@ async def test_api_stats_mph_when_calibrated(output_root: Path) -> None:
 async def test_gallery_has_stats_nav(client: TestClient) -> None:
     html = await (await client.get("/")).text()
     assert 'href="/stats"' in html
+
+
+# ----------------------------------------------------------------------
+# People (person-track aggregates).
+
+
+def test_people_block_aggregates_person_tracks(tmp_path: Path) -> None:
+    """Person tracks feed the people block (counts, direction split,
+    heatmap, dwell) and stay OUT of the vehicle journey totals."""
+    from dataclasses import replace
+
+    tracks = [
+        # 2026-05-26 is a Tuesday.
+        replace(_track(1, hhmmss="09:05:00", cls="person"), duration_visible=5.0),
+        replace(
+            _track(2, hhmmss="09:20:00", direction="right to left", cls="person"),
+            duration_visible=12.0,
+        ),
+        replace(
+            _track(3, hhmmss="18:00:00", direction="right to left", cls="person"),
+            duration_visible=70.0,
+        ),
+        _track(4, hhmmss="09:00:00", cls="car"),
+    ]
+    _mk_session(tmp_path, "session_p", tracks)
+
+    s = build_stats(tmp_path)
+
+    assert s.overall["total_journeys"] == 1  # people excluded from car totals
+    p = s.people
+    assert p["total"] == 3
+    assert p["n_days"] == 1
+    assert p["per_day_mean"] == 3.0
+    assert p["pct_l2r"] == 33
+    assert p["pct_r2l"] == 67
+    assert p["busiest_hour"] == {"hour": 9, "total": 2}
+    assert p["dow"]["Tue"] == {"l2r": 1, "r2l": 2, "total": 3}
+    assert p["heatmap"][1][9] == 2  # Tue 09:00 bucket
+    assert p["heatmap"][1][18] == 1
+    assert p["dwell"]["median_s"] == 12.0
+    assert p["dwell"]["p90_s"] == 70.0
+    hist = p["dwell"]["hist"]
+    assert hist[0]["n"] == 1          # 5s  -> [0, 10)
+    assert hist[1]["n"] == 1          # 12s -> [10, 20)
+    assert hist[-1]["lo"] == 60.0     # open-ended 60+ bucket
+    assert hist[-1]["hi"] is None
+    assert hist[-1]["n"] == 1         # 70s
+
+
+def test_people_block_empty_without_person_tracks(tmp_path: Path) -> None:
+    _mk_session(tmp_path, "session_c", [_track(1, cls="car")])
+
+    s = build_stats(tmp_path)
+
+    assert s.people["total"] == 0
+    assert s.people["dwell"]["hist"] == []
+    assert s.people["busiest_hour"] is None
+
+
+async def test_api_stats_includes_people(client: TestClient) -> None:
+    data = await (await client.get("/api/stats")).json()
+    assert "people" in data
+    assert {"total", "dow", "heatmap", "dwell"} <= data["people"].keys()
