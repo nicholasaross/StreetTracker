@@ -86,6 +86,39 @@ def load_bbox_index(
     return bbox_index, sub_size
 
 
+def load_done_bbox_index(
+    session_dir: Path,
+) -> dict[tuple[int, int], tuple[int, int, int, int]]:
+    """``(track_id, snap_index) -> completion-time bbox`` from
+    ``main_snap_bboxes_done`` (where the car was when the 4K snap
+    actually landed). Empty for sessions recorded before the field
+    existed -- callers fall back to fire-time windows."""
+    session_label = session_dir.name
+    data_path = session_dir / f"{session_label}_data.json"
+    out: dict[tuple[int, int], tuple[int, int, int, int]] = {}
+    if not data_path.exists():
+        return out
+    try:
+        records = json.loads(data_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return out
+    for r in records:
+        tid = r.get("track_id")
+        snaps = r.get("main_snaps") or []
+        bboxes = r.get("main_snap_bboxes_done")
+        if tid is None or not snaps or not bboxes or len(bboxes) != len(snaps):
+            continue
+        for n, bb in zip(snaps, bboxes, strict=False):
+            if bb is None:
+                continue
+            try:
+                x1, y1, x2, y2 = (int(v) for v in bb)
+            except (TypeError, ValueError):
+                continue
+            out[(int(tid), int(n))] = (x1, y1, x2, y2)
+    return out
+
+
 def _scale_bbox_to_image(
     image_path: Path,
     bbox: tuple[float, float, float, float],
@@ -148,6 +181,7 @@ def resolve_bbox_hint_window(
     sub_size: tuple[int, int] | None,
     *,
     lookahead: int = 3,
+    done_index: dict[tuple[int, int], tuple[int, int, int, int]] | None = None,
 ) -> tuple[int, int, int, int] | None:
     """Motion-aware crop window: the union of this snap's bbox with the
     track's next ``lookahead`` fire-time bboxes, scaled to snap pixels.
@@ -170,10 +204,26 @@ def resolve_bbox_hint_window(
     ``lookahead=0`` degrades to :func:`resolve_bbox_hint` exactly.
     Returns ``None`` under the same conditions as the single-bbox
     resolver (no bbox for this snap / unknown sub-stream size).
+
+    ``done_index`` (see :func:`load_done_bbox_index`) supplies
+    completion-time bboxes where the runtime recorded them. When one
+    exists for this snap, the window is simply
+    ``union(fire bbox, done bbox)`` -- the car's true position in the
+    saved image, no lookahead or extrapolation needed.
     """
     base = bbox_index.get((track_id, snap_index))
     if base is None or sub_size is None:
         return None
+
+    done = (done_index or {}).get((track_id, snap_index))
+    if done is not None:
+        window_exact = (
+            min(base[0], done[0]),
+            min(base[1], done[1]),
+            max(base[2], done[2]),
+            max(base[3], done[3]),
+        )
+        return _scale_bbox_to_image(image_path, window_exact, sub_size)
 
     boxes: list[tuple[float, float, float, float]] = [base]
     for k in range(1, max(0, lookahead) + 1):

@@ -64,6 +64,15 @@ class TrackRecord:
     # surfaced by the 2026-05-25 soak re-run. See
     # :func:`streettracker.device.runtime._fire_snap`.
     main_snap_bboxes: list[list[int] | None] | None = None
+    # Parallel to ``main_snaps``: the tracked bbox re-captured when the
+    # snap's HTTP task COMPLETED (the 4K image is exposed near response
+    # time, ~0.7-1.3 s after the fire decision -- Step 16 measured 96 %
+    # of R→L read failures as the car exiting its fire-time bbox in
+    # that gap). Where present this is the car's true position in the
+    # saved image; offline hint resolution prefers it over
+    # ``main_snap_bboxes``. ``None`` for sessions written before the
+    # field existed.
+    main_snap_bboxes_done: list[list[int] | None] | None = None
     # Make/model/year enrichment, filled OFF-DEVICE by a post-process
     # pass (never the live runtime). ``make_model_source`` is "dvsa"
     # when set from the DVSA MOT harvest (``streettracker dvsa-apply``)

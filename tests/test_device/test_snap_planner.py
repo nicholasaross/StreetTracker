@@ -1105,3 +1105,131 @@ def test_backward_compat_no_road_gate_uses_right_half_only() -> None:
             fires.append(d)
     assert len(fires) == 3
     assert all(d.reason == "right_half_entry" for d in fires)
+
+
+# ----------------------------------------------------------------------
+# Pipeline per-direction firing bands (pipeline_t_usable_by_direction).
+#
+# Motivation: the 2026-06-11 band re-analysis -- the two directions read
+# best at OPPOSITE ends of the road (R->L far, L->R near), so a single
+# direction-blind band wastes ~half of each direction's snap budget.
+
+
+def _band_planner(
+    by_direction: dict[str, tuple[float, float]] | None,
+    t_usable: tuple[float, float] = (0.0, 1.0),
+) -> SnapPlanner:
+    cfg = SnapPlannerConfig(
+        max_per_track=10,
+        road_gate=RoadGateConfig(
+            polygon_frac=ROAD_POLY,
+            trigger_t_prime=[0.99],
+            t_usable_frac=t_usable,
+            pipeline_interval_ms=1,  # throttle never the limiter here
+            pipeline_max_per_track=100,
+            pipeline_t_usable_by_direction=by_direction,
+        ),
+    )
+    return SnapPlanner(FW, FH, cfg)
+
+
+def _t_to_x(t: float) -> float:
+    """Invert the stripe's t_norm: pixel x for an absolute t value.
+    The stripe spans x-frac 0.10..0.90, so t-range is x 89.6..806.4."""
+    return 89.6 + t * 716.8
+
+
+def test_pipeline_forward_band_gates_fires_to_far_zone() -> None:
+    """With a forward band [0, 0.25], a +x track collects pipeline
+    fires only while t_norm is inside that band; later frames are
+    out_of_gate even though they'd sit inside the base band."""
+    p = _band_planner({"forward": (0.0, 0.25)})
+    fired_ts: list[float] = []
+    reasons: list[str] = []
+    for f, t in enumerate([0.05, 0.10, 0.15, 0.20, 0.30, 0.45, 0.70]):
+        d = p.consider_pipeline(
+            track_id=300,
+            bbox=_bbox_at(_t_to_x(t), FH * 0.5),
+            frame_idx=f,
+            wall_ms=1000.0 * (f + 1),
+        )
+        reasons.append(d.reason)
+        if d.should_fire:
+            fired_ts.append(t)
+    # Frame 0 fires under the base band (direction unknown yet); every
+    # in-band forward frame after it fires too; nothing past t=0.25.
+    assert fired_ts == [0.05, 0.10, 0.15, 0.20]
+    assert reasons[-3:] == ["out_of_gate"] * 3
+
+
+def test_pipeline_reverse_band_extends_beyond_base_band() -> None:
+    """A reverse band may sit OUTSIDE the base usable band: a -x track
+    entering the near zone fires there once its direction is known,
+    while a +x (forward) track at the same positions gets nothing."""
+    p = _band_planner({"reverse": (0.5, 0.9)}, t_usable=(0.0, 0.5))
+    ts_rev = [0.95, 0.85, 0.75, 0.65, 0.55, 0.45]
+    fires_rev: list[float] = []
+    reasons_rev: list[str] = []
+    for f, t in enumerate(ts_rev):
+        d = p.consider_pipeline(
+            track_id=301,
+            bbox=_bbox_at(_t_to_x(t), FH * 0.5),
+            frame_idx=f,
+            wall_ms=1000.0 * (f + 1),
+        )
+        reasons_rev.append(d.reason)
+        if d.should_fire:
+            fires_rev.append(t)
+    # Frame 0: direction unknown, t=0.95 outside the base band -> no
+    # fire, but the sample seeds direction detection for frame 1.
+    assert reasons_rev[0] == "out_of_gate"
+    assert fires_rev == [0.85, 0.75, 0.65, 0.55]
+    # t=0.45 is inside the BASE band, but the reverse override replaces
+    # the base band entirely for reverse-moving tracks.
+    assert reasons_rev[-1] == "out_of_gate"
+
+    # Forward track at the same far-side positions: no forward override
+    # configured, so the base band (0, 0.5) gates everything away.
+    fires_fwd = 0
+    for f, t in enumerate([0.55, 0.65, 0.75, 0.85]):
+        d = p.consider_pipeline(
+            track_id=302,
+            bbox=_bbox_at(_t_to_x(t), FH * 0.5),
+            frame_idx=f,
+            wall_ms=1000.0 * (f + 1),
+        )
+        fires_fwd += int(d.should_fire)
+    assert fires_fwd == 0
+
+
+def test_pipeline_band_validation_errors() -> None:
+    bad_key = RoadGateConfig(
+        polygon_frac=ROAD_POLY,
+        trigger_t_prime=[0.5],
+        pipeline_t_usable_by_direction={"sideways": (0.1, 0.2)},
+    )
+    with pytest.raises(ValueError, match="sideways"):
+        RoadGate.from_config(bad_key, FW, FH)
+
+    bad_range = RoadGateConfig(
+        polygon_frac=ROAD_POLY,
+        trigger_t_prime=[0.5],
+        pipeline_t_usable_by_direction={"forward": (0.6, 0.4)},
+    )
+    with pytest.raises(ValueError, match="lo < hi"):
+        RoadGate.from_config(bad_range, FW, FH)
+
+
+def test_pipeline_base_band_unchanged_without_overrides() -> None:
+    """No per-direction config: out-of-band frames are out_of_gate and
+    base-band re-entry fires again -- the pre-feature shape."""
+    p = _band_planner(None, t_usable=(0.2, 0.6))
+    seq = [(0.1, False), (0.3, True), (0.5, True), (0.7, False), (0.5, True)]
+    for f, (t, expect) in enumerate(seq):
+        d = p.consider_pipeline(
+            track_id=303,
+            bbox=_bbox_at(_t_to_x(t), FH * 0.5),
+            frame_idx=f,
+            wall_ms=1000.0 * (f + 1),
+        )
+        assert d.should_fire is expect, f"t={t}: {d.reason}"

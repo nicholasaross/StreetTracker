@@ -943,6 +943,106 @@ async def test_blur_skip_log_throttled_per_track(
     assert ctx.blur_skip_count == 10
 
 
+# ----------------------------------------------------------------------
+# Completion-time bbox capture (Step 16 follow-through).
+
+
+def test_fire_snap_records_completion_time_bbox(tmp_path: Path) -> None:
+    """The snap ``_on_done`` callback must re-capture the track's
+    CURRENT bbox when the HTTP snap lands. The 4K image is exposed
+    ~0.7-1.3s after the fire decision (Step 16: 96 % of R->L read
+    failures were the car exiting its fire-time bbox in that gap), so
+    the completion-time bbox is where the car actually is in the saved
+    file. The fire-time bbox stays untouched alongside it."""
+
+    class _StubTask:
+        def __init__(self) -> None:
+            self._callbacks: list[Any] = []
+
+        def add_done_callback(self, cb: Any) -> None:
+            self._callbacks.append(cb)
+
+        def result(self) -> bool:
+            return True
+
+        def fire_done(self) -> None:
+            for cb in self._callbacks:
+                cb(self)
+
+    class _StubSnapshotter:
+        def __init__(self) -> None:
+            self.task = _StubTask()
+
+        def submit(self, _path: Path) -> _StubTask:
+            return self.task
+
+    ctx = _build_ctx(tmp_path)
+    snapper = _StubSnapshotter()
+    ctx.snapshotter = cast("Any", snapper)
+    tr = _moving_track_with_id(13, class_id=2)
+
+    _fire_snap(ctx, tr, snap_index=2)
+    assert tr.snap_fire_bboxes[2] == (450, 150, 550, 250)
+    assert tr.snap_done_bboxes == {}  # nothing recorded until the snap lands
+
+    # The car keeps moving while the HTTP snap is in flight.
+    tr.points.append(
+        MotionPoint(
+            frame_idx=3,
+            t=3.0,
+            cx=700.0,
+            cy=200.0,
+            x1=650,
+            y1=150,
+            x2=750,
+            y2=250,
+            score=0.9,
+        )
+    )
+    snapper.task.fire_done()
+
+    assert tr.snap_done_bboxes[2] == (650, 150, 750, 250)
+    assert tr.snap_fire_bboxes[2] == (450, 150, 550, 250)  # untouched
+    assert 2 in tr.snap_saved_indexes
+
+
+def test_fire_snap_failed_task_records_no_done_bbox(tmp_path: Path) -> None:
+    """A snap whose HTTP task failed must not record a completion bbox
+    (and the saved-index set stays empty -- nothing landed on disk)."""
+
+    class _StubTask:
+        def __init__(self) -> None:
+            self._callbacks: list[Any] = []
+
+        def add_done_callback(self, cb: Any) -> None:
+            self._callbacks.append(cb)
+
+        def result(self) -> bool:
+            return False
+
+        def fire_done(self) -> None:
+            for cb in self._callbacks:
+                cb(self)
+
+    class _StubSnapshotter:
+        def __init__(self) -> None:
+            self.task = _StubTask()
+
+        def submit(self, _path: Path) -> _StubTask:
+            return self.task
+
+    ctx = _build_ctx(tmp_path)
+    snapper = _StubSnapshotter()
+    ctx.snapshotter = cast("Any", snapper)
+    tr = _moving_track_with_id(14, class_id=2)
+
+    _fire_snap(ctx, tr, snap_index=1)
+    snapper.task.fire_done()
+
+    assert tr.snap_done_bboxes == {}
+    assert tr.snap_saved_indexes == set()
+
+
 def test_build_session_meta_includes_snap_stats_when_snapshotter_present(
     tmp_path: Path,
 ) -> None:

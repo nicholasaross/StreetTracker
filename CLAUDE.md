@@ -702,9 +702,26 @@ block contains all of:
   "pipeline_interval_ms_by_direction": {
     "forward": 300,
     "reverse": 400
+  },
+  "pipeline_t_usable_by_direction": {
+    "forward": [0.10, 0.20],
+    "reverse": [0.25, 0.60]
   }
 }
 ```
+
+`pipeline_t_usable_by_direction` (optional, schema-additive) gates
+PIPELINE fires per motion direction in **absolute t_norm coords** (same
+space as `t_usable_frac`; trigger t' values are unaffected). Directions
+absent from the dict — and frames whose motion direction isn't known
+yet — fall back to `t_usable_frac`. The values above are the 2026-06-11
+band re-analysis prescription: R→L front plates read 56-76 % only when
+fired far (t 0.10-0.20, collapsing past 0.20 in every pool), while L→R
+rear plates run 74-95 % fired mid-to-near (0.25-0.60; the old
+"near-camera collapse" was a stale-hint artifact, and the FD61PVX-zone
+aliasing that motivated trimming the band at 0.45 is now covered by
+ghost mask + bbox hints + beacon suppression). Once deployed, preserve
+this field like the other `pipeline_*` fields when splicing configs.
 
 The local artifact `.claude/snap_gate.json` historically only carried
 `polygon_frac` / `trigger_t_prime` / `trigger_directions` / `t_usable_frac`.
