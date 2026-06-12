@@ -338,6 +338,13 @@ def _maybe_lazy_init_planner(ctx: SessionContext) -> None:
                 if s.pipeline_interval_ms_by_direction is not None
                 else None
             ),
+            # The strict loader passes dict values through untyped (JSON
+            # lists); RoadGate.from_config validates keys + ranges.
+            pipeline_t_usable_by_direction=(
+                {k: (v[0], v[1]) for k, v in s.pipeline_t_usable_by_direction.items()}
+                if s.pipeline_t_usable_by_direction is not None
+                else None
+            ),
         )
     ctx.planner = SnapPlanner(
         frame_width=ctx.frame_w,
@@ -458,6 +465,22 @@ def _fire_snap(ctx: SessionContext, track: BufferedTrack, snap_index: int) -> No
             if not t.result():
                 return
             track.snap_saved_indexes.add(snap_index)
+            # Re-capture the track's bbox at snap COMPLETION. The 4K
+            # HTTP snap lands ~0.7-1.3s after the fire decision (p50
+            # 710 ms) and the image is exposed near response time, so
+            # the completion-time bbox is where the car actually IS in
+            # the saved image -- the Step 16 triage showed 96 % of R→L
+            # read failures were the car exiting its fire-time bbox in
+            # that gap. Offline hint resolution prefers this when
+            # present. If the track expired before the snap landed,
+            # ``last_bbox`` is its final observed position -- still
+            # closer to the truth than the fire-time box.
+            done_bbox = track.last_bbox
+            if done_bbox is not None:
+                track.snap_done_bboxes[snap_index] = (
+                    int(done_bbox[0]), int(done_bbox[1]),
+                    int(done_bbox[2]), int(done_bbox[3]),
+                )
             # If finalize has already locked a different prefix (the
             # snap landed after the track expired), rename now. The
             # synchronous sweep in finalize_track skipped this index

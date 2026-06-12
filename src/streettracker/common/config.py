@@ -196,6 +196,18 @@ class SnapGateSpec:
     # where motion direction is unknown. See ``RoadGateConfig`` in
     # ``device.snap_planner`` for the runtime equivalent.
     pipeline_interval_ms_by_direction: dict[str, int] | None = None
+    # Optional per-direction PIPELINE firing band, in ABSOLUTE t_norm
+    # coords over the full polygon t-range (the same coordinate system
+    # as ``t_usable_frac``; 0 = distant edge, 1 = near edge). Keys
+    # ``"forward"`` (R→L on this install) / ``"reverse"`` (L→R);
+    # values ``[lo, hi]`` with ``0 <= lo < hi <= 1``. Directions absent
+    # from the dict -- and frames where motion direction is not yet
+    # known -- fall back to ``t_usable_frac``. Trigger crossings are
+    # unaffected. Range/key validation happens at planner construction
+    # (``RoadGate.from_config``), failing fast at startup. See the
+    # 2026-06-11 band re-analysis: the two directions read best at
+    # opposite ends of the road.
+    pipeline_t_usable_by_direction: dict[str, tuple[float, float]] | None = None
 
 
 @dataclass(frozen=True, slots=True)

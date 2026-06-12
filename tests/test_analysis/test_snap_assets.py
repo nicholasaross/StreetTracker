@@ -15,6 +15,7 @@ from PIL import Image
 from streettracker.analysis.snap_assets import (
     discover_vehicle_snaps,
     load_bbox_index,
+    load_done_bbox_index,
     resolve_bbox_hint,
     resolve_bbox_hint_window,
 )
@@ -158,6 +159,67 @@ def test_window_none_without_base_bbox_or_size(tmp_path: Path) -> None:
 
     assert resolve_bbox_hint_window(img, 7, 9, idx, sub, lookahead=3) is None
     assert resolve_bbox_hint_window(img, 7, 1, idx, None, lookahead=3) is None
+
+
+def test_window_prefers_completion_bbox_when_present(tmp_path: Path) -> None:
+    """A completion-time bbox replaces lookahead/extrapolation entirely:
+    the window is exactly union(fire bbox, done bbox) -- the car's true
+    position in the saved image, no guessing."""
+    bboxes = [[200 - 40 * i, 100, 280 - 40 * i, 140] for i in range(5)]
+    sess, idx, sub = _window_session(tmp_path, bboxes)
+    done = {(7, 2): (40, 110, 120, 150)}
+
+    hint = resolve_bbox_hint_window(
+        sess / "vehicle_7_main_2.jpg", 7, 2, idx, sub, lookahead=3, done_index=done
+    )
+
+    # snap 2 fire bbox = (160, 100, 240, 140); union with the done bbox
+    # -- NOT the lookahead union (which would reach x=40..240 anyway but
+    # y stays 100..140; the done bbox extends y to 150).
+    assert hint == (40, 100, 240, 150)
+
+
+def test_window_ignores_done_index_without_entry(tmp_path: Path) -> None:
+    """No completion bbox for this snap -> normal lookahead union."""
+    bboxes = [[200 - 40 * i, 100, 280 - 40 * i, 140] for i in range(5)]
+    sess, idx, sub = _window_session(tmp_path, bboxes)
+
+    hint = resolve_bbox_hint_window(
+        sess / "vehicle_7_main_2.jpg", 7, 2, idx, sub, lookahead=3,
+        done_index={(7, 99): (0, 0, 10, 10)},
+    )
+
+    assert hint == (40, 100, 240, 140)  # same as the no-done-index case
+
+
+def test_load_done_bbox_index_reads_parallel_field(tmp_path: Path) -> None:
+    sess = tmp_path / "session_d"
+    sess.mkdir()
+    sess.joinpath("session_d_data.json").write_text(
+        json.dumps(
+            [
+                {
+                    "track_id": 9,
+                    "main_snaps": [1, 2],
+                    "main_snap_bboxes": [[10, 10, 30, 30], [50, 10, 70, 30]],
+                    "main_snap_bboxes_done": [[12, 11, 32, 31], None],
+                }
+            ]
+        )
+    )
+
+    done = load_done_bbox_index(sess)
+
+    assert done == {(9, 1): (12, 11, 32, 31)}
+
+
+def test_load_done_bbox_index_empty_for_older_sessions(tmp_path: Path) -> None:
+    """Sessions written before the field existed yield an empty map --
+    callers fall back to fire-time windows."""
+    sess, idx, sub = _window_session(
+        tmp_path, [[200, 100, 280, 140], [160, 100, 240, 140]]
+    )
+    assert load_done_bbox_index(sess) == {}
 
 
 def test_window_scales_to_snap_pixels(tmp_path: Path) -> None:

@@ -573,3 +573,28 @@ def test_crop_sample_dataclass_holds_expected_fields() -> None:
     assert s.score == 0.9
     assert s.crop.shape == (10, 10, 3)
     assert s.on_edge is False
+
+
+def test_compute_attributes_done_bboxes_parallel_to_main_snaps() -> None:
+    """Completion-time bboxes ride a second list parallel to
+    ``main_snaps``; indexes whose ``_on_done`` never recorded a bbox
+    stay ``None`` so downstream can tell exact hints from windows."""
+    tr = _track_with_motion([(0.0, 100, 100), (1.0, 300, 100)])
+    tr.snap_fire_bboxes[1] = (50, 80, 150, 180)
+    tr.snap_done_bboxes[1] = (90, 80, 190, 180)
+    tr.snap_fire_bboxes[3] = (250, 80, 350, 180)
+    # snap 3 fired but its completion callback never recorded a bbox.
+
+    result = compute_attributes(
+        tr,
+        frame_h=_FRAME_H,
+        min_duration_s=0.5,
+        parked_disp_px=10.0,
+        color="red",
+        t_start_wall=_T0_WALL,
+        main_snaps=[1, 3],
+    )
+
+    assert result is not None
+    assert result.main_snap_bboxes == [[50, 80, 150, 180], [250, 80, 350, 180]]
+    assert result.main_snap_bboxes_done == [[90, 80, 190, 180], None]

@@ -32,6 +32,9 @@ from streettracker.analysis.snap_assets import (
     load_bbox_index as _load_bbox_index,
 )
 from streettracker.analysis.snap_assets import (
+    load_done_bbox_index as _load_done_bbox_index,
+)
+from streettracker.analysis.snap_assets import (
     resolve_bbox_hint as _resolve_bbox_hint,
 )
 from streettracker.analysis.snap_assets import (
@@ -185,6 +188,12 @@ def main(argv: list[str] | None = None) -> int:
     # others -> full image). Sub-stream frame size from SessionMeta
     # lets us scale into the 4K snap's coord system at load time.
     bbox_index, sub_size = _load_bbox_index(session_dir)
+    done_index = _load_done_bbox_index(session_dir)
+    if done_index:
+        print(
+            f"[alpr] {len(done_index)} completion-time bboxes available "
+            f"(exact car positions; window fallback for the rest)"
+        )
     if bbox_index:
         print(
             f"[alpr] loaded {len(bbox_index)} per-snap bboxes "
@@ -213,6 +222,7 @@ def main(argv: list[str] | None = None) -> int:
                 hint = _resolve_bbox_hint_window(
                     image_path, tid, snap_index, bbox_index, sub_size,
                     lookahead=args.hint_lookahead,
+                    done_index=done_index,
                 )
             else:
                 hint = _resolve_bbox_hint(image_path, tid, snap_index, bbox_index, sub_size)

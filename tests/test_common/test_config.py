@@ -529,3 +529,35 @@ def _full_minimal() -> dict:
 # Local alias so a single ``import dataclasses`` doesn't pollute the
 # top-level namespace just for one rare assertion.
 from dataclasses import FrozenInstanceError as dataclasses_FrozenInstanceError  # noqa: E402
+
+
+def test_snap_gate_accepts_pipeline_t_usable_by_direction() -> None:
+    """Schema-additive: the per-direction pipeline band key loads. The
+    strict loader passes dict values through raw (lists stay lists);
+    range/key validation happens at planner construction."""
+    data = _full_minimal()
+    data["snapshot"]["snap_gate"] = {
+        "polygon_frac": [[0.1, 0.4], [0.9, 0.4], [0.9, 0.6], [0.1, 0.6]],
+        "trigger_t_prime": [0.5],
+        "pipeline_t_usable_by_direction": {
+            "forward": [0.10, 0.20],
+            "reverse": [0.25, 0.60],
+        },
+    }
+    cfg = StreetTrackerConfig.from_dict(data)
+    spec = cfg.snapshot.snap_gate
+    assert spec is not None
+    assert spec.pipeline_t_usable_by_direction == {
+        "forward": [0.10, 0.20],
+        "reverse": [0.25, 0.60],
+    }
+
+
+def test_snap_gate_per_direction_band_defaults_to_none() -> None:
+    """Configs written before the field existed keep loading (the live
+    camera.json must parse unchanged on the deploy's restart-old-config
+    step)."""
+    cfg = StreetTrackerConfig.from_json_file(EXAMPLE_PATH)
+    spec = cfg.snapshot.snap_gate
+    assert spec is not None
+    assert spec.pipeline_t_usable_by_direction is None

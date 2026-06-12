@@ -157,6 +157,24 @@ class RoadGateConfig:
     # on this camera) burn snaps faster within its narrow
     # clean-readable window without affecting the saturated direction.
     pipeline_interval_ms_by_direction: dict[str, int] | None = None
+    # Optional per-direction PIPELINE firing band, in ABSOLUTE t_norm
+    # coords over the full polygon t-range (same coordinate system as
+    # ``t_usable_frac``; 0 = distant edge, 1 = near edge) -- NOT in the
+    # usable-band t' coords triggers use. Keys ``"forward"`` /
+    # ``"reverse"``; values ``(lo, hi)``. When a track's motion
+    # direction is known (two consecutive in-polygon samples), its
+    # pipeline fires are gated to that direction's band; unknown
+    # direction and directions absent from the dict fall back to
+    # ``t_usable_frac``. Trigger crossings are unaffected (their t'
+    # values stay in base-band coords).
+    #
+    # Motivation (2026-06-11 band re-analysis, post-Step-16): the two
+    # directions read best at OPPOSITE ends of the road -- R→L front
+    # plates at t_norm 0.10-0.20 (56-76 % canonical, collapsing past
+    # 0.20), L→R rear plates monotonically better toward the camera
+    # (74-95 % at 0.40-0.70). A direction-blind band wastes ~43 % of
+    # R→L fires and ~63 % of L→R fires in each other's dead zones.
+    pipeline_t_usable_by_direction: dict[str, tuple[float, float]] | None = None
 
 
 @dataclass(slots=True)
@@ -415,6 +433,10 @@ class RoadGate:
     t_usable_hi: float
     triggers_t_prime: tuple[float, ...]
     trigger_directions: tuple[TriggerDirection, ...]
+    # Per-direction pipeline firing bands in absolute t_norm coords;
+    # ``None`` per direction = fall back to (t_usable_lo, t_usable_hi).
+    pipeline_band_forward: tuple[float, float] | None = None
+    pipeline_band_reverse: tuple[float, float] | None = None
 
     @classmethod
     def from_config(cls, cfg: RoadGateConfig, frame_w: int, frame_h: int) -> RoadGate:
@@ -481,6 +503,31 @@ class RoadGate:
             raise ValueError(
                 f"t_usable_frac must satisfy 0 <= lo < hi <= 1, got {cfg.t_usable_frac}"
             )
+        band_fwd: tuple[float, float] | None = None
+        band_rev: tuple[float, float] | None = None
+        if cfg.pipeline_t_usable_by_direction:
+            for key, val in cfg.pipeline_t_usable_by_direction.items():
+                if key not in ("forward", "reverse"):
+                    raise ValueError(
+                        f"pipeline_t_usable_by_direction key must be 'forward' or "
+                        f"'reverse', got {key!r}"
+                    )
+                try:
+                    lo, hi = float(val[0]), float(val[1])
+                except (TypeError, ValueError, IndexError) as exc:
+                    raise ValueError(
+                        f"pipeline_t_usable_by_direction[{key!r}] must be a "
+                        f"[lo, hi] pair, got {val!r}"
+                    ) from exc
+                if not 0.0 <= lo < hi <= 1.0:
+                    raise ValueError(
+                        f"pipeline_t_usable_by_direction[{key!r}] must satisfy "
+                        f"0 <= lo < hi <= 1, got {val!r}"
+                    )
+                if key == "forward":
+                    band_fwd = (lo, hi)
+                else:
+                    band_rev = (lo, hi)
         return cls(
             polygon_px=poly_px,
             axis_x=ex,
@@ -493,10 +540,33 @@ class RoadGate:
             t_usable_hi=t_usable_hi,
             triggers_t_prime=tuple(cfg.trigger_t_prime),
             trigger_directions=directions,
+            pipeline_band_forward=band_fwd,
+            pipeline_band_reverse=band_rev,
         )
 
     def contains(self, px: float, py: float) -> bool:
         return _point_in_polygon(px, py, self.polygon_px)
+
+    def t_norm(self, px: float, py: float) -> float | None:
+        """Raw normalised position over the FULL polygon t-range
+        (0 = distant edge, 1 = near edge), ignoring the usable band.
+        ``None`` only when the polygon has no axis extent."""
+        span = self.t_max_raw - self.t_min_raw
+        if span <= 0:
+            return None
+        t_raw = (px - self.centroid_x) * self.axis_x + (py - self.centroid_y) * self.axis_y
+        return (t_raw - self.t_min_raw) / span
+
+    def pipeline_band(self, direction: str | None) -> tuple[float, float]:
+        """Effective pipeline firing band (absolute t_norm) for a track
+        moving in ``direction`` (``"forward"``/``"reverse"``/``None``).
+        Unknown direction or no per-direction override -> the base
+        usable band."""
+        if direction == "forward" and self.pipeline_band_forward is not None:
+            return self.pipeline_band_forward
+        if direction == "reverse" and self.pipeline_band_reverse is not None:
+            return self.pipeline_band_reverse
+        return (self.t_usable_lo, self.t_usable_hi)
 
     def t_prime(self, px: float, py: float) -> float | None:
         """Map an image-space point to a normalised ``t'`` value in
@@ -854,22 +924,48 @@ class SnapPlanner:
             self._close_in_band_span(st, wall_ms)
             st.prev_pipeline_tp = None
             return SnapDecision(False, "outside_road_polygon", 0.0)
-        cur_tp = gate.t_prime(cx, cy)
-        if cur_tp is None:
+        cur_tn = gate.t_norm(cx, cy)
+        if cur_tn is None:
             self._close_in_band_span(st, wall_ms)
             st.prev_pipeline_tp = None
+            return SnapDecision(False, "out_of_gate", 0.0)
+
+        # Motion direction from consecutive in-polygon samples. t_norm
+        # shares its sign convention with the trigger path's t' (both
+        # are affine in the axis projection), so "forward"/"reverse"
+        # mean the same thing here as on the triggers. The previous
+        # sample is kept across out-of-band frames (only a polygon exit
+        # resets it) so a car entering a per-direction band that lies
+        # OUTSIDE the base band arrives with its direction already
+        # known.
+        prev_tn = st.prev_pipeline_tp
+        st.prev_pipeline_tp = cur_tn
+        direction: str | None = None
+        if prev_tn is not None:
+            delta = cur_tn - prev_tn
+            if delta > 1e-9:
+                direction = "forward"
+            elif delta < -1e-9:
+                direction = "reverse"
+
+        # Per-direction pipeline band (absolute t_norm). Unknown
+        # direction or no override -> the base usable band, which keeps
+        # the pre-feature behaviour byte-identical for configs without
+        # ``pipeline_t_usable_by_direction``.
+        band_lo, band_hi = gate.pipeline_band(direction)
+        if not band_lo <= cur_tn <= band_hi:
+            self._close_in_band_span(st, wall_ms)
             return SnapDecision(False, "out_of_gate", 0.0)
 
         if st.in_band_since_wall_ms is None:
             st.in_band_since_wall_ms = wall_ms
 
         # Direction-aware throttle: pick the per-direction interval if
-        # configured and we have two consecutive in-band samples to
-        # compute motion sign from. First frame in band, or any frame
-        # without a registered per-direction override, falls back to
-        # the base ``pipeline_interval_ms``.
-        interval = _pick_pipeline_interval(gate_cfg, st.prev_pipeline_tp, cur_tp)
-        st.prev_pipeline_tp = cur_tp
+        # configured and we have two consecutive samples to compute
+        # motion sign from. First frame, or any frame without a
+        # registered per-direction override, falls back to the base
+        # ``pipeline_interval_ms``.
+        interval = _pick_pipeline_interval(gate_cfg, prev_tn, cur_tn)
 
         if (
             st.last_pipeline_submit_wall_ms > 0.0

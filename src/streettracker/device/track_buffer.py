@@ -137,6 +137,14 @@ class BufferedTrack:
     snap_fire_bboxes: dict[int, tuple[int, int, int, int]] = field(
         default_factory=dict
     )
+    # Per-snap-index bbox re-captured when the snap's HTTP task
+    # COMPLETED (the image is exposed near response time, ~0.7-1.3 s
+    # after fire -- see Step 16). Persisted into
+    # :attr:`TrackRecord.main_snap_bboxes_done`; offline hint
+    # resolution prefers it over the fire-time bbox when present.
+    snap_done_bboxes: dict[int, tuple[int, int, int, int]] = field(
+        default_factory=dict
+    )
     # Set in ``finalize_track`` to lock the prefix used for the
     # TrackRecord. ``None`` while the track is still active.
     final_prefix: str | None = None
@@ -461,6 +469,14 @@ def compute_attributes(
         # diff minimal for tracks that don't have any 4K assets.
         main_snap_bboxes=(
             [list(track.snap_fire_bboxes[n]) if n in track.snap_fire_bboxes else None
+             for n in sorted(main_snaps)]
+            if main_snaps else None
+        ),
+        # Parallel list of completion-time bboxes (where the car was
+        # when the 4K snap actually landed). ``None`` per element for
+        # fires whose completion callback never recorded a bbox.
+        main_snap_bboxes_done=(
+            [list(track.snap_done_bboxes[n]) if n in track.snap_done_bboxes else None
              for n in sorted(main_snaps)]
             if main_snaps else None
         ),
