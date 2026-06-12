@@ -497,6 +497,18 @@ prefixes** in this scene (an `LX7751` cluster absorbed 8 distinct
 Newcastle-area plates whose 4th-6th chars happened to be close). Use
 `--no-fuzzy` for strict-string equality.
 
+A **DVSA-distinct veto** (2026-06-11) guards the opposite failure: two
+REAL cars one character apart (`GU65UGK`, a red VW UP, was absorbed by
+`GU65UGM`, a white VW GOLF — 16 such pairs corpus-wide). A merge is
+vetoed when both spellings have DVSA rows with different
+`primary_colour` groups AND each spelling's own observed colours have
+differing majorities with at least one side matching its register
+(`make_distinct_vehicle_checker` in `vehicles.py`; applies within-
+session, cross-session, and in the showcase pool). One-car OCR-variant
+merges are protected by the observed-colour check — both spellings of
+one car see the same colours, even when the misread string resolves to
+some other real vehicle on the register.
+
 The aggregator **does not reject temporally-overlapping merges** — a
 real example on `session_20260526_124704` (tracks 1516 `LD22BMG` R→L
 and 1517 `LD22BWG` L→R, visits overlapping by 8s) showed both 4K snaps

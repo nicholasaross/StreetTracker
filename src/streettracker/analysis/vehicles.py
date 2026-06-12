@@ -58,6 +58,7 @@ import argparse
 import json
 import sys
 from collections import Counter
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -198,10 +199,92 @@ class CrossVehicle:
         return asdict(self)
 
 
+# Colour vocabulary -> coarse group, shared by the observed-colour votes
+# (common.color.vote_color values) and DVSA ``primary_colour`` strings.
+# Groups are deliberately broad: white/silver/grey are near-impossible to
+# tell apart at this camera's distance, so they corroborate each other.
+_COLOUR_GROUPS = {
+    "white": "light", "silver": "light", "grey": "light", "gray": "light",
+    "beige": "light", "cream": "light",
+    "black": "black",
+    "red": "red", "orange": "red", "maroon": "red", "burgundy": "red", "pink": "red",
+    "blue": "blue", "navy": "blue", "turquoise": "blue",
+    "green": "green",
+    "yellow": "yellow", "gold": "yellow",
+    "brown": "brown", "bronze": "brown",
+    "purple": "purple", "violet": "purple",
+}
+
+
+def _colour_group(colour: Any) -> str | None:
+    return _COLOUR_GROUPS.get(str(colour or "").strip().lower())
+
+
+def _majority_colour_group(colours: Counter) -> str | None:
+    """Coarse group of the most-seen groupable colour, or ``None`` when
+    every observation is unknown/ungroupable."""
+    known: Counter = Counter()
+    for c, n in colours.items():
+        g = _colour_group(c)
+        if g:
+            known[g] += n
+    if not known:
+        return None
+    return known.most_common(1)[0][0]
+
+
+def make_distinct_vehicle_checker(
+    dvsa_rows: Mapping[str, Mapping[str, Any]],
+    colours_by_plate: Mapping[str, Counter],
+) -> Callable[[str, str], bool]:
+    """Build the fuzzy-merge veto: are two spellings provably DIFFERENT
+    registered vehicles?
+
+    A 1-char-apart pair is *usually* one physical car plus an OCR
+    misread -- but sometimes both plates are real (GU65UGK, a red VW UP,
+    was swallowed by GU65UGM, a white VW GOLF; ratio 85.7). Two spellings
+    are vetoed from merging only when ALL hold:
+
+    1. both have DVSA rows;
+    2. their registered ``primary_colour`` falls in DIFFERENT coarse
+       groups (same-colour twins are indistinguishable from a misread,
+       so we stay merged -- conservative);
+    3. each spelling's sightings have a known majority colour group and
+       those groups DIFFER from each other. This is the one-car
+       protection: a misread's sightings are of the true car, so both
+       spellings observe the same colour and the merge proceeds (the
+       LD22BWG/BMG silver hatchback stays one vehicle) -- even when the
+       misread string happens to resolve to some other real car on the
+       register (LX11PXR does);
+    4. at least one side's observed group matches its own register.
+       Deliberately not BOTH: cameras drift dark colours (the red UP
+       that motivated this reads black-majority in some sessions);
+       requiring both sides to match let exactly those sessions
+       false-merge two real cars.
+    """
+
+    def distinct(a: str, b: str) -> bool:
+        ra, rb = dvsa_rows.get(a), dvsa_rows.get(b)
+        if not ra or not rb:
+            return False
+        ga = _colour_group(ra.get("primary_colour"))
+        gb = _colour_group(rb.get("primary_colour"))
+        if not ga or not gb or ga == gb:
+            return False
+        oa = _majority_colour_group(colours_by_plate.get(a, Counter()))
+        ob = _majority_colour_group(colours_by_plate.get(b, Counter()))
+        if not oa or not ob or oa == ob:
+            return False
+        return oa == ga or ob == gb
+
+    return distinct
+
+
 def _cluster_plates_by_similarity(
     plates_with_conf: list[tuple[str, float]],
     *,
     ratio: int,
+    is_distinct: Callable[[str, str], bool] | None = None,
 ) -> dict[str, str]:
     """Cluster plate strings by Levenshtein similarity.
 
@@ -209,6 +292,11 @@ def _cluster_plates_by_similarity(
     their max OCR confidence (across all tracks the plate appears in).
     ``ratio`` is the rapidfuzz similarity floor (0-100); pairs at or
     above this AND of equal length are merged.
+
+    ``is_distinct`` is an optional veto: when it returns ``True`` for a
+    (seed, plate) pair, the pair is NOT merged even at/above the ratio
+    (see :func:`make_distinct_vehicle_checker` -- two near spellings
+    that are provably different registered vehicles).
 
     Returns a map ``{plate -> canonical_plate}``. The canonical for a
     cluster is the highest-conf plate in it; tie-broken by the
@@ -238,6 +326,8 @@ def _cluster_plates_by_similarity(
             if len(seed) != len(plate):
                 continue
             if fuzz.ratio(seed, plate) >= ratio:
+                if is_distinct is not None and is_distinct(seed, plate):
+                    continue
                 matched_seed = seed
                 break
         if matched_seed is None:
@@ -520,8 +610,16 @@ def build_vehicles(
     # driving R→L, one second apart. Rejecting that merge produced
     # a false negative more often than the temporal-overlap heuristic
     # caught a true positive, so the rejection is gone.
+    dvsa_labels_file = (
+        dvsa_labels_path
+        if dvsa_labels_path is not None
+        else session_dir / f"{session}_dvsa_labels.json"
+    )
+    dvsa_rows = _load_dvsa_labels(dvsa_labels_file)
+
     if fuzzy_ratio is not None:
         plated_plates: list[tuple[str, float]] = []
+        colours_by_plate: dict[str, Counter] = {}
         for plate, items in strict_groups.items():
             if plate is None:
                 continue
@@ -529,8 +627,13 @@ def build_vehicles(
                 (b.get("ocr_conf") or 0.0) for _r, b in items if b
             )
             plated_plates.append((plate, max_conf))
+            colours_by_plate[plate] = Counter(
+                (rec.get("color") or "unknown") for rec, _b in items
+            )
         canonical = _cluster_plates_by_similarity(
-            plated_plates, ratio=fuzzy_ratio
+            plated_plates,
+            ratio=fuzzy_ratio,
+            is_distinct=make_distinct_vehicle_checker(dvsa_rows, colours_by_plate),
         )
     else:
         canonical = {p: p for p in strict_groups if p is not None}
@@ -574,12 +677,7 @@ def build_vehicles(
     # DVSA-first make/model: join the plate-keyed MOT label harvest
     # (``streettracker dvsa-label``) onto the plated vehicles. Absent
     # file -> make/model/year stay None.
-    labels_path = (
-        dvsa_labels_path
-        if dvsa_labels_path is not None
-        else session_dir / f"{session}_dvsa_labels.json"
-    )
-    _attach_dvsa_labels(out, _load_dvsa_labels(labels_path))
+    _attach_dvsa_labels(out, dvsa_rows)
 
     if cnn_make:
         _attach_cnn_makes(
@@ -677,8 +775,22 @@ def build_cross_session(
             )
 
     if fuzzy_ratio is not None:
+        # Cross-session veto evidence: DVSA rows pooled across the cohort
+        # + each spelling's observed colours pooled across its sessions.
+        labels_pool: dict[str, dict[str, Any]] = {}
+        for d in session_dirs:
+            for plate, row in _load_dvsa_labels(
+                d / f"{d.name}_dvsa_labels.json"
+            ).items():
+                labels_pool.setdefault(plate, row)
+        colours_pool: dict[str, Counter] = {}
+        for _sname, v in plated:
+            if v.plate is not None:
+                colours_pool.setdefault(v.plate, Counter()).update(v.colors)
         canonical = _cluster_plates_by_similarity(
-            list(conf_by_plate.items()), ratio=fuzzy_ratio
+            list(conf_by_plate.items()),
+            ratio=fuzzy_ratio,
+            is_distinct=make_distinct_vehicle_checker(labels_pool, colours_pool),
         )
     else:
         canonical = {p: p for p in conf_by_plate}
