@@ -74,6 +74,14 @@ from streettracker.analysis.parked import (
 
 CONF_THRESHOLD = 0.9
 
+# Minimum confidence-weighted vote share for a track's CNN make
+# prediction (``<session>_makemodel_by_track.json``) to fill a vehicle's
+# make when no DVSA ground truth exists. The rollup's ``conf`` is the
+# winning make's share of the track's confidence-weighted votes across
+# its snaps; consistent tracks sit near 1.0, mixed/garbage tracks fall
+# well below. 0.5 = an absolute majority of the track's evidence.
+CNN_MAKE_MIN_CONF = 0.5
+
 # Default Levenshtein similarity (rapidfuzz) threshold for collapsing
 # OCR variants of the same physical plate. Only same-length plates
 # are eligible.
@@ -285,6 +293,61 @@ def _attach_dvsa_labels(
     return n
 
 
+def _load_cnn_by_track(path: Path) -> dict[int, dict[str, Any]]:
+    """``{track_id -> rollup row}`` from a ``_makemodel_by_track.json``
+    (``streettracker makemodel`` output), or ``{}`` when absent/unreadable."""
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    out: dict[int, dict[str, Any]] = {}
+    for row in payload.get("tracks", []) if isinstance(payload, dict) else []:
+        tid = row.get("track_id")
+        if tid is not None:
+            out[int(tid)] = row
+    return out
+
+
+def _attach_cnn_makes(
+    vehicles: list[Vehicle],
+    by_tid: dict[int, dict[str, Any]],
+    *,
+    min_conf: float = CNN_MAKE_MIN_CONF,
+) -> int:
+    """Fill ``make`` from the CNN rollup on vehicles without DVSA truth.
+
+    DVSA always wins -- only ``make is None`` vehicles are touched, which
+    is exactly the unread-plate majority (plus young plated cars with no
+    MOT record). Among a vehicle's tracks, the highest-vote-share row at
+    or above ``min_conf`` decides; ``make_model_source`` becomes
+    ``"cnn"``. Returns the number of vehicles filled."""
+    if not by_tid:
+        return 0
+    n = 0
+    for v in vehicles:
+        if v.make is not None:
+            continue
+        best: dict[str, Any] | None = None
+        for tid in v.track_ids:
+            row = by_tid.get(tid)
+            if not row or not row.get("make"):
+                continue
+            conf = row.get("conf") or 0.0
+            if conf < min_conf:
+                continue
+            if best is None or conf > (best.get("conf") or 0.0):
+                best = row
+        if best is not None:
+            v.make = best["make"]
+            v.model = best.get("model") or None
+            v.year = best.get("year")
+            v.make_model_source = "cnn"
+            n += 1
+    return n
+
+
 def build_vehicles(
     session_dir: Path,
     *,
@@ -294,6 +357,7 @@ def build_vehicles(
     canonical_only: bool = True,
     dvsa_labels_path: Path | None = None,
     suppress_parked: bool = True,
+    cnn_make: bool = True,
 ) -> list[Vehicle]:
     """Build per-vehicle aggregations from a closed session's outputs.
 
@@ -337,6 +401,13 @@ def build_vehicles(
     parked stint is attached to the plate's Vehicle as a
     ``parked_episodes`` entry instead. Sessions without ``_alpr.json``
     are unaffected.
+
+    ``cnn_make`` (default ``True``) fills ``make`` from the session's
+    ``_makemodel_by_track.json`` (the ``streettracker makemodel`` CNN
+    rollup) on vehicles with no DVSA label -- i.e. the unread-plate
+    majority plus young plated cars that 404 on the MOT register. DVSA
+    ground truth always wins; CNN fills carry
+    ``make_model_source="cnn"``. Absent file -> no-op.
 
     Cars only -- ``class_name == "car"`` tracks. Person tracks are
     skipped (snaps are anatomically wrong for ALPR).
@@ -510,6 +581,12 @@ def build_vehicles(
     )
     _attach_dvsa_labels(out, _load_dvsa_labels(labels_path))
 
+    if cnn_make:
+        _attach_cnn_makes(
+            out,
+            _load_cnn_by_track(session_dir / f"{session}_makemodel_by_track.json"),
+        )
+
     if detection.episodes:
         _attach_parked_episodes(out, detection, fuzzy_ratio)
     return out
@@ -569,6 +646,7 @@ def build_cross_session(
     fuzzy_ratio: int | None = FUZZY_RATIO_DEFAULT,
     canonical_only: bool = True,
     suppress_parked: bool = True,
+    cnn_make: bool = True,
 ) -> list[CrossVehicle]:
     """Pool plated vehicles across sessions, classifying repeats by date.
 
@@ -589,6 +667,7 @@ def build_cross_session(
             fuzzy_ratio=fuzzy_ratio,
             canonical_only=canonical_only,
             suppress_parked=suppress_parked,
+            cnn_make=cnn_make,
         ):
             if v.plate is None:
                 continue
@@ -786,6 +865,16 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     ap.add_argument(
+        "--no-cnn-make",
+        action="store_true",
+        help=(
+            "Don't fill make from the CNN classifier rollup "
+            "(_makemodel_by_track.json) on vehicles without a DVSA "
+            "label. Default fills them with make_model_source='cnn'; "
+            "DVSA ground truth always wins either way."
+        ),
+    )
+    ap.add_argument(
         "--no-parked-suppression",
         action="store_true",
         help=(
@@ -896,6 +985,7 @@ def main(argv: list[str] | None = None) -> int:
         fuzzy_ratio=None if args.no_fuzzy else args.fuzzy_ratio,
         canonical_only=not args.include_non_canonical,
         suppress_parked=not args.no_parked_suppression,
+        cnn_make=not args.no_cnn_make,
     )
 
     session = session_dir.name
@@ -910,9 +1000,12 @@ def main(argv: list[str] | None = None) -> int:
     recurring = [v for v in plated if v.n_visits >= 2]
     print(f"  plated:    {len(plated)}")
     print(f"  recurring: {len(recurring)}  (>=2 visits in session)")
-    labelled = [v for v in plated if v.make]
-    if labelled:
-        print(f"  make/model: {len(labelled)}  (DVSA-labelled)")
+    dvsa_labelled = [v for v in vehicles if v.make_model_source == "dvsa"]
+    if dvsa_labelled:
+        print(f"  make/model: {len(dvsa_labelled)}  (DVSA-labelled)")
+    cnn_filled = [v for v in vehicles if v.make_model_source == "cnn"]
+    if cnn_filled:
+        print(f"  cnn-make:   {len(cnn_filled)}  (classifier fill, no DVSA truth)")
     merged = [v for v in plated if v.plate_variants]
     if merged:
         print(f"  fuzzy-merged: {len(merged)}  (OCR variants collapsed)")
