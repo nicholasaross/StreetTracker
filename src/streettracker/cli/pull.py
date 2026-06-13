@@ -199,8 +199,22 @@ def _immutable_image_patterns(only_main: bool) -> tuple[str, ...]:
 
 def _remote_basenames(host: str, user: str, key: str, remote_path: str, pattern: str) -> set[str]:
     """Basenames of remote files matching ``pattern`` in ``remote_path``
-    (one SSH round-trip; empty set when nothing matches)."""
-    cmd = f"cd {shlex.quote(remote_path)} 2>/dev/null && ls -1 {pattern} 2>/dev/null"
+    (one SSH round-trip; empty set when nothing matches).
+
+    Uses ``find ... -printf`` rather than ``ls -1 <glob>``: the shell
+    expands ``ls -1 *.jpg`` client-of-the-remote-shell into one argv per
+    match, which overflows ``ARG_MAX`` on a busy session (a 4.6-day soak
+    holds 40k+ main snaps), so the ``ls`` errors, ``2>/dev/null`` eats it,
+    and the empty result silently reports "0 remote" -- making
+    ``--skip-existing`` fetch nothing for exactly the large sessions the
+    mining workflow targets. ``find -maxdepth 1 -name`` matches one
+    argument server-side with no expansion (the same approach
+    :func:`remote_inventory` already relies on). ``-printf '%f\\n'``
+    emits bare basenames."""
+    cmd = (
+        f"cd {shlex.quote(remote_path)} 2>/dev/null && "
+        f"find . -maxdepth 1 -name {shlex.quote(pattern)} -printf '%f\\n' 2>/dev/null"
+    )
     out = _ssh_run(host, user, key, cmd, check=False)
     return {line.strip() for line in out.splitlines() if line.strip()}
 
