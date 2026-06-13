@@ -209,6 +209,21 @@ def test_immutable_image_patterns_by_mode() -> None:
     assert pull._immutable_image_patterns(only_main=False) == ("*.jpg",)
 
 
+def test_remote_basenames_uses_find_not_glob() -> None:
+    """Regression: a busy session holds 40k+ snaps, so the enumeration
+    must NOT shell-expand ``ls -1 *.jpg`` (overflows ARG_MAX -> silent
+    empty -> skip-existing fetches nothing). It must use a server-side
+    ``find ... -printf`` that matches the pattern as a single argument."""
+    with patch("streettracker.cli.pull.subprocess.run") as mock_run:
+        mock_run.return_value = _fake_completed("vehicle_1_main_1.jpg\nvehicle_2_main_1.jpg\n")
+        names = pull._remote_basenames("orin", "u", "/k", "/srv/output/session_x", "*.jpg")
+    assert names == {"vehicle_1_main_1.jpg", "vehicle_2_main_1.jpg"}
+    remote_cmd = mock_run.call_args.args[0][-1]  # ssh's trailing command string
+    assert "find . -maxdepth 1 -name" in remote_cmd
+    assert "-printf" in remote_cmd
+    assert "ls -1 *.jpg" not in remote_cmd  # the overflow-prone form is gone
+
+
 def test_sftp_get_missing_fetches_only_new(tmp_path: Path) -> None:
     """The name diff fetches just the remote files absent locally; an
     already-present snap is skipped (immutable -> no re-transfer)."""
