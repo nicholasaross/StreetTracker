@@ -2,6 +2,62 @@
 
 Guidance for Claude Code when working in StreetTracker.
 
+## ⮕ Start here — 2026-06-13 checkpoint
+
+Everything from the last sprint is **merged (#57–#64) and on `main`** (clean
+tree). The detailed history lives in the sections below; this block is the
+"resume from cold" summary.
+
+**Live on the Orin** (#63 runtime bundle deployed 2026-06-13, service active,
+NRestarts=0):
+- **per-direction pipeline bands** `pipeline_t_usable_by_direction =
+  {forward(R→L):[0.10,0.20], reverse(L→R):[0.25,0.60]}` — the 2026-06-11 band
+  re-analysis found the two directions read best at *opposite* ends of the road.
+- **`vehicle_classes = [0,1,2,3,5,7]`** (person+car+bike+moto+bus+truck; was
+  `[0,2]`).
+- **completion-time bbox capture** (`TrackRecord.main_snap_bboxes_done`) —
+  sessions recorded *after* the deploy carry the bbox at snap-landing time, and
+  `alpr-run` prefers it (exact crops, no extrapolation).
+- rollback: on-device `configs/camera.json.bak.20260613T075913Z`, git `523c820`.
+
+**State:** `session_20260608_125639` pulled (56 GB) + enriched (alpr + dvsa =
+1,174 new labels, 59 parked beacons suppressed). Showcase live on **:8090**
+(~2,700 cars).
+
+**Make-model: CLOSED 2026-06-14.** Corpus rebuilt (`runs/uk_crops_0614_512` =
+**32,777 crops / 36 makes**, ~4× the 0611 corpus after folding in the new
+session), B5@456 retrained **make@1 0.349 → 0.402** (+5.3 pp on a trustworthy
+6,570-crop val; plateaued 0.39-0.40 over epochs 16-30, not a fluke), **promoted**
+(`runs/uk_make_0614_b5/best.pt` → `…/models/makemodel_b0.pt`; prior 0.349/0.303
+backed up beside it), and **all 17 sessions re-inferred** with it + showcase
+refreshed. Data-is-the-lever, confirmed again (4× data → +5.3 pp). The
+`*_0613_*` runs are dead partials from a sleep-killed overnight job — ignore.
+
+**Tomorrow, priority order:**
+1. **Band-deploy verdict — the headline capture test.** After the Orin soaks
+   ≥1 day on the new band, pull a **post-deploy** session (`session_20260613_*`+),
+   `alpr-run --pipeline preferred --pre-crop --ghost-mask .claude/ghost_mask.json`,
+   then per-direction canonical via `.claude/analyze_band_position.py <dir>` +
+   a `build_vehicles` count. **Expected:** L→R/img ~52→75-85 %, R→L/img
+   ~37→~56 %+, per-car 63.9→mid-70s. Confirm the log prints "completion-time
+   bboxes available" and check `_meta.json` `snap_stats` that the 4-class
+   expansion didn't blow up snap volume.
+2. **Then:** a bigger backbone may now pay (B5 still won at 4× data, so the
+   corpus isn't capacity-saturated); VLM bake-off (Qwen3-VL vs the CNN's 0.402
+   on the by-car val); people P1→P2 (attribute tags) / P0 (retention policy);
+   legacy-repo archival (last migration tail).
+
+**Ops (learned the hard way):** launch long jobs **detached (WMI/VBS, outside
+the Claude helper tree)** AND **verify completion by artifact mtimes, never a
+log tail** — a reaped batch's frozen log is indistinguishable from a working
+one (cost ~2 days, 2026-06-11→13). **The dev box idle-sleeps** (~Kernel-Power
+42; killed the 06-13 overnight build) — unattended long jobs need a
+`SetThreadExecutionState` wake-lock (pattern in `.claude/rebuild_0614.ps1`) or
+run them daytime while active. Showcase restart: `uv run streettracker
+showcase --output-root output --port 8090` (detached). Orin prunes 4K snaps
+after **7 days** — pull within the week. `pull --skip-existing` is resumable +
+large-session-safe since #64.
+
 ## Project overview
 
 StreetTracker unifies VehicleTracker (dev-box, file input) and NanoTracker
