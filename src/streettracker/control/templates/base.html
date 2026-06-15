@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}StreetTracker Control{% endblock %}</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #171c24; --panel2: #1f2630; --line: #2a323d;
+    --fg: #e6edf3; --muted: #8b97a6; --accent: #4aa3ff;
+    --ok: #3fb950; --warn: #d29922; --bad: #f85149; --idle: #6e7681;
+    --mono: ui-monospace, "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--sans);
+         font-size: 14px; line-height: 1.45; }
+  a { color: var(--accent); text-decoration: none; }
+  header.topbar { display: flex; align-items: center; gap: 14px; padding: 12px 20px;
+    background: linear-gradient(180deg, #131922, #0e1116); border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; z-index: 10; flex-wrap: wrap; }
+  header.topbar h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: .2px; }
+  header.topbar .spacer { flex: 1; }
+  header.topbar .nav { display: flex; gap: 4px; }
+  header.topbar .nav a { color: var(--muted); font-size: 13px; font-weight: 600; padding: 4px 10px;
+    border-radius: 7px; }
+  header.topbar .nav a:hover { color: var(--fg); background: var(--panel2); }
+  header.topbar .nav a.on { color: var(--fg); background: var(--panel2); }
+  .badge { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px;
+    padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .badge.ctl { color: #0e1116; background: var(--ok); border-color: transparent; }
+  .badge.ro { color: #0e1116; background: var(--warn); border-color: transparent; }
+  .updated { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  button.btn { font: inherit; font-size: 13px; color: var(--fg); background: var(--panel2);
+    border: 1px solid var(--line); border-radius: 7px; padding: 5px 12px; cursor: pointer; }
+  button.btn:hover:not(:disabled) { border-color: var(--accent); }
+  button.btn:disabled { opacity: .5; cursor: not-allowed; }
+  button.btn.sm { padding: 2px 8px; font-size: 12px; }
+  main { padding: 20px; max-width: 1280px; margin: 0 auto; }
+  .grid { display: grid; gap: 16px; }
+  @media (min-width: 900px) { .grid.cols2 { grid-template-columns: 1fr 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px 18px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted);
+    margin: 0 0 12px; font-weight: 700; }
+  .row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .kv { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; margin-top: 12px; }
+  .kv .k { flex: none; }
+  .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 14px; }
+  .metric { min-width: 0; }
+  .metric .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
+  .metric .v { font-family: var(--mono); font-size: 26px; font-weight: 600; line-height: 1.1;
+    font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .metric .v.sm { font-size: 17px; }
+  .wrap { overflow-wrap: anywhere; word-break: break-word; min-width: 0; }
+  .info { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px;
+    border-radius: 50%; background: var(--panel2); border: 1px solid var(--line); color: var(--muted);
+    font-size: 9px; font-weight: 800; font-style: normal; cursor: help; vertical-align: middle; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 650;
+    padding: 3px 10px; border-radius: 999px; background: var(--panel2); border: 1px solid var(--line); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--idle); flex: none; }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 0 3px rgba(63,185,80,.18); }
+  .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
+  .dot.live { background: var(--ok); animation: pulse 1.6s infinite; }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(63,185,80,.5); } 50% { box-shadow: 0 0 0 6px rgba(63,185,80,0); } }
+  /* Horizontal bar list: label (with optional logo) | bar | value. */
+  .hbars { display: flex; flex-direction: column; gap: 7px; }
+  .hbar { display: grid; grid-template-columns: 150px 1fr 58px; align-items: center; gap: 10px;
+    font-size: 12px; }
+  .hbar-lab { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .hbar-lab span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hbar-track { background: var(--panel2); border-radius: 5px; height: 13px; overflow: hidden; }
+  .hbar-fill { height: 100%; border-radius: 5px; min-width: 2px; }
+  .hbar-val { text-align: right; font-family: var(--mono); color: var(--muted);
+    font-variant-numeric: tabular-nums; }
+  /* Brand marks: inline SVG (tinted) or a coloured letter monogram. */
+  .mwrap { display: inline-flex; width: 18px; height: 18px; flex: none; align-items: center;
+    justify-content: center; color: var(--fg); }
+  .mwrap svg { width: 100%; height: 100%; fill: currentColor; }
+  .mmono { width: 18px; height: 18px; border-radius: 4px; display: inline-flex; align-items: center;
+    justify-content: center; font-size: 10px; font-weight: 800; color: #fff; flex: none; }
+  table.sessions { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.sessions th { text-align: left; color: var(--muted); font-weight: 600; font-size: 11px;
+    text-transform: uppercase; letter-spacing: .5px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  table.sessions td { padding: 7px 8px; border-bottom: 1px solid var(--panel2);
+    font-variant-numeric: tabular-nums; }
+  table.sessions tr:hover td { background: var(--panel2); }
+  td.enr { display: flex; gap: 5px; flex-wrap: wrap; }
+  .tag { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 5px;
+    border: 1px solid var(--line); color: var(--idle); white-space: nowrap; cursor: help; }
+  .tag.on { color: #0e1116; background: var(--ok); border-color: transparent; }
+  .legend { color: var(--muted); font-size: 12px; margin-top: 12px; display: flex; gap: 16px;
+    flex-wrap: wrap; align-items: center; }
+  .legend .tag { cursor: default; }
+  /* Recommendation cards: a clear status answer + a (Phase 2) action button. */
+  .reccard { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 14px; }
+  .rec-top { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
+  .recv { font-size: 12px; font-weight: 800; padding: 3px 11px; border-radius: 999px; flex: none; }
+  .recv.recommend { color: #0e1116; background: var(--ok); }
+  .recv.hold { color: var(--fg); background: #2b3340; border: 1px solid var(--line); }
+  .recv.unknown { color: #0e1116; background: var(--warn); }
+  .reccard .reason { color: var(--muted); margin: 8px 0 11px; font-size: 13px; }
+  /* Jobs (processes) */
+  .runbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .runbar select, .runbar input { font: inherit; font-size: 13px; background: var(--panel2);
+    color: var(--fg); border: 1px solid var(--line); border-radius: 7px; padding: 5px 9px; }
+  .runbar input { flex: 1; min-width: 180px; }
+  .job { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px;
+    padding: 11px 13px; margin-top: 10px; }
+  .job.issue { border-color: var(--bad); }
+  .jhead { display: flex; align-items: center; gap: 10px; justify-content: space-between;
+    flex-wrap: wrap; }
+  .jhead .left { display: flex; align-items: center; gap: 9px; min-width: 0; }
+  .job .cmd { font-family: var(--mono); font-size: 12px; color: var(--muted);
+    overflow-wrap: anywhere; margin-top: 3px; }
+  .job .jmeta { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .job pre { background: #0e1116; border: 1px solid var(--line); border-radius: 7px;
+    padding: 9px 11px; font-size: 11px; line-height: 1.4; overflow: auto; max-height: 240px;
+    white-space: pre-wrap; word-break: break-word; }
+  .job details { margin-top: 8px; }
+  .job summary { cursor: pointer; color: var(--accent); font-size: 12px; }
+  .jbar { background: #0e1116; border-radius: 5px; height: 8px; overflow: hidden; margin-top: 8px; }
+  .jbar > div { height: 100%; background: var(--accent); border-radius: 5px; transition: width .3s; }
+  .psteps { display: flex; flex-direction: column; gap: 9px; margin-top: 6px; }
+  .pstep { border-left: 2px solid var(--line); padding-left: 10px; }
+  .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+    background: var(--ok); color: #0e1116; font-weight: 700; padding: 8px 16px; border-radius: 8px;
+    opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 50; }
+  .toast.show { opacity: 1; }
+  .muted { color: var(--muted); }
+  .mono { font-family: var(--mono); }
+  .empty { color: var(--muted); font-style: italic; padding: 8px 0; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <h1>🚦 StreetTracker Control</h1>
+  <nav class="nav">
+    <a href="/" class="{{ 'on' if active_page == 'dashboard' else '' }}">Dashboard</a>
+    <a href="/training" class="{{ 'on' if active_page == 'training' else '' }}">Training</a>
+  </nav>
+  {% if is_local %}<span class="badge ctl" title="Control actions enabled">control</span>
+  {% else %}<span class="badge ro" title="View only — connect from localhost to control">read-only</span>{% endif %}
+  <span class="spacer"></span>
+  <span class="updated" id="updated">—</span>
+  <button class="btn" id="refreshBtn" {% if not is_local %}disabled title="localhost only"{% endif %}>↻ Refresh</button>
+</header>
+<main>{% block content %}{% endblock %}</main>
+<div class="toast" id="toast"></div>
+<script>
+  let __toastTimer = null;
+  function showToast(msg){
+    const t = document.getElementById("toast");
+    if (!t) return;
+    t.textContent = msg; t.classList.add("show");
+    clearTimeout(__toastTimer);
+    __toastTimer = setTimeout(() => t.classList.remove("show"), 1800);
+  }
+  async function copyText(text){
+    try { await navigator.clipboard.writeText(text); showToast("Copied to clipboard"); }
+    catch(e){
+      // Fallback for non-secure contexts / older browsers.
+      const ta = document.createElement("textarea"); ta.value = text;
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); showToast("Copied to clipboard"); }
+      catch(_){ showToast("Copy failed — select manually"); }
+      finally { ta.remove(); }
+    }
+  }
+  // ---- shared formatting + fetch helpers (no external deps) ----
+  const IS_LOCAL = {{ 'true' if is_local else 'false' }};
+  function fmtInt(n){ return (n==null||isNaN(n)) ? "—" : Math.round(n).toLocaleString(); }
+  function fmtPct(v){ return (v==null||isNaN(v)) ? "—" : (v*100).toFixed(1)+"%"; }
+  function fmtDur(s){
+    if (s==null||isNaN(s)) return "—";
+    s = Math.max(0, Math.floor(s));
+    const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), sec=s%60;
+    if (h>0) return h+"h "+String(m).padStart(2,"0")+"m";
+    if (m>0) return m+"m "+String(sec).padStart(2,"0")+"s";
+    return sec+"s";
+  }
+  function fmtAgo(unix, now){
+    if (!unix) return "—";
+    return fmtDur(Math.max(0, now-unix))+" ago";
+  }
+  function fmtDate(unix){
+    if (!unix) return "—";
+    return new Date(unix*1000).toLocaleString([], {month:"short", day:"2-digit", hour:"2-digit", minute:"2-digit"});
+  }
+  function esc(s){ const d=document.createElement("div"); d.textContent=(s==null?"":String(s)); return d.innerHTML; }
+  async function fetchJSON(url, opts){
+    const r = await fetch(url, opts);
+    if (!r.ok) throw new Error(url+" -> "+r.status);
+    return r.json();
+  }
+  // Horizontal bar list -> HTML. rows: [{label, value, display?, prefix?, color?, title?}].
+  // `prefix` is trusted HTML (our own brand-mark markup); `label` is escaped.
+  function hbarList(rows){
+    if (!rows || !rows.length) return '<div class="empty">no data</div>';
+    const max = Math.max(1, ...rows.map(r=>r.value||0));
+    return '<div class="hbars">' + rows.map(r=>{
+      const w = (100*(r.value||0)/max).toFixed(1);
+      const col = r.color || "var(--accent)";
+      const pre = r.prefix || "";
+      const disp = (r.display!=null) ? r.display : fmtInt(r.value);
+      const ttl = r.title ? ` title="${esc(r.title)}"` : "";
+      return `<div class="hbar"${ttl}><div class="hbar-lab">${pre}<span>${esc(r.label)}</span></div>`
+        + `<div class="hbar-track"><div class="hbar-fill" style="width:${w}%;background:${col}"></div></div>`
+        + `<div class="hbar-val">${esc(disp)}</div></div>`;
+    }).join("") + '</div>';
+  }
+
+  // ---- brand marks + training chart, shared by the dashboard + training pages ----
+  // Bundled brand-mark SVGs, inlined once (no extra requests); `{}` if a page
+  // didn't pass them.
+  const BRAND_SVG = {{ (brand_svgs or {}) | tojson }};
+  const MAKE_SLUG = {
+    "ALFA ROMEO":"alfaromeo","ASTON MARTIN":"astonmartin","AUDI":"audi","BENTLEY":"bentley",
+    "BMW":"bmw","BUGATTI":"bugatti","CADILLAC":"cadillac","CHEVROLET":"chevrolet",
+    "CHRYSLER":"chrysler","CITROEN":"citroen","CUPRA":"cupra","DACIA":"dacia","FERRARI":"ferrari",
+    "FIAT":"fiat","FORD":"ford","HONDA":"honda","HYUNDAI":"hyundai","INFINITI":"infiniti",
+    "JAGUAR":"jaguar","JEEP":"jeep","KIA":"kia","LAMBORGHINI":"lamborghini","LAND ROVER":"landrover",
+    "LEXUS":"lexus","MASERATI":"maserati","MAZDA":"mazda","MCLAREN":"mclaren","MERCEDES":"mercedes",
+    "MERCEDES-BENZ":"mercedes","MG":"mg","MINI":"mini","MITSUBISHI":"mitsubishi","NISSAN":"nissan",
+    "OPEL":"opel","PEUGEOT":"peugeot","POLESTAR":"polestar","PORSCHE":"porsche","RAM":"ram",
+    "RENAULT":"renault","ROLLS-ROYCE":"rollsroyce","SEAT":"seat","SKODA":"skoda","SMART":"smart",
+    "SUBARU":"subaru","SUZUKI":"suzuki","TESLA":"tesla","TOYOTA":"toyota","VAUXHALL":"vauxhall",
+    "VOLKSWAGEN":"volkswagen","VOLVO":"volvo",
+  };
+  const MAKE_BG = {
+    "ALFA ROMEO":"#a32f3e","AUDI":"#bb0a30","BMW":"#1c69d4","CITROEN":"#a4232c","DACIA":"#646b52",
+    "FIAT":"#a51b21","FORD":"#003478","HONDA":"#c8102e","HYUNDAI":"#002c5f","JAGUAR":"#0a2342",
+    "KIA":"#05141f","LAND ROVER":"#1a4d2e","LEXUS":"#1a1a1a","MAZDA":"#101820",
+    "MERCEDES-BENZ":"#1a1a1a","MG":"#bb0a30","MINI":"#000000","NISSAN":"#c3002f","PEUGEOT":"#0a2342",
+    "PORSCHE":"#101820","RENAULT":"#efdf00","SEAT":"#b6373a","SKODA":"#0e3a2f","SUBARU":"#0072ce",
+    "SUZUKI":"#0099d8","TESLA":"#cc0000","TOYOTA":"#eb0a1e","VAUXHALL":"#cf102d",
+    "VOLKSWAGEN":"#1f3a8a","VOLVO":"#1a3668",
+  };
+  function makeIcon(make){
+    const key = (make||"").toUpperCase();
+    const slug = MAKE_SLUG[key];
+    const svg = slug && BRAND_SVG[slug];
+    if (svg) return `<span class="mwrap" aria-label="${esc(key)}">${svg}</span>`;
+    const bg = MAKE_BG[key] || "#3a4150";
+    const letter = (make ? make[0] : "?").toUpperCase();
+    return `<span class="mmono" style="background:${bg}">${esc(letter)}</span>`;
+  }
+  // Live training chart: loss (amber) + make@1 (green) per epoch. `opts.height`
+  // sizes it (the training page passes a larger one); `opts.refMake1` draws a
+  // dashed reference line (the production make@1 to beat).
+  function trainChart(epochs, opts){
+    opts = opts || {};
+    if (!epochs || !epochs.length) return "";
+    const W=540, H=opts.height||150, padL=8, padR=8, padT=10, padB=20;
+    const innerW=W-padL-padR, innerH=H-padT-padB;
+    const xs=epochs.map(e=>e.epoch), minX=Math.min(...xs), maxX=Math.max(...xs);
+    const maxLoss=Math.max(...epochs.map(e=>e.loss), 1e-6);
+    const maxM=Math.max(...epochs.map(e=>e.make1), opts.refMake1||0, 0.01);
+    const X = x => padL + (maxX===minX ? innerW/2 : innerW*(x-minX)/(maxX-minX));
+    const Yl = v => padT + innerH*(1 - v/maxLoss);
+    const Ym = v => padT + innerH*(1 - v/maxM);
+    const lossPts = epochs.map(e=>`${X(e.epoch).toFixed(1)},${Yl(e.loss).toFixed(1)}`).join(" ");
+    const makePts = epochs.map(e=>`${X(e.epoch).toFixed(1)},${Ym(e.make1).toFixed(1)}`).join(" ");
+    let extra = "";
+    for (let t=0;t<=2;t++){ const y=padT+innerH*t/2; extra+=`<line class="grid-line" x1="${padL}" y1="${y}" x2="${W-padR}" y2="${y}"/>`; }
+    if (opts.refMake1){ const y=Ym(opts.refMake1).toFixed(1);
+      extra+=`<line x1="${padL}" y1="${y}" x2="${W-padR}" y2="${y}" stroke="var(--accent)" stroke-width="1" stroke-dasharray="4 3"/>`
+        + `<text class="lab" x="${W-padR}" y="${(+y-3)}" text-anchor="end" style="fill:var(--accent)">prod ${(opts.refMake1*100).toFixed(1)}%</text>`; }
+    return `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${extra}`
+      + `<polyline points="${lossPts}" fill="none" stroke="var(--warn)" stroke-width="2"/>`
+      + `<polyline points="${makePts}" fill="none" stroke="var(--ok)" stroke-width="2"/>`
+      + `<text class="lab" x="${padL}" y="${H-5}">epoch ${minX}</text>`
+      + `<text class="lab" x="${W-padR}" y="${H-5}" text-anchor="end">epoch ${maxX}</text></svg>`;
+  }
+  // window.__render + window.__BOOT are set by the page's content-block script,
+  // which is emitted BEFORE this one — do NOT re-initialise them here or this
+  // (later) script would clobber the page's assignment back to null.
+  async function refreshNow(){
+    const btn = document.getElementById("refreshBtn");
+    try {
+      if (btn && IS_LOCAL){ btn.disabled = true; btn.textContent = "…"; }
+      const data = await fetchJSON("/api/refresh", {method:"POST"});
+      if (window.__render) window.__render(data);
+    } catch(e){ console.warn(e); }
+    finally {
+      if (btn && IS_LOCAL){ btn.disabled = false; btn.textContent = "↻ Refresh"; }
+    }
+  }
+  async function pollNow(){
+    try {
+      const data = await fetchJSON("/api/status");
+      if (window.__render) window.__render(data);
+    } catch(e){ /* transient; keep last paint */ }
+  }
+  document.addEventListener("DOMContentLoaded", ()=>{
+    const btn = document.getElementById("refreshBtn");
+    if (btn && IS_LOCAL) btn.addEventListener("click", refreshNow);
+    if (window.__render && window.__BOOT) window.__render(window.__BOOT);
+    setInterval(pollNow, 5000);
+  });
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

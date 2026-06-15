@@ -1,0 +1,426 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="grid cols2">
+  <section class="panel" id="orinPanel">
+    <h2>Orin device</h2>
+    <div id="orinBody"><div class="empty">checking…</div></div>
+  </section>
+
+  <section class="panel" id="modelPanel">
+    <h2>Model &amp; corpus</h2>
+    <div id="modelBody"><div class="empty">scanning…</div></div>
+  </section>
+</div>
+
+<section class="panel" style="margin-top:16px">
+  <h2>Recommendations</h2>
+  <div id="recBody"><div class="empty">scanning…</div></div>
+</section>
+
+<section class="panel" style="margin-top:16px">
+  <div class="row" style="justify-content:space-between">
+    <h2 style="margin:0">Playbooks</h2>
+    <span id="pbRunArea"></span>
+  </div>
+  <div id="pbBody" style="margin-top:12px"><div class="empty">no playbooks run yet</div></div>
+</section>
+
+<section class="panel" style="margin-top:16px">
+  <div class="row" style="justify-content:space-between">
+    <h2 style="margin:0">Processes</h2>
+    <span id="jobRunArea"></span>
+  </div>
+  <div id="jobsBody" style="margin-top:12px"><div class="empty">no processes run yet</div></div>
+</section>
+
+<section class="panel" style="margin-top:16px">
+  <div class="row" style="justify-content:space-between">
+    <h2 style="margin:0">Local sessions</h2>
+    <span class="muted" id="sessTotals"></span>
+  </div>
+  <div id="sessBody" style="margin-top:12px;overflow-x:auto"><div class="empty">scanning…</div></div>
+</section>
+
+<script>
+  window.__BOOT = {{ status | tojson }};
+  let __last = window.__BOOT;
+
+  const MAKE1_TIP = "Top-1 make accuracy on a held-out validation set: the share of cars whose "
+    + "single highest-scoring predicted manufacturer is correct. Scored on unseen cars (by-car split).";
+
+  function prettyArch(a){ return a ? a.replace("efficientnet_b","EfficientNet-B") : "—"; }
+  function corpusSubtitle(name){
+    const m = /uk_crops_(\d{2})(\d{2})_(\d+)/.exec(name||"");
+    if (!m) return "UK make-classifier crop dataset";
+    const months=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const mo = months[parseInt(m[1],10)-1] || m[1];
+    return `UK make-classifier crops · built ${mo} ${parseInt(m[2],10)} · ${m[3]}px`;
+  }
+
+  // ---------- Orin panel + auto pull-estimate ----------
+  let __pullEst = {session:null, data:null, at:0, loading:false, error:null};
+
+  function pullEstLine(session, now){
+    if (!session) return "";
+    const pe = __pullEst;
+    let inner;
+    if (pe.session !== session) inner = '<span class="muted">estimating…</span>';
+    else if (pe.loading) inner = '<span class="muted">querying device…</span>';
+    else if (pe.error) inner = `<span class="muted">unavailable</span> · <span class="muted" id="pullEstAgo">checked ${fmtAgo(pe.at, now)}</span>`;
+    else if (pe.data){ const d=pe.data;
+      inner = `<b>≈ ${esc(d.human_bytes)}</b> · ${fmtInt(d.vehicle_snaps)} vehicle + ${fmtInt(d.person_snaps)} people snaps · ~${fmtDur(d.est_seconds)} <span class="muted">@ ${esc(d.transfer_mbps)} MB/s</span> · <span class="muted" id="pullEstAgo">checked ${fmtAgo(pe.at, now)}</span>`;
+    } else inner = '<span class="muted">—</span>';
+    return `<div class="kv" style="margin-top:14px"><span class="k">pull estimate</span> <span class="wrap">${inner}</span> <button class="btn sm" onclick="fetchPullEst('${esc(session)}')" title="Re-estimate now">↻</button></div>`;
+  }
+
+  async function fetchPullEst(session){
+    if (!session) return;
+    __pullEst = {session, data:null, at:0, loading:true, error:null};
+    renderOrinOnly();
+    try {
+      const d = await fetchJSON("/api/pull-preview/"+encodeURIComponent(session));
+      __pullEst = {session, data:d, at:Date.now()/1000, loading:false, error:null};
+    } catch(e){
+      __pullEst = {session, data:null, at:Date.now()/1000, loading:false, error:"unavailable"};
+    }
+    renderOrinOnly();
+  }
+
+  function renderOrinOnly(){
+    if (!__last) return;
+    const now = (__last.server_time) || (Date.now()/1000);
+    const ob = document.getElementById("orinBody");
+    if (ob) ob.innerHTML = orinHtml(__last.orin, now);
+  }
+
+  function orinHtml(o, now){
+    if (!o) return '<div class="empty">checking…</div>';
+    if (!o.reachable){
+      return `<div class="row"><span class="dot bad"></span><b>Unreachable</b></div>
+        <div class="muted" style="margin-top:6px">${esc(o.error||"no response")}</div>
+        <div class="muted" style="margin-top:6px">last try ${fmtAgo(o.checked_at, now)}</div>`;
+    }
+    const active = o.service_active === "active";
+    const dotc = active ? "live" : (o.service_active ? "warn" : "idle");
+    const runtime = (active && o.session_start_unix) ? (now - o.session_start_unix) : o.session_runtime_s;
+    let h = `<div class="row" style="gap:14px">
+        <span class="pill"><span class="dot ${dotc}"></span>service ${esc(o.service_active||"unknown")}</span>
+        <span class="muted" id="orinChecked">checked ${fmtAgo(o.checked_at, now)}</span>
+      </div>
+      <div class="kv"><span class="k muted">live session</span> <span class="mono wrap">${esc(o.live_session||"—")}</span></div>
+      <div class="metrics" style="margin-top:12px">
+        <div class="metric"><div class="k">running for</div><div class="v" id="orinRuntime">${fmtDur(runtime)}</div></div>
+        <div class="metric"><div class="k">vehicle snaps <span class="info" title="Vehicle 4K snaps captured this session so far — the ALPR / make-model source images.">i</span></div><div class="v">${fmtInt(o.vehicle_snaps)}</div></div>
+        <div class="metric"><div class="k">people snaps <span class="info" title="Person 4K snaps captured this session so far.">i</span></div><div class="v">${fmtInt(o.person_snaps)}</div></div>
+      </div>`;
+    h += pullEstLine(o.live_session, now);
+    return h;
+  }
+
+  // ---------- Model & corpus panel ----------
+  function modelHtml(local){
+    const m = local.model, c = local.corpus, runs = local.runs || [];
+    let h = "";
+    if (m){
+      h += `<div class="metrics">
+        <div class="metric"><div class="k">make@1 <span class="info" title="${esc(MAKE1_TIP)}">i</span></div><div class="v">${fmtPct(m.val_make_top1)}</div></div>
+        <div class="metric"><div class="k">makes <span class="info" title="Manufacturer classes the model can predict.">i</span></div><div class="v">${fmtInt(m.n_makes)}</div></div>
+      </div>
+      <div class="kv muted"><span>Model:</span> <span class="wrap">${esc(prettyArch(m.arch))}${m.input_size?(" · "+esc(m.input_size)+"px"):""} · source ${esc(m.source)}${m.promoted_at?(" · promoted "+esc(m.promoted_at)):""}</span></div>`;
+    } else {
+      h += '<div class="empty">no production model found</div>';
+    }
+    if (c){
+      h += `<div class="kv" style="margin-top:16px"><span class="pill mono" title="UK make-classifier crop dataset, built from DVSA-labelled local sessions. The name encodes the build date and crop pixel size.">${esc(c.name)}</span></div>
+        <div class="muted" style="margin-top:4px;font-size:12px">${esc(corpusSubtitle(c.name))}</div>
+        <div class="metrics" style="margin-top:12px">
+          <div class="metric"><div class="k">crops <span class="info" title="Training images — cropped vehicle photos fed to the classifier.">i</span></div><div class="v">${fmtInt(c.n_crops)}</div></div>
+          <div class="metric"><div class="k">cars <span class="info" title="Distinct physical vehicles (by plate) the crops came from.">i</span></div><div class="v">${fmtInt(c.n_cars)}</div></div>
+          <div class="metric"><div class="k">makes <span class="info" title="Manufacturer classes present in the corpus.">i</span></div><div class="v">${fmtInt(c.n_makes)}</div></div>
+        </div>
+        <div class="muted" style="margin:16px 0 7px;font-size:11px;text-transform:uppercase;letter-spacing:.5px">Cars per make (top 12)</div>`;
+      const top = Object.entries(c.per_make_cars || {})
+        .map(([k,v])=>({label:k, value:v}))
+        .sort((a,b)=>b.value-a.value).slice(0,12)
+        .map(d=>({label:d.label, value:d.value, prefix:makeIcon(d.label), title:`${d.label}: ${d.value} cars`}));
+      h += hbarList(top);
+    } else {
+      h += '<div class="empty" style="margin-top:12px">no corpus under runs/ — build one with makemodel-build-uk</div>';
+    }
+    if (runs.length){
+      const prod = m ? runs.find(r => Math.abs((r.best_val_make_top1||0) - (m.val_make_top1||-1)) < 1e-6) : null;
+      h += `<div class="muted" style="margin:18px 0 7px;font-size:11px;text-transform:uppercase;letter-spacing:.5px">Training runs · validation make@1 <span class="info" title="${esc(MAKE1_TIP)}">i</span></div>`;
+      const items = runs.slice(0,8).map(r=>({
+        label: r.name.replace(/^uk_make_/,""),
+        value: (r.best_val_make_top1||0)*100,
+        display: fmtPct(r.best_val_make_top1),
+        color: (prod && r.name===prod.name) ? "var(--ok)" : "var(--accent)",
+        title: `${r.name} — make@1 ${fmtPct(r.best_val_make_top1)} · ${r.n_makes!=null?r.n_makes:"?"} makes · ${r.n_epochs} epochs`,
+      }));
+      h += hbarList(items);
+      h += '<div class="muted" style="margin-top:7px;font-size:11px">Green = current production model. Newest first.</div>';
+    }
+    return h;
+  }
+
+  // ---------- Recommendations ----------
+  const RETRAIN_ANS = {recommend:"Recommended", hold:"Not needed", unknown:"Can’t assess yet"};
+  const PROMOTE_ANS = {recommend:"Recommended", hold:"Current model is best", unknown:"Can’t compare"};
+  function recCard(r, question, actionLabel, answers){
+    if (!r) return "";
+    const ans = answers[r.verdict] || r.verdict;
+    return `<div class="reccard">
+      <div class="rec-top"><b>${esc(question)}</b><span class="recv ${esc(r.verdict)}">${esc(ans)}</span></div>
+      <div class="reason">${esc(r.reason)}</div>
+      <button class="btn" disabled title="Becomes a one-click action in Phase 2">${esc(actionLabel)} →</button>
+    </div>`;
+  }
+  function recsHtml(local){
+    const rec = local.recommendations || {};
+    if (!rec.retrain && !rec.promote) return '<div class="empty">no data</div>';
+    return `<div class="grid cols2">
+        ${recCard(rec.retrain, "Retrain the model?", "Rebuild corpus & retrain", RETRAIN_ANS)}
+        ${recCard(rec.promote, "Promote a new model?", "Promote best model", PROMOTE_ANS)}
+      </div>
+      <div class="muted" style="margin-top:11px;font-size:12px">These are read-only recommendations in Phase 1 — the buttons become one-click actions in Phase 2.</div>`;
+  }
+
+  // ---------- Local sessions ----------
+  function estep(on, label, tip, extra){
+    return `<span class="tag ${on?'on':''}" title="${esc(tip)}">${esc(label)}${(on&&extra)?(" "+esc(extra)):""}</span>`;
+  }
+  function sessionsHtml(local){
+    const s = local.sessions || [], t = local.totals || {};
+    document.getElementById("sessTotals").textContent =
+      `${fmtInt(t.n_sessions)} sessions · ${fmtInt(t.n_cars)} cars · ${fmtInt(t.n_persons)} people · ${fmtInt(t.n_enriched)} fully enriched`;
+    if (!s.length) return '<div class="empty">no sessions pulled yet</div>';
+    let rows = "";
+    // Number oldest=1 .. newest=N, but list newest-first (so the top row is #N).
+    s.forEach((x,i)=>{
+      rows += `<tr>
+        <td class="muted">${s.length - i}</td>
+        <td class="mono">${esc(x.label)}</td>
+        <td>${fmtDate(x.start_unix)}</td>
+        <td>${fmtDur(x.duration_s)}</td>
+        <td>${fmtInt(x.n_tracks)} <span class="muted">(${fmtInt(x.n_cars)} cars · ${fmtInt(x.n_persons)} people)</span></td>
+        <td>${fmtInt(x.n_vehicle_snaps)} <span class="muted">veh</span> · ${fmtInt(x.n_person_snaps)} <span class="muted">ppl</span></td>
+        <td class="enr">
+          ${estep(x.has_alpr,"Plates","ALPR plate-OCR has run — reads number plates from the snaps.")}
+          ${estep(x.n_dvsa_labels>0,"DVSA","DVSA MOT make/model/colour lookups by plate. The number is how many plates resolved.", x.n_dvsa_labels||"")}
+          ${estep(x.has_vehicles,"Vehicles","Per-vehicle aggregation (streettracker vehicles → _vehicles.json). Optional — the showcase rebuilds this view live, so it is only saved where the command was run explicitly.")}
+          ${estep(x.has_makemodel,"Make/model","Make/model CNN inference has run on this session's snaps.")}
+        </td>
+      </tr>`;
+    });
+    return `<table class="sessions">
+      <thead><tr><th>#</th><th>session</th><th>started</th><th>duration</th><th>tracks</th><th>snaps</th><th>enrichment</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+      <div class="legend">
+        <span><b>Enrichment pipeline:</b> Plates → DVSA → Vehicles → Make/model</span>
+        <span><span class="tag on">done</span> step has run</span>
+        <span><span class="tag">pending</span> not run yet</span>
+        <span class="muted">Pending (grey) steps are the to-do — Phase 2 runs them from here.</span>
+      </div>`;
+  }
+
+  // ---------- Processes (jobs) ----------
+  const JOB_KINDS = [
+    "pull", "alpr-run", "dvsa-label", "dvsa-apply", "vehicles",
+    "makemodel", "makemodel-build-uk", "makemodel-train-uk", "export-engine",
+  ];
+  window.__prompts = {};  // id -> full prompt, kept out of inline attributes
+
+  function ensureRunForm(){
+    const host = document.getElementById("jobRunArea");
+    if (!host || host.dataset.ready) return;
+    if (!IS_LOCAL){ host.innerHTML = '<span class="muted">launch from localhost to run processes</span>'; host.dataset.ready = "1"; return; }
+    host.dataset.ready = "1";
+    host.innerHTML = `<span class="runbar">
+      <select id="jobKind">${JOB_KINDS.map(k=>`<option>${k}</option>`).join("")}</select>
+      <input id="jobArgs" placeholder="args — e.g. output/session_X --pre-crop" />
+      <button class="btn sm" id="jobRunBtn">Run</button></span>`;
+    document.getElementById("jobRunBtn").addEventListener("click", submitJob);
+    document.getElementById("jobArgs").addEventListener("keydown", e => { if (e.key==="Enter") submitJob(); });
+  }
+  async function submitJob(){
+    const kind = document.getElementById("jobKind").value;
+    const argstr = document.getElementById("jobArgs").value.trim();
+    const args = argstr ? argstr.split(/\s+/) : [];
+    try {
+      await fetchJSON("/api/jobs", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({kind, args})});
+      showToast("Launched " + kind);
+      pollNow();
+    } catch(e){ showToast("Launch failed: " + e.message); }
+  }
+  async function cancelJob(id){
+    try { await fetchJSON("/api/jobs/" + encodeURIComponent(id) + "/cancel", {method:"POST"}); pollNow(); }
+    catch(e){ showToast("Cancel failed"); }
+  }
+  function jobDot(s){
+    return s==="running" ? "live" : s==="succeeded" ? "ok" : s==="failed" ? "bad" : "idle";
+  }
+  function trainBlock(p){
+    const m = p.metrics || {};
+    const epochs = m.epochs || [];
+    let facts = "";
+    if (m.train_crops != null){
+      facts = `<div class="jmeta">${esc(m.device||"")} · ${fmtInt(m.makes)} makes · `
+        + `${fmtInt(m.train_crops)} train / ${fmtInt(m.val_crops)} val crops</div>`;
+    }
+    if (!epochs.length) return facts;
+    const last = epochs[epochs.length-1];
+    const best = (m.best_make1!=null) ? (m.best_make1*100).toFixed(1)+"%" : "—";
+    const legend = `<div class="jmeta"><span style="color:var(--warn)">■ loss ${last.loss.toFixed(3)}</span>`
+      + ` · <span style="color:var(--ok)">■ make@1 ${(last.make1*100).toFixed(1)}%</span>`
+      + ` · best ${best} (epoch ${m.best_epoch!=null?m.best_epoch:"?"})</div>`;
+    return facts + `<div style="margin-top:6px">${trainChart(epochs)}</div>` + legend;
+  }
+  function jobCard(j){
+    const p = j.progress || {};
+    const bar = (p.frac!=null)
+      ? `<div class="jbar"><div style="width:${(p.frac*100).toFixed(1)}%"></div></div>` : "";
+    const eta = (p.eta_s!=null && j.status==="running") ? " · ETA " + fmtDur(p.eta_s) : "";
+    const elapsed = (j.elapsed_s!=null) ? fmtDur(j.elapsed_s) : "";
+    const cancel = (j.status==="running" && IS_LOCAL)
+      ? `<button class="btn sm" onclick="cancelJob('${esc(j.id)}')">Cancel</button>` : "";
+    let issueBlock = "";
+    if (j.issue){
+      issueBlock = `<div class="jmeta" style="color:var(--bad)">⚠ ${esc(j.issue)}</div>`;
+      if (j.prompt){
+        window.__prompts[j.id] = j.prompt;
+        issueBlock += `<details open><summary>Claude prompt — copy &amp; paste this to get help</summary>
+          <div style="margin-top:7px"><button class="btn sm" onclick="copyText(window.__prompts['${esc(j.id)}'])">📋 Copy Claude prompt</button></div>
+          <pre>${esc(j.prompt)}</pre></details>`;
+      }
+    }
+    const logBlock = (j.log_tail && j.log_tail.length)
+      ? `<details><summary>output (${j.log_tail.length} lines)</summary><pre>${esc(j.log_tail.join("\n"))}</pre></details>`
+      : "";
+    return `<div class="job ${j.issue?'issue':''}">
+      <div class="jhead">
+        <div class="left"><span class="dot ${jobDot(j.status)}"></span><b>${esc(j.kind)}</b>
+          <span class="muted">${esc(j.status)}${eta}</span></div>
+        <span class="muted">${elapsed}</span>${cancel}
+      </div>
+      <div class="cmd">${esc(j.command)}</div>
+      ${p.phase?`<div class="jmeta">${esc(p.phase)}</div>`:""}
+      ${bar}${p.bytes_human?`<div class="jmeta">${esc(p.bytes_human)}</div>`:""}${trainBlock(p)}${issueBlock}${logBlock}
+    </div>`;
+  }
+  function renderJobs(jobsList){
+    ensureRunForm();
+    const list = (jobsList || []).slice().reverse();  // newest first
+    document.getElementById("jobsBody").innerHTML =
+      list.length ? list.map(jobCard).join("") : '<div class="empty">no processes run yet</div>';
+  }
+
+  // ---------- Playbooks (multi-step workflows) ----------
+  const PLAYBOOK_DEFS = [
+    {name:"enrich", label:"Enrich a session", destructive:false},
+    {name:"build-train", label:"Build corpus + train CNN", destructive:false},
+    {name:"roll", label:"Roll session + pull (restarts camera)", destructive:true},
+    {name:"promote", label:"Promote best model", destructive:true},
+    {name:"reinfer", label:"Re-infer all + refresh showcase", destructive:false},
+  ];
+  function ensurePlaybookForm(){
+    const host = document.getElementById("pbRunArea");
+    if (!host || host.dataset.ready) return;
+    if (!IS_LOCAL){ host.innerHTML = '<span class="muted">launch from localhost to run playbooks</span>'; host.dataset.ready = "1"; return; }
+    host.dataset.ready = "1";
+    host.innerHTML = `<span class="runbar">
+      <select id="pbName">${PLAYBOOK_DEFS.map(d=>`<option value="${d.name}">${esc(d.label)}</option>`).join("")}</select>
+      <input id="pbSession" placeholder="session (enrich only), e.g. session_20260608_125639" />
+      <button class="btn sm" id="pbRunBtn">Run playbook</button></span>`;
+    document.getElementById("pbRunBtn").addEventListener("click", submitPlaybook);
+  }
+  async function submitPlaybook(){
+    const name = document.getElementById("pbName").value;
+    const session = document.getElementById("pbSession").value.trim();
+    const def = PLAYBOOK_DEFS.find(d=>d.name===name) || {};
+    if (def.destructive){
+      const what = name==="roll"
+        ? "Restart the Orin camera service? This ends the current recording session, starts a new one, then pulls the closed session."
+        : "Overwrite the production model with the best training run? (The current model is backed up first.)";
+      if (!window.confirm(what)) return;
+    }
+    const body = {name};
+    if (session) body.session = session;
+    if (def.destructive) body.confirm = true;
+    try {
+      await fetchJSON("/api/playbooks", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
+      showToast("Launched " + name); pollNow();
+    } catch(e){ showToast("Launch failed: " + e.message); }
+  }
+  async function cancelPlaybook(id){
+    try { await fetchJSON("/api/playbooks/" + encodeURIComponent(id) + "/cancel", {method:"POST"}); pollNow(); }
+    catch(e){ showToast("Cancel failed"); }
+  }
+  function stepDot(s){
+    return s==="running" ? "live" : s==="succeeded" ? "ok" : s==="failed" ? "bad" : "idle";
+  }
+  function playbookCard(pb){
+    const steps = (pb.steps||[]).map(s=>{
+      let inner = `<div class="row" style="gap:8px"><span class="dot ${stepDot(s.status)}"></span>`
+        + `<b>${esc(s.label)}</b> <span class="muted">${esc(s.status)}</span>`
+        + `${s.message?` · <span class="muted">${esc(s.message)}</span>`:""}</div>`;
+      // Inline the live job (progress / training chart / copy-prompt) for the
+      // step that's currently running or that failed.
+      if (s.job && (s.status==="running" || s.status==="failed")){
+        inner += `<div style="margin:6px 0 0 4px">${jobCard(s.job)}</div>`;
+      }
+      return `<div class="pstep">${inner}</div>`;
+    }).join("");
+    const cancel = (pb.status==="running" && IS_LOCAL)
+      ? `<button class="btn sm" onclick="cancelPlaybook('${esc(pb.id)}')">Cancel</button>` : "";
+    const elapsed = (pb.elapsed_s!=null) ? fmtDur(pb.elapsed_s) : "";
+    return `<div class="job ${pb.status==='failed'?'issue':''}">
+      <div class="jhead">
+        <div class="left"><span class="dot ${jobDot(pb.status)}"></span><b>${esc(pb.label)}</b>
+          <span class="muted">${esc(pb.status)}</span></div>
+        <span class="muted">${elapsed}</span>${cancel}
+      </div>
+      <div class="psteps">${steps}</div>
+    </div>`;
+  }
+  function renderPlaybooks(list){
+    ensurePlaybookForm();
+    const arr = (list || []).slice().reverse();
+    document.getElementById("pbBody").innerHTML =
+      arr.length ? arr.map(playbookCard).join("") : '<div class="empty">no playbooks run yet</div>';
+  }
+
+  // ---------- top-level render ----------
+  function render(status){
+    __last = status;
+    const now = (status.server_time) || (Date.now()/1000);
+    const local = status.local || {};
+    window.__prompts = {};  // repopulated by jobCard across both panels below
+    document.getElementById("orinBody").innerHTML = orinHtml(status.orin, now);
+    document.getElementById("modelBody").innerHTML = modelHtml(local);
+    document.getElementById("recBody").innerHTML = recsHtml(local);
+    renderPlaybooks(status.playbooks);
+    renderJobs(status.jobs);
+    document.getElementById("sessBody").innerHTML = sessionsHtml(local);
+    document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
+    // Auto-fetch the pull estimate once per live session (a read-only remote du);
+    // guarded so a failure doesn't re-fire every poll.
+    const live = status.orin && status.orin.reachable && status.orin.live_session;
+    if (live && __pullEst.session !== live && !__pullEst.loading) fetchPullEst(live);
+  }
+  window.__render = render;
+
+  // 1s ticker: keep runtime + "checked ago" labels live between 5s polls.
+  setInterval(()=>{
+    const o = __last && __last.orin;
+    if (!o || !o.reachable) return;
+    const now = Date.now()/1000;
+    const rt = document.getElementById("orinRuntime");
+    if (rt && o.service_active==="active" && o.session_start_unix) rt.textContent = fmtDur(now - o.session_start_unix);
+    const ck = document.getElementById("orinChecked");
+    if (ck) ck.textContent = "checked " + fmtAgo(o.checked_at, now);
+    const pe = document.getElementById("pullEstAgo");
+    if (pe && __pullEst.at) pe.textContent = "checked " + fmtAgo(__pullEst.at, now);
+  }, 1000);
+</script>
+{% endblock %}

@@ -46,7 +46,9 @@ class RemoteInventory:
 
     bytes: int = 0
     files: int = 0
-    main_snaps: int = 0
+    main_snaps: int = 0  # all *_main_*.jpg (vehicle + person)
+    vehicle_main_snaps: int = 0  # vehicle_*_main_*.jpg only (person = main - vehicle)
+    main_bytes: int = 0  # summed size of *_main_*.jpg (the --only-main payload)
     hq_crops: int = 0
     jsonl: int = 0
 
@@ -98,6 +100,9 @@ def remote_inventory(host: str, user: str, key: str, remote_path: str) -> Remote
         "du -sb . 2>/dev/null | awk '{print \"BYTES \" $1}' ; "
         "find . -maxdepth 1 -type f | wc -l | awk '{print \"FILES \" $1}' ; "
         "find . -maxdepth 1 -name '*_main_*.jpg' | wc -l | awk '{print \"MAIN \" $1}' ; "
+        "find . -maxdepth 1 -name 'vehicle_*_main_*.jpg' | wc -l | awk '{print \"VEHMAIN \" $1}' ; "
+        "find . -maxdepth 1 -name '*_main_*.jpg' -printf '%s\\n' 2>/dev/null"
+        " | awk '{s+=$1} END{print \"MAINBYTES \" s+0}' ; "
         "find . -maxdepth 1 -name '*_hq.jpg'     | wc -l | awk '{print \"HQ \" $1}' ; "
         "find . -maxdepth 1 -name '*.jsonl'      | wc -l | awk '{print \"JSONL \" $1}'"
     )
@@ -107,6 +112,8 @@ def remote_inventory(host: str, user: str, key: str, remote_path: str) -> Remote
         "BYTES": "bytes",
         "FILES": "files",
         "MAIN": "main_snaps",
+        "VEHMAIN": "vehicle_main_snaps",
+        "MAINBYTES": "main_bytes",
         "HQ": "hq_crops",
         "JSONL": "jsonl",
     }
@@ -372,6 +379,11 @@ def main(argv: list[str] | None = None) -> int:
         f"[pull] size:    {human_bytes(inv.bytes)} across {inv.files} files "
         f"({inv.main_snaps} main snaps, {inv.hq_crops} HQ crops, {inv.jsonl} jsonl)"
     )
+    # Machine-readable transfer total for the control panel's progress watcher:
+    # the bytes that *this* pull will copy (just the main snaps under
+    # --only-main, the whole dir otherwise), so the ETA tracks reality.
+    pull_total = inv.main_bytes if (args.only_main and inv.main_bytes) else inv.bytes
+    print(f"[pull] size_bytes: {pull_total}", flush=True)
     if args.only_main:
         print("[pull] mode:    --only-main (skipping thumbs + HQ + HTML)")
 

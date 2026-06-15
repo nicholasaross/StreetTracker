@@ -29,6 +29,11 @@ build/
 output/
 # make/model CNN training runs (checkpoints, history.json, logs)
 runs/
+# Per-install production-model sidecar (metadata for the gitignored .pt) +
+# control-panel runtime state (written under the output root).
+src/streettracker/analysis/makemodel/models/*.meta.json
+control_jobs.json
+control_playbooks.json
 camera_config.json
 # StreetTracker convention: configs/camera.json carries the live Reolink
 # password and is per-install. configs/camera.example.json IS tracked.
