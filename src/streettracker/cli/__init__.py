@@ -19,6 +19,7 @@ Subcommands:
 - ``streettracker makemodel-build-uk <out>`` — extract DVSA-labelled UK make crops
 - ``streettracker makemodel-train-uk <crops>`` — train the UK make classifier
 - ``streettracker showcase`` — local website showcasing enriched + recurring vehicles
+- ``streettracker control`` — operator control panel (live radiator + process control)
 
 Each subcommand owns its own ``argparse.ArgumentParser`` in its module's
 ``main()`` — we dispatch on the first positional rather than using
@@ -52,6 +53,7 @@ commands:
   makemodel-build-uk  extract DVSA-labelled UK make crops from sessions
   makemodel-train-uk  train the UK make classifier on extracted crops
   showcase        local website: enriched + recurring vehicles, with tagging
+  control         operator control panel: live radiator + process control
 
 Run ``streettracker <command> --help`` for per-command options.
 """
@@ -149,6 +151,11 @@ def main(argv: list[str] | None = None) -> int:
         from streettracker.web.server import main as showcase_main
 
         return showcase_main(rest)
+
+    if head == "control":
+        from streettracker.control.server import main as control_main
+
+        return control_main(rest)
 
     if head == "run":
         from streettracker.cli.run import main as run_main

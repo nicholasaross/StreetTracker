@@ -109,6 +109,27 @@ def test_remote_inventory_tolerates_garbage_lines() -> None:
     assert inv.main_snaps == 0
 
 
+def test_remote_inventory_parses_vehicle_main_split() -> None:
+    """VEHMAIN gives the vehicle subset of MAIN (person = main - vehicle)."""
+    fake_out = "MAIN 10\nVEHMAIN 4\n"
+    with patch("streettracker.cli.pull.subprocess.run") as mock_run:
+        mock_run.return_value = _fake_completed(fake_out)
+        inv = pull.remote_inventory("orin", "u", "/k", "/x")
+    assert inv.main_snaps == 10
+    assert inv.vehicle_main_snaps == 4
+
+
+def test_remote_inventory_parses_main_bytes() -> None:
+    """MAINBYTES gives the --only-main payload size for the pull ETA."""
+    fake_out = "BYTES 1000\nMAINBYTES 600\nMAIN 4\n"
+    with patch("streettracker.cli.pull.subprocess.run") as mock_run:
+        mock_run.return_value = _fake_completed(fake_out)
+        inv = pull.remote_inventory("orin", "u", "/k", "/x")
+    assert inv.bytes == 1000
+    assert inv.main_bytes == 600
+    assert inv.main_snaps == 4
+
+
 def test_scp_pull_dry_run_does_not_invoke_subprocess(tmp_path: Path) -> None:
     with patch("streettracker.cli.pull.subprocess.run") as mock_run:
         pull.scp_pull(

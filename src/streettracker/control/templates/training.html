@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block content %}
+<div id="trainBody"><div class="empty">loading…</div></div>
+
+<script>
+  window.__BOOT = {{ status | tojson }};
+  let __last = window.__BOOT;
+
+  function pickTrainingJob(jobs){
+    const t = (jobs || []).filter(j => j.kind === "makemodel-train-uk");
+    return t.find(j => j.status === "running") || (t.length ? t[t.length - 1] : null);
+  }
+  function argVal(cmd, flag){
+    const m = new RegExp(flag.replace(/[-]/g, "\\$&") + "\\s+(\\S+)").exec(cmd || "");
+    return m ? m[1] : null;
+  }
+  function statusDot(s){
+    return s === "running" ? "live" : s === "succeeded" ? "ok" : s === "failed" ? "bad" : "idle";
+  }
+
+  async function startBuildTrain(){
+    try {
+      await fetchJSON("/api/playbooks", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({name:"build-train"})});
+      showToast("Launched build + train"); pollNow();
+    } catch(e){ showToast("Launch failed: " + e.message); }
+  }
+  async function promoteRun(run){
+    if (!window.confirm(`Promote ${run} to the production model? The current model is backed up first.`)) return;
+    try {
+      await fetchJSON("/api/playbooks", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({name:"promote", confirm:true, run})});
+      showToast("Promoting " + run); pollNow();
+    } catch(e){ showToast("Promote failed: " + e.message); }
+  }
+  async function cancelJob(id){
+    try { await fetchJSON("/api/jobs/" + encodeURIComponent(id) + "/cancel", {method:"POST"}); pollNow(); }
+    catch(e){ showToast("Cancel failed"); }
+  }
+
+  function renderTraining(status){
+    __last = status;
+    document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
+    const local = status.local || {};
+    const model = local.model, corpus = local.corpus;
+    const prodAcc = (model && model.val_make_top1 != null) ? model.val_make_top1 : null;
+    const job = pickTrainingJob(status.jobs);
+    const host = document.getElementById("trainBody");
+
+    if (!job){
+      host.innerHTML = `<section class="panel"><h2>CNN training</h2>
+        <div class="empty">No training run found.</div>`
+        + (IS_LOCAL
+            ? `<div style="margin-top:10px"><button class="btn" onclick="startBuildTrain()">Start build + train CNN →</button></div>`
+            : `<div class="muted" style="margin-top:6px">Launch “Build + train CNN” from the dashboard.</div>`)
+        + `</section>`;
+      return;
+    }
+
+    const p = job.progress || {}, m = p.metrics || {};
+    const epochs = m.epochs || [];
+    const backbone = argVal(job.command, "--backbone");
+    const insize = argVal(job.command, "--input-size");
+    const eta = (p.eta_s != null && job.status === "running") ? " · ETA " + fmtDur(p.eta_s) : "";
+    const cancel = (job.status === "running" && IS_LOCAL)
+      ? `<button class="btn sm" onclick="cancelJob('${esc(job.id)}')">Cancel</button>` : "";
+
+    // Header + pre-training facts.
+    let h = `<section class="panel">
+      <div class="jhead">
+        <div class="left"><span class="dot ${statusDot(job.status)}"></span>
+          <b>${esc(job.label || job.kind)}</b> <span class="muted">${esc(job.status)}${eta}</span></div>
+        <span class="muted">${fmtDur(job.elapsed_s)}</span>${cancel}
+      </div>
+      <div class="cmd">${esc(job.command)}</div>
+      <div class="metrics" style="margin-top:14px">
+        <div class="metric"><div class="k">phase</div><div class="v sm">${esc(p.phase || "—")}</div></div>
+        <div class="metric"><div class="k">backbone</div><div class="v sm mono">${backbone ? ("B" + backbone.replace(/\D/g, "")) : "—"}</div></div>
+        <div class="metric"><div class="k">input</div><div class="v sm mono">${insize ? (esc(insize) + "px") : "—"}</div></div>
+        <div class="metric"><div class="k">makes</div><div class="v">${fmtInt(m.makes)}</div></div>
+        <div class="metric"><div class="k">train crops</div><div class="v">${fmtInt(m.train_crops)}</div></div>
+        <div class="metric"><div class="k">val crops</div><div class="v">${fmtInt(m.val_crops)}</div></div>
+      </div>
+    </section>`;
+
+    // Live curve.
+    if (epochs.length){
+      const last = epochs[epochs.length - 1];
+      const best = (m.best_make1 != null) ? (m.best_make1 * 100).toFixed(1) + "%" : "—";
+      const delta = (m.best_make1 != null && prodAcc != null) ? (m.best_make1 - prodAcc) : null;
+      h += `<section class="panel" style="margin-top:16px">
+        <h2>Loss &amp; make@1 per epoch</h2>
+        ${trainChart(epochs, {height:240, refMake1: prodAcc || 0})}
+        <div class="jmeta" style="margin-top:8px">
+          <span style="color:var(--warn)">■ loss ${last.loss.toFixed(3)}</span> ·
+          <span style="color:var(--ok)">■ make@1 ${(last.make1 * 100).toFixed(1)}%</span> ·
+          best ${best} (epoch ${m.best_epoch != null ? m.best_epoch : "?"})
+          ${prodAcc != null ? ` · production ${(prodAcc * 100).toFixed(1)}%` : ""}
+          ${delta != null ? ` · <b style="color:${delta >= 0 ? "var(--ok)" : "var(--bad)"}">${delta >= 0 ? "+" : ""}${(delta * 100).toFixed(1)} pp</b>` : ""}
+        </div>
+      </section>`;
+
+      const rows = epochs.slice().reverse().map(e =>
+        `<tr><td>${e.epoch}</td><td>${e.loss.toFixed(4)}</td><td>${(e.make1 * 100).toFixed(1)}%</td>`
+        + `<td>${(e.make5 * 100).toFixed(1)}%</td><td>${fmtDur(e.sec)}</td></tr>`).join("");
+      h += `<section class="panel" style="margin-top:16px"><h2>Epochs</h2>
+        <div style="overflow-x:auto"><table class="sessions">
+          <thead><tr><th>epoch</th><th>train loss</th><th>val make@1</th><th>val make@5</th><th>time</th></tr></thead>
+          <tbody>${rows}</tbody></table></div></section>`;
+    } else {
+      h += `<section class="panel" style="margin-top:16px"><div class="empty">waiting for the first epoch…</div></section>`;
+    }
+
+    // Training corpus distribution.
+    if (corpus){
+      const top = Object.entries(corpus.per_make_cars || {})
+        .map(([k, v]) => ({label:k, value:v, prefix:makeIcon(k), title:`${k}: ${v} cars`}))
+        .sort((a, b) => b.value - a.value).slice(0, 12);
+      h += `<section class="panel" style="margin-top:16px"><h2>Training corpus — ${esc(corpus.name)}</h2>
+        <div class="muted" style="font-size:12px">${fmtInt(corpus.n_crops)} crops · ${fmtInt(corpus.n_cars)} cars · ${fmtInt(corpus.n_makes)} makes</div>
+        <div style="margin-top:10px">${hbarList(top)}</div></section>`;
+    }
+
+    // Promote, once the run is finished.
+    if (job.status === "succeeded" && m.checkpoint){
+      const parts = String(m.checkpoint).replace(/\\/g, "/").split("/").filter(Boolean);
+      const run = parts.length >= 2 ? parts[parts.length - 2] : null;
+      const beats = (m.best_make1 != null && prodAcc != null) ? m.best_make1 > prodAcc : null;
+      const verdict = beats === true
+        ? `beats production by ${((m.best_make1 - prodAcc) * 100).toFixed(1)} pp`
+        : beats === false ? `does not beat production (${(prodAcc * 100).toFixed(1)}%)` : "compare against production";
+      h += `<section class="panel" style="margin-top:16px"><h2>Promote</h2>
+        <div class="muted">${esc(run || "this run")} — make@1 ${m.best_make1 != null ? (m.best_make1 * 100).toFixed(1) + "%" : "?"}; ${verdict}.</div>`;
+      if (IS_LOCAL && run){
+        h += `<div style="margin-top:10px"><button class="btn" onclick="promoteRun('${esc(run)}')">Promote ${esc(run)} →</button></div>`;
+      } else {
+        h += `<div class="muted" style="margin-top:6px">Connect from localhost to promote.</div>`;
+      }
+      h += `</section>`;
+    }
+
+    host.innerHTML = h;
+  }
+  window.__render = renderTraining;
+</script>
+{% endblock %}
