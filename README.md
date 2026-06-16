@@ -62,7 +62,12 @@ MP4 (batch, dev) ───┘                                               (dir
   per-car "this is my car" metadata editor) and a **traffic-statistics** page
   (journeys by day/hour, day-of-week + weekday×hour heatmaps, speed distribution,
   make/colour mix) — all dependency-free SVG/CSS.
-- **Dashboard** — auto-regenerated HTML summary per session + hourly rollup.
+- **Dashboard** — auto-regenerated HTML summary per session + hourly rollup,
+  served live on the device at `http://<orin>:8080/`.
+- **Operator control panel** — a token-free web cockpit (`streettracker
+  control`) to drive the pull → enrich → train → promote loop with live
+  progress, ETAs, a live training curve, and a copy-paste help prompt when a
+  step fails. See [Web interfaces](#web-interfaces).
 
 ## Quick start — dev box
 
@@ -114,6 +119,38 @@ Enrichment + web:
 | `streettracker makemodel <session>` | CNN make/model inference → `_makemodel.json` |
 | `streettracker makemodel-build-uk` / `makemodel-train-uk` | build a DVSA-labelled UK crop corpus · train the make classifier |
 | `streettracker showcase --output-root output` | local website of enriched + recurring cars + stats (http://127.0.0.1:8090/) |
+| `streettracker control --output-root output` | operator control panel: live radiator + one-click procedures (http://localhost:8095/) |
+
+## Web interfaces
+
+Three browsable UIs, all dependency-free SVG/CSS:
+
+| UI | Host | Command | URL |
+|---|---|---|---|
+| **Live dashboard** | Orin (device) | served by `streettracker run` / the systemd service — no extra command | `http://<orin>:8080/` |
+| **Showcase** | dev box | `uv run streettracker showcase --output-root output` | `http://127.0.0.1:8090/` |
+| **Control panel** | dev box | `uv run streettracker control --output-root output` | `http://localhost:8095/` |
+
+- **Live dashboard** — the running capture service auto-regenerates an HTML
+  summary of the current session (track tiles + hourly rollup) and serves it on
+  the device at port 8080. It comes up with `streettracker run`; nothing else to
+  start.
+- **Showcase** — a cross-session gallery of the identified + recurring cars
+  (ANPR + DVSA make/model/year/colour) with a per-car "this is my car" metadata
+  editor and a `/stats` traffic-analytics page. Local-only by default; add
+  `--host 0.0.0.0` for LAN. (Speed→mph calibration via `configs/showcase.json`.)
+- **Control panel** — an operator cockpit for running the day-to-day procedures
+  (pull → ALPR → DVSA → vehicles → make/model, corpus rebuild, training, model
+  promotion) **without an assistant attached, consuming zero tokens once
+  running**: a live radiator (Orin status, session inventory, corpus/model
+  retrain & promote recommendations) plus one-click playbooks with progress
+  bars, ETAs, a live training loss curve (`/training`), and a copy-paste Claude
+  prompt when a step fails. Dashboards bind `0.0.0.0` (LAN-viewable); every
+  control action is localhost-only. Detached launcher (opens a browser):
+
+  ```powershell
+  pwsh -NoProfile -File scripts/control_panel.ps1
+  ```
 
 ## Output
 
