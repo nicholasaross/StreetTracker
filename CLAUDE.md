@@ -11,8 +11,14 @@ tree). The detailed history lives in the sections below; this block is the
 **Live on the Orin** (#63 runtime bundle deployed 2026-06-13, service active,
 NRestarts=0):
 - **per-direction pipeline bands** `pipeline_t_usable_by_direction =
-  {forward(R→L):[0.10,0.20], reverse(L→R):[0.25,0.60]}` — the 2026-06-11 band
-  re-analysis found the two directions read best at *opposite* ends of the road.
+  {forward(R→L):[0.10,0.20], reverse(L→R):[0.30,0.60]}` (reverse lower edge
+  nudged 0.25→0.30 on 2026-06-19, validation pending). **Post-deploy verdict
+  (2026-06-19, two ~70h soaks) falsified the R→L half** of the 2026-06-11
+  re-analysis: L→R is the win (per-car ~73-82 %), R→L is camera-geometry-capped
+  at ~15-20 % at *every* position (the "R→L reads far" finding was a
+  motion-window-hint artifact that completion-time bboxes corrected; honest net
+  per-car ~48 %, not the inflated 63.9 %). R→L now needs hardware, not tuning.
+  Detail in the [snap-gate config layout](#snap-gate-config-layout) section.
 - **`vehicle_classes = [0,1,2,3,5,7]`** (person+car+bike+moto+bus+truck; was
   `[0,2]`).
 - **completion-time bbox capture** (`TrackRecord.main_snap_bboxes_done`) —
@@ -34,14 +40,19 @@ refreshed. Data-is-the-lever, confirmed again (4× data → +5.3 pp). The
 `*_0613_*` runs are dead partials from a sleep-killed overnight job — ignore.
 
 **Tomorrow, priority order:**
-1. **Band-deploy verdict — the headline capture test.** After the Orin soaks
-   ≥1 day on the new band, pull a **post-deploy** session (`session_20260613_*`+),
-   `alpr-run --pipeline preferred --pre-crop --ghost-mask .claude/ghost_mask.json`,
-   then per-direction canonical via `.claude/analyze_band_position.py <dir>` +
-   a `build_vehicles` count. **Expected:** L→R/img ~52→75-85 %, R→L/img
-   ~37→~56 %+, per-car 63.9→mid-70s. Confirm the log prints "completion-time
-   bboxes available" and check `_meta.json` `snap_stats` that the 4-class
-   expansion didn't blow up snap volume.
+1. **Band-deploy verdict — DONE (2026-06-19).** Two ~70h post-deploy soaks
+   (`session_20260613_090331`, `session_20260616_121115`) assessed with
+   completion-time bboxes (100 % coverage). **L→R is the win** — per-car
+   ~73-82 %, 73-76 % at mid-road landings. **R→L is camera-geometry-capped at
+   ~15-20 % at *every* landing position** — the 2026-06-11 "R→L reads far
+   (56-76 %)" prescription was a motion-window-hint forward-extrapolation
+   artifact that completion-time bboxes corrected (restoring the pre-Step-16
+   "~14 % R→L ceiling", right all along). **Honest net per-car ~48 %, not the
+   inflated 63.9 %.** 4-class expansion did NOT blow up snaps (~252-282 fires/h,
+   HTTP 100 %). Follow-up: reverse band lower edge nudged 0.25→0.30 (2026-06-19,
+   validation pending — re-run `.claude/verdict_band_0613.py` after a soak).
+   **R→L is now a hardware problem** (2nd discreet camera on the approach), not
+   a tuning one.
 2. **Then:** a bigger backbone may now pay (B5 still won at 4× data, so the
    corpus isn't capacity-saturated); VLM bake-off (Qwen3-VL vs the CNN's 0.402
    on the by-car val); people P1→P2 (attribute tags) / P0 (retention policy);
@@ -421,16 +432,16 @@ names differ from the example.
 
 ## ANPR tuning loop
 
-**Current status (2026-05-27, after Step 13a deploy + fuzzy plate clustering):**
+**Current status (updated 2026-06-19 — per-direction band verdict in; core table from 2026-05-27):**
 
 | Layer | Status |
 |---|---|
 | 4K capture coverage | Solved. 98 % cars get ≥1 snap. Pipeline mode dominates (`pipeline_interval_ms=400`, `pipeline_max_per_track=15`); trigger geometry is minor. |
 | Ghost-plate aliasing | Solved (Step 10). Parked-car mask + padding cap eliminate all 5 ghost plates (138 tracks). |
-| Per-image high-conf | 58.8 % (L→R 88.6 %, R→L 28.7 %) after Step 11 — but that row's "R→L gated by detector quality" verdict was **wrong**: the 06-10 failure triage (Step 16) showed **96 % of R→L failures were snap latency** (stale fire-time bbox). **Full-corpus re-run with motion-window hints (06-11): per-snapped-car canonical 41-46 % → 63.9 % pooled (R→L 69.0 %, L→R 58.6 %)** — the direction asymmetry *inverted*; the old "R→L ~14 % ceiling at any position" was a stale-hint measurement artifact. One outlier: the band-2 [0.25,0.60] session's R→L stays collapsed at 7.6 % — the near-zone R→L question is open again, now untangled from staleness. |
+| Per-image high-conf | **Honest post-verdict (2026-06-19, two ~70h post-deploy soaks, completion-time bboxes): L→R 73-76 % mid-road; R→L ~12-13 %/image, ~15-20 %/car — a camera-geometry ceiling.** History: the 06-10 triage (Step 16) correctly found 96 % of R→L failures were snap-latency stale-bbox, but the 06-11 motion-window-hint re-run **overcorrected** — its "41-46 % → 63.9 % pooled, R→L 69.0 % > L→R 58.6 %, asymmetry inverted" was a forward-extrapolation artifact. Completion-time bboxes (exact landing crops, no extrapolation) on the post-deploy soaks restored the pre-Step-16 "R→L ~14 % ceiling at any position" — right all along. L→R reads well; R→L doesn't, at any landing position (`.claude/band_position_done.py`). |
 | Per-car aliasing-free | **~78 %** — intrinsic floor of camera + scene, verified across two sessions. Further snap-budget tuning will not move it. |
 | Misclassification | Confidence-weighted class voting (PR #23) defends single-frame flips; consistent model errors still possible. |
-| Direction-aware throttling | Deployed 2026-05-27 (`pipeline_interval_ms_by_direction={forward:300, reverse:400}`). Validation soak pending. |
+| Direction-aware throttling | **NOT live.** Deployed 2026-05-27 (`pipeline_interval_ms_by_direction={forward:300, reverse:400}`) but dropped from the live config (likely the 2026-06-13 splice); now `{}` (uniform 400 ms). Not restored — premise (pack R→L's clean-read window) falsified: R→L is camera-capped ~15-20 % at any position (2026-06-19 verdict). |
 | Dataset-level pivot | `vehicles` aggregator (Step 12) + fuzzy clustering (Step 14). **Make/model DVSA-first prong shipped** (PRs #41/#42/#43): `dvsa-label`→`dvsa-apply`→`vehicles` (+`--across`); covers the readable ~25-30 % of cars. **Universal CNN: CompCars trained (#46) but failed UK validation** (domain gap, ~1 %); **pivoted to a UK-native make classifier** (#47) trained on DVSA-auto-labelled local crops — the earlier "~21 % task-bound ceiling" was **wrong** — it was **resolution-bound** (the cropper hardcoded 224 px output, capping every prior lever). Lifting input resolution breaks it: **B0 @224/384/512 = 22 / 32 / 38 % make@1** (2026-06-03); bigger backbones (B4/B5) overfit 800 cars and don't beat B0. **Production UK model = EfficientNet-B5 @456** (make@1 **0.303**, 29 makes; B0 0.271 < B4 0.284 < B5 — bigger backbones win at 1,229 cars; `make_model_source="cnn"`). The old "37.6 %" was small-val optimism (audit: baseline scored 0.207 on unseen cars). Data IS a lever. See [Make/model classification](#makemodel-classification). Learned recolor + visual re-id still to do. |
 
 **Conclusion:** ANPR coverage objective is met. The 78 % aliasing-free
@@ -440,13 +451,21 @@ Capture-side read-rate tuning is likewise exhausted — near-camera band
 position and camera exposure/shutter (Step 15) were both tried and
 falsified.
 
-**Step 16 addendum (2026-06-11):** the "exhausted"/"floor" framing above
-predates the stale-bbox discovery. The honest per-snapped-car canonical
-rate is now **63.9 %** (was 41-46 %) from an offline-only fix, and every
-pre-Step-16 position/band conclusion (incl. the band-2 near-camera
-collapse + "R→L ceiling") was measured through stale hints and needs
-re-deriving before being trusted. The Anti-Smearing falsification
-stands (same-hint A/B).
+**Step 16 addendum (2026-06-11) — SUPERSEDED by the 2026-06-19 verdict.**
+The 06-11 motion-window-hint re-run claimed the honest per-snapped-car
+canonical rate was 63.9 % (R→L 69.0 % > L→R 58.6 %, asymmetry inverted) and
+that every pre-Step-16 position/band conclusion was a stale-hint artifact
+needing re-derivation. **That re-derivation is now done** — the per-direction
+band was deployed 06-13 and two ~70h post-deploy soaks assessed with
+completion-time bboxes: the 63.9 %/inversion was ITSELF a forward-extrapolation
+artifact of the hint window. **Honest reality: per-snapped-car canonical ~48 %
+(L→R ~76 %, R→L ~16-20 %)** — L→R reads well, R→L is camera-geometry-capped at
+~15-20 % at every landing position, exactly the pre-Step-16 "R→L ~14 % ceiling"
+(right all along). Capture-side read-rate tuning is **exhausted** (band position
++ exposure + offline crop method all tried + falsified); R→L now needs hardware
+(a 2nd discreet camera on the approach), not tuning. The Anti-Smearing
+falsification stands (same-hint A/B). Full verdict: `.claude/verdict_band_0613.py`
++ `.claude/band_position_done.py`.
 
 ### Make/model classification
 
@@ -558,11 +577,11 @@ The dataset-level enrichment pivot. Two prongs:
 | 10 | 05-26 | Ghost mask (zero-fill parked-car rect before any detector sees pixels) + `PreCropDetector(pad_max_px=30)` cap on padding | All 5 ghost plates eliminated. Strict per-car aliasing-free (top read is correct) **55.4 → 78.9 %** (+23.5 pp). The 78.9 % is the **true** aliasing-free floor — Step 9's 78.5 % estimate was correct but unverifiable until the mask proved it. | — |
 | 11 | 05-26 | `t_usable_frac` trim `[0.10, 0.67] → [0.10, 0.45]` (snap-firing band shrunk past `FD61PVX` zone) | Per-image **+13 pp** (L→R +17 pp, R→L +3 pp). Snap budget redistributed (mean fires/track 1.19 → 1.45, `pipeline_budget_exhausted` 954 → 665). **Per-car aliasing-free flat at ~78 %** — confirms intrinsic floor; cars that *could* be captured in mid-band already were. | — |
 | 12 | 05-26 | `streettracker vehicles` plate-anchored aggregator — folds `data.json` + `alpr_by_track.json` into per-vehicle records with `n_visits`, `gap_minutes_max/min`, direction + color histograms, inline visit list | Step 10 session: 3 recurring. Step 11 session: 6 recurring including `HX18MYJ` going R→L then L→R 105 min later. | — |
-| 13a | 05-27 | Direction-aware `pipeline_interval_ms_by_direction` runtime — fire faster in one direction's narrow clean-read window | Deployed `{forward:300, reverse:400}` (R→L 1.33× rate, L→R unchanged). Validation soak pending. | PRs #30/#31 |
+| 13a | 05-27 | Direction-aware `pipeline_interval_ms_by_direction` runtime — fire faster in one direction's narrow clean-read window | Deployed `{forward:300, reverse:400}` (R→L 1.33× rate, L→R unchanged). **Later dropped from the live config + not restored — premise falsified 2026-06-19: R→L is camera-capped, there's no clean-read window to pack.** | PRs #30/#31 |
 | 13b | 05-27 | Multi-frame plate consensus (`analysis/alpr/consensus.py`) — confidence-weighted character voting across a track's reads | **Negative result on this scene** (-43 pp vs best-of-N at conf 0.9). Per-image reads of one track frequently capture DIFFERENT physical plates (parked cars vs tracked car vs mask leakage), so voting dilutes. Primitive kept as infra. | — |
 | 14 | 05-27 | Fuzzy plate clustering in `vehicles.py` (rapidfuzz, ratio default 85, same-length only); no temporal-overlap rejection | `LD22BWG`/`LD22BMG` correctly merged (BotSORT ID-switch on same silver hatchback); Step 11 recurring 6 → 8. | PRs #33/#34 |
 | 15 | 05-31 | Reolink **Anti-Smearing** exposure + shutter cap (`125→32`) to freeze near-camera motion blur; validation soak ran a widened `[0.10,0.60]` band, assessed + reverted 06-01 | **Falsified.** Canonical read-rate ~halved (matched midday daylight 48.5 → 25.1 %, -23 pp, both directions); near-camera zone did not recover. Faster shutter → higher gain → sensor noise costs more than the motion blur it removes (mid-road reads were never blur-limited). Reverted ISP to Auto/125 + band to `[0.10,0.45]`. **Capture-side levers (band position + exposure) exhausted.** | — |
-| 16 | 06-10 | **Stale-bbox fix.** Operator triage of 99 R→L failed snaps (`.claude/triage_rl.py` labelling site) → **96 % were snap latency**: the 4K HTTP snap lands ~0.7-1.3 s after fire (p50 710 ms), the car exits its fire-time bbox (+≤30 px pad) and the plate detector was shown empty road; the fastest cars exit the *frame* (the 11 % "no car" bucket had the highest host speeds). Zero smeared, zero sharp-unread — optics/OCR were never the limit. Fix: **motion-window hints** (`snap_assets.resolve_bbox_hint_window` — union of fire-time bboxes `i..i+3` ≈ the latency horizon; linear extrapolation at end-of-track, shift capped at 2.5 bbox-dims) + **vehicle stage inside the window** (`PreCropDetector(vehicle_stage_in_hint=True)`; window-only A/B *lost* 15 pp R→L detection to input downscale — tight vehicle crops restore plate pixels). `alpr-run --hint-lookahead N` (default 3, 0 = legacy). | A/B on `session_20260530_165958` (`.claude/measure_hint_window_ab.py`): **canonical cars/session 43 → 99 (+130 %)**; L→R detection 49 → 90 %, canonical/image 32.4 → 75.7 %; R→L canonical cars 4 → 11 (~2.8×; residual = far-band plate size + out-of-frame escapes → per-direction band / latency-aware firing are the next capture levers). Parked-beacon count flat — no aliasing cost. Related same-day work: **parked-plate beacon suppression** (PRs #57/#58) — a parked Duster read 99×/69 tracks had become the showcase's phantom #1 "regular" (55 visits); now suppressed into a `parked_episodes` record, with `dvsa-label` harvests scrubbed (replace + orphan-clear `track_ids` semantics) and the corpus rebuilt (1,311 cars / 8,067 crops / 29 makes in `runs/uk_crops_0610_512`). | PR #59 |
+| 16 | 06-10 | **Stale-bbox fix.** Operator triage of 99 R→L failed snaps (`.claude/triage_rl.py` labelling site) → **96 % were snap latency**: the 4K HTTP snap lands ~0.7-1.3 s after fire (p50 710 ms), the car exits its fire-time bbox (+≤30 px pad) and the plate detector was shown empty road; the fastest cars exit the *frame* (the 11 % "no car" bucket had the highest host speeds). Zero smeared, zero sharp-unread — optics/OCR were never the limit. Fix: **motion-window hints** (`snap_assets.resolve_bbox_hint_window` — union of fire-time bboxes `i..i+3` ≈ the latency horizon; linear extrapolation at end-of-track, shift capped at 2.5 bbox-dims) + **vehicle stage inside the window** (`PreCropDetector(vehicle_stage_in_hint=True)`; window-only A/B *lost* 15 pp R→L detection to input downscale — tight vehicle crops restore plate pixels). `alpr-run --hint-lookahead N` (default 3, 0 = legacy). | A/B on `session_20260530_165958` (`.claude/measure_hint_window_ab.py`): **canonical cars/session 43 → 99 (+130 %)**; L→R detection 49 → 90 %, canonical/image 32.4 → 75.7 %; R→L canonical cars 4 → 11 (~2.8×). **[CORRECTED 2026-06-19: the R→L gain here was a forward-extrapolation artifact of the hint window — completion-time bboxes on two post-deploy soaks show R→L is camera-capped ~15-20 % at *every* landing position; only the L→R gain was real. The "per-direction band is the next lever" follow-up was deployed 06-13 and confirmed to help ONLY L→R.]** Parked-beacon count flat — no aliasing cost. Related same-day work: **parked-plate beacon suppression** (PRs #57/#58) — a parked Duster read 99×/69 tracks had become the showcase's phantom #1 "regular" (55 visits); now suppressed into a `parked_episodes` record, with `dvsa-label` harvests scrubbed (replace + orphan-clear `track_ids` semantics) and the corpus rebuilt (1,311 cars / 8,067 crops / 29 makes in `runs/uk_crops_0610_512`). | PR #59 |
 
 Aggregation scripts that re-produce each measurement table live at
 `.claude/aggregate_step{8,10,11}.py`, `.claude/measure_consensus.py`,
@@ -848,7 +867,8 @@ main-stream resolution, only update `source_size` in
 | `trigger_directions` | `["forward", "forward", "forward", "reverse", "reverse", "reverse"]` | asymmetric: forward = R→L approach, reverse = L→R depart |
 | `pipeline_interval_ms` | `400` | base cadence |
 | `pipeline_max_per_track` | `15` | per-track cap |
-| `pipeline_interval_ms_by_direction` | `{"forward": 300, "reverse": 400}` | Step 13a — R→L 1.33× rate; deployed 2026-05-27 |
+| `pipeline_interval_ms_by_direction` | `{}` (empty — uniform 400 ms both directions) | Step 13a deployed `{forward:300,reverse:400}` 2026-05-27 but it's **not in the live config** (dropped, likely the 2026-06-13 splice). Not restored — premise falsified (R→L camera-capped ~15-20 %, 2026-06-19). |
+| `pipeline_t_usable_by_direction` | `{forward:[0.10,0.20], reverse:[0.30,0.60]}` | per-direction pipeline bands; reverse lower edge nudged 0.25→0.30 on 2026-06-19 (validation pending). See [config layout](#snap-gate-config-layout). |
 | Ghost mask | rect `[750, 700, 960, 860]` at `source_size=[4512, 2512]` | covers parked `FD61PVX` car at 4K `(853, 780)` (`t_norm=0.593`) |
 
 **`trigger_t_prime` values are in `[0, 1]` of the USABLE band, not
@@ -874,13 +894,10 @@ block contains all of:
   "t_usable_frac": [0.10, 0.45],
   "pipeline_interval_ms": 400,
   "pipeline_max_per_track": 15,
-  "pipeline_interval_ms_by_direction": {
-    "forward": 300,
-    "reverse": 400
-  },
+  "pipeline_interval_ms_by_direction": {},
   "pipeline_t_usable_by_direction": {
     "forward": [0.10, 0.20],
-    "reverse": [0.25, 0.60]
+    "reverse": [0.30, 0.60]
   }
 }
 ```
@@ -889,14 +906,26 @@ block contains all of:
 PIPELINE fires per motion direction in **absolute t_norm coords** (same
 space as `t_usable_frac`; trigger t' values are unaffected). Directions
 absent from the dict — and frames whose motion direction isn't known
-yet — fall back to `t_usable_frac`. The values above are the 2026-06-11
-band re-analysis prescription: R→L front plates read 56-76 % only when
-fired far (t 0.10-0.20, collapsing past 0.20 in every pool), while L→R
-rear plates run 74-95 % fired mid-to-near (0.25-0.60; the old
-"near-camera collapse" was a stale-hint artifact, and the FD61PVX-zone
-aliasing that motivated trimming the band at 0.45 is now covered by
-ghost mask + bbox hints + beacon suppression). Once deployed, preserve
-this field like the other `pipeline_*` fields when splicing configs.
+yet — fall back to `t_usable_frac`. The bands were the 2026-06-11 band
+re-analysis prescription, deployed 2026-06-13. **Post-deploy verdict
+(2026-06-19, two ~70h soaks, completion-time bboxes, 100 % done-bbox
+coverage):** the L→R band is validated — rear plates read 73-76 % at
+mid-road landings, per-car ~73-82 % (a genuine win). The R→L prescription
+is **falsified**: front plates are camera-geometry-capped at ~15-20 % at
+*every* landing position (`band_position_done.py`), so firing R→L far buys
+nothing. The 2026-06-11 "R→L reads 56-76 % fired far" was a motion-window-
+hint forward-extrapolation artifact; completion-time bboxes (exact landing
+crops, no extrapolation) corrected it, restoring the pre-Step-16 ~14 %
+geometry floor. The reverse lower edge was nudged **0.25→0.30 on 2026-06-19**
+(L→R departs/recedes ~0.10 t_norm during the ~700 ms snap latency, so 0.25
+fires landed in the weak far zone; validation pending). And
+`pipeline_interval_ms_by_direction` is **`{}`** (uniform 400 ms) — the
+Step 13a `{forward:300,reverse:400}` throttle is not live and won't be
+restored (same falsified R→L premise, and faster R→L firing only burns the
+shared HTTP semaphore the readable L→R direction needs). Once deployed,
+preserve these fields like the other `pipeline_*` fields when splicing
+configs. Reproduce the verdict: `.claude/verdict_band_0613.py` +
+`.claude/band_position_done.py`.
 
 The local artifact `.claude/snap_gate.json` historically only carried
 `polygon_frac` / `trigger_t_prime` / `trigger_directions` / `t_usable_frac`.
