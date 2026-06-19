@@ -59,7 +59,7 @@ async def test_job_clean_exit_with_traceback_still_flags_issue() -> None:
     assert "prompt" in job.snapshot()  # surfaced despite the clean exit
 
 
-async def test_job_cancel_marks_cancelled() -> None:
+async def test_job_cancel_marks_cancelled_and_surfaces_prompt() -> None:
     runner = _runner()
     job = runner.submit(JobSpec(kind="import time; print('start'); time.sleep(30)"))
     # Wait until the child is actually running before cancelling.
@@ -70,8 +70,32 @@ async def test_job_cancel_marks_cancelled() -> None:
     assert await runner.cancel(job.id) is True
     await runner.wait(job.id)
     assert job.status == "cancelled"
-    # A cancel isn't an error to ask Claude about.
-    assert "prompt" not in job.snapshot()
+    # A cancel mid-run still didn't finish what the operator asked for, so it
+    # carries a copy-paste prompt (the cancelled variant) for cleanup / re-run.
+    assert job.issue == "job was cancelled before it finished"
+    snap = job.snapshot()
+    assert "prompt" in snap
+    assert "cancelled" in snap["prompt"].lower()
+
+
+async def test_cancel_during_a_genuine_failure_prefers_the_real_marker() -> None:
+    # A cancel and a crash both give a non-zero rc on Windows; if the output had
+    # already shown a trouble marker when the cancel landed, the prompt should
+    # name that, not just "cancelled".
+    runner = _runner()
+    job = runner.submit(
+        JobSpec(kind="import time; print('Traceback (most recent call last):'); time.sleep(30)")
+    )
+    # Cancel only once the marker line has been captured (deterministic).
+    for _ in range(200):
+        if any("Traceback" in line for line in job.log):
+            break
+        await asyncio.sleep(0.02)
+    assert await runner.cancel(job.id) is True
+    await runner.wait(job.id)
+    assert job.status == "cancelled"
+    assert job.issue == "Python traceback in output"
+    assert "prompt" in job.snapshot()
 
 
 async def test_runner_serialises_jobs() -> None:

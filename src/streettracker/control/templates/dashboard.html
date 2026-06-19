@@ -258,7 +258,7 @@
     catch(e){ showToast("Cancel failed"); }
   }
   function jobDot(s){
-    return s==="running" ? "live" : s==="succeeded" ? "ok" : s==="failed" ? "bad" : "idle";
+    return s==="running" ? "live" : s==="succeeded" ? "ok" : (s==="failed"||s==="cancelled") ? "bad" : "idle";
   }
   function trainBlock(p){
     const m = p.metrics || {};
@@ -328,11 +328,34 @@
     if (!host || host.dataset.ready) return;
     if (!IS_LOCAL){ host.innerHTML = '<span class="muted">launch from localhost to run playbooks</span>'; host.dataset.ready = "1"; return; }
     host.dataset.ready = "1";
+    // The session <select> is (re)filled by fillSessionSelect() on every render
+    // — the session list arrives with the status poll — so enrich launches in
+    // one click instead of needing a hand-typed name.
     host.innerHTML = `<span class="runbar">
       <select id="pbName">${PLAYBOOK_DEFS.map(d=>`<option value="${d.name}">${esc(d.label)}</option>`).join("")}</select>
-      <input id="pbSession" placeholder="session (enrich only), e.g. session_20260608_125639" />
+      <select id="pbSession" title="session to enrich (used by the enrich playbook only)"><option value="">loading sessions…</option></select>
       <button class="btn sm" id="pbRunBtn">Run playbook</button></span>`;
     document.getElementById("pbRunBtn").addEventListener("click", submitPlaybook);
+  }
+  // (Re)fill the enrich session picker from the current status: newest first,
+  // newest pre-selected, the operator's choice preserved. Rebuilds only when the
+  // set of sessions changes, so it never clobbers an open dropdown. Reads the
+  // module-scoped `__last` directly — a top-level `let` binding is not a property
+  // of the global object, so reading it off `window` returned undefined and left
+  // the picker empty (the bug this replaces).
+  function fillSessionSelect(){
+    const sel = document.getElementById("pbSession");
+    if (!sel) return;
+    const labels = ((__last && __last.local && __last.local.sessions) || [])
+      .map(x=>x.label).filter(Boolean);
+    const key = labels.join("|");
+    if (sel.dataset.key === key) return;
+    sel.dataset.key = key;
+    const prev = sel.value;
+    sel.innerHTML = labels.length
+      ? labels.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join("")
+      : `<option value="">no sessions pulled yet</option>`;
+    sel.value = (prev && labels.includes(prev)) ? prev : (labels[0] || "");
   }
   async function submitPlaybook(){
     const name = document.getElementById("pbName").value;
@@ -357,7 +380,7 @@
     catch(e){ showToast("Cancel failed"); }
   }
   function stepDot(s){
-    return s==="running" ? "live" : s==="succeeded" ? "ok" : s==="failed" ? "bad" : "idle";
+    return s==="running" ? "live" : s==="succeeded" ? "ok" : (s==="failed"||s==="cancelled") ? "bad" : "idle";
   }
   function playbookCard(pb){
     const steps = (pb.steps||[]).map(s=>{
@@ -365,8 +388,9 @@
         + `<b>${esc(s.label)}</b> <span class="muted">${esc(s.status)}</span>`
         + `${s.message?` · <span class="muted">${esc(s.message)}</span>`:""}</div>`;
       // Inline the live job (progress / training chart / copy-prompt) for the
-      // step that's currently running or that failed.
-      if (s.job && (s.status==="running" || s.status==="failed")){
+      // step that's currently running, or that failed/was cancelled — both need
+      // the copy-paste prompt surfaced.
+      if (s.job && (s.status==="running" || s.status==="failed" || s.status==="cancelled")){
         inner += `<div style="margin:6px 0 0 4px">${jobCard(s.job)}</div>`;
       }
       return `<div class="pstep">${inner}</div>`;
@@ -374,7 +398,7 @@
     const cancel = (pb.status==="running" && IS_LOCAL)
       ? `<button class="btn sm" onclick="cancelPlaybook('${esc(pb.id)}')">Cancel</button>` : "";
     const elapsed = (pb.elapsed_s!=null) ? fmtDur(pb.elapsed_s) : "";
-    return `<div class="job ${pb.status==='failed'?'issue':''}">
+    return `<div class="job ${(pb.status==='failed'||pb.status==='cancelled')?'issue':''}">
       <div class="jhead">
         <div class="left"><span class="dot ${jobDot(pb.status)}"></span><b>${esc(pb.label)}</b>
           <span class="muted">${esc(pb.status)}</span></div>
@@ -385,6 +409,7 @@
   }
   function renderPlaybooks(list){
     ensurePlaybookForm();
+    fillSessionSelect();
     const arr = (list || []).slice().reverse();
     document.getElementById("pbBody").innerHTML =
       arr.length ? arr.map(playbookCard).join("") : '<div class="empty">no playbooks run yet</div>';

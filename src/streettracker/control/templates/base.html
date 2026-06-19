@@ -191,7 +191,13 @@
   function esc(s){ const d=document.createElement("div"); d.textContent=(s==null?"":String(s)); return d.innerHTML; }
   async function fetchJSON(url, opts){
     const r = await fetch(url, opts);
-    if (!r.ok) throw new Error(url+" -> "+r.status);
+    if (!r.ok) {
+      // Surface the server's explanation (aiohttp sends it as the body), not
+      // just the bare status — otherwise a 400 reads as an opaque "-> 400".
+      let detail = "";
+      try { detail = (await r.text()).trim(); } catch(e){}
+      throw new Error(detail ? `${url} -> ${r.status}: ${detail}` : `${url} -> ${r.status}`);
+    }
     return r.json();
   }
   // Horizontal bar list -> HTML. rows: [{label, value, display?, prefix?, color?, title?}].

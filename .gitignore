@@ -20,6 +20,8 @@ uv.lock.bak
 # Build artifacts
 dist/
 build/
+# Control-panel documentation deck — regenerated from scripts/gen_control_deck.py
+StreetTracker_ControlPanel.pptx
 
 # Project artifacts (Nano-side, never commit)
 *.engine
