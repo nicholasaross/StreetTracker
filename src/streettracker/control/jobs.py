@@ -229,6 +229,9 @@ class JobRunner:
     async def _run(self, job: Job) -> None:
         async with self._lane_lock(job.lane):
             if job.cancelled:
+                # Cancelled before it ever started (still queued behind the lane
+                # lock): nothing ran and there's nothing to clean up, so — unlike
+                # a cancel mid-run — no help prompt is surfaced.
                 job.status = "cancelled"
                 job.ended_at = time.time()
                 self._persist(job)
@@ -263,9 +266,19 @@ class JobRunner:
                     "cancelled" if job.cancelled else ("succeeded" if rc == 0 else "failed")
                 )
                 job.parser.finish(rc)
-                # A cancelled job isn't an "error" to ask about; clean exit only
-                # reaches summarize_issue via its output scan.
-                job.issue = None if job.cancelled else summarize_issue(rc, list(job.log))
+                # A cancel and a genuine crash both yield a non-zero rc on
+                # Windows (taskkill), so rc alone can't tell them apart. A job
+                # that ran but didn't finish — failed OR cancelled — still gets a
+                # copy-paste help prompt (build_prompt has a "cancelled" variant:
+                # "check whether anything needs cleaning up before I re-run it").
+                # For a cancel we don't trust rc; we surface a real trouble marker
+                # if the output already showed one, else a plain cancellation note.
+                if job.cancelled:
+                    job.issue = summarize_issue(None, list(job.log)) or (
+                        "job was cancelled before it finished"
+                    )
+                else:
+                    job.issue = summarize_issue(rc, list(job.log))
                 _read_watch_bytes(job)  # final, exact byte measurement
             except Exception as exc:  # spawn failure, decode error, etc.
                 job.ended_at = time.time()
