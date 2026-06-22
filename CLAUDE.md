@@ -12,7 +12,9 @@ tree). The detailed history lives in the sections below; this block is the
 NRestarts=0):
 - **per-direction pipeline bands** `pipeline_t_usable_by_direction =
   {forward(R→L):[0.10,0.20], reverse(L→R):[0.30,0.60]}` (reverse lower edge
-  nudged 0.25→0.30 on 2026-06-19, validation pending). **Post-deploy verdict
+  nudged 0.25→0.30 on 2026-06-19, **validated 2026-06-22** on the ~72h
+  `session_20260619_111111` soak — L→R per-car 73-82 % → **92.3 %**, net
+  per-car ~48 % → **57.9 %**). **Post-deploy verdict
   (2026-06-19, two ~70h soaks) falsified the R→L half** of the 2026-06-11
   re-analysis: L→R is the win (per-car ~73-82 %), R→L is camera-geometry-capped
   at ~15-20 % at *every* position (the "R→L reads far" finding was a
@@ -49,10 +51,13 @@ refreshed. Data-is-the-lever, confirmed again (4× data → +5.3 pp). The
    artifact that completion-time bboxes corrected (restoring the pre-Step-16
    "~14 % R→L ceiling", right all along). **Honest net per-car ~48 %, not the
    inflated 63.9 %.** 4-class expansion did NOT blow up snaps (~252-282 fires/h,
-   HTTP 100 %). Follow-up: reverse band lower edge nudged 0.25→0.30 (2026-06-19,
-   validation pending — re-run `.claude/verdict_band_0613.py` after a soak).
-   **R→L is now a hardware problem** (2nd discreet camera on the approach), not
-   a tuning one.
+   HTTP 100 %). Follow-up: reverse band lower edge nudged 0.25→0.30 (2026-06-19),
+   **validated 2026-06-22** on the ~72h `session_20260619_111111` soak
+   (`.claude/verdict_band_0613.py`): L→R per-car **92.3 %** (up from 73-82 % at
+   [0.25,0.60], best of all three completion-bbox soaks), L→R per-image
+   **77.4 %**, net per-car **57.9 %**; R→L flat at ~23 % (geometry, untouched by
+   the reverse-band nudge). **R→L is now a hardware problem** (2nd discreet
+   camera on the approach), not a tuning one.
 2. **Then:** a bigger backbone may now pay (B5 still won at 4× data, so the
    corpus isn't capacity-saturated); VLM bake-off (Qwen3-VL vs the CNN's 0.402
    on the by-car val); people P1→P2 (attribute tags) / P0 (retention policy);
@@ -868,7 +873,7 @@ main-stream resolution, only update `source_size` in
 | `pipeline_interval_ms` | `400` | base cadence |
 | `pipeline_max_per_track` | `15` | per-track cap |
 | `pipeline_interval_ms_by_direction` | `{}` (empty — uniform 400 ms both directions) | Step 13a deployed `{forward:300,reverse:400}` 2026-05-27 but it's **not in the live config** (dropped, likely the 2026-06-13 splice). Not restored — premise falsified (R→L camera-capped ~15-20 %, 2026-06-19). |
-| `pipeline_t_usable_by_direction` | `{forward:[0.10,0.20], reverse:[0.30,0.60]}` | per-direction pipeline bands; reverse lower edge nudged 0.25→0.30 on 2026-06-19 (validation pending). See [config layout](#snap-gate-config-layout). |
+| `pipeline_t_usable_by_direction` | `{forward:[0.10,0.20], reverse:[0.30,0.60]}` | per-direction pipeline bands; reverse lower edge nudged 0.25→0.30 on 2026-06-19 (validated 2026-06-22: L→R per-car 92.3 %). See [config layout](#snap-gate-config-layout). |
 | Ghost mask | rect `[750, 700, 960, 860]` at `source_size=[4512, 2512]` | covers parked `FD61PVX` car at 4K `(853, 780)` (`t_norm=0.593`) |
 
 **`trigger_t_prime` values are in `[0, 1]` of the USABLE band, not
@@ -918,7 +923,13 @@ hint forward-extrapolation artifact; completion-time bboxes (exact landing
 crops, no extrapolation) corrected it, restoring the pre-Step-16 ~14 %
 geometry floor. The reverse lower edge was nudged **0.25→0.30 on 2026-06-19**
 (L→R departs/recedes ~0.10 t_norm during the ~700 ms snap latency, so 0.25
-fires landed in the weak far zone; validation pending). And
+fires landed in the weak far zone) and **validated 2026-06-22** on the ~72h
+`session_20260619_111111` soak: L→R per-car 73-82 % → **92.3 %**, per-image
+65.9 % → **77.4 %**, net per-car ~48 % → **57.9 %**. The landing histogram
+confirms the mechanism — L→R reads peak **83-89 % at 0.20-0.40 t_norm**, exactly
+where the raised 0.30 floor now lands them (vs 26-62 % below 0.20); R→L
+unchanged at ~23 % per-car, as designed (the nudge only touches the reverse
+band). And
 `pipeline_interval_ms_by_direction` is **`{}`** (uniform 400 ms) — the
 Step 13a `{forward:300,reverse:400}` throttle is not live and won't be
 restored (same falsified R→L premise, and faster R→L firing only burns the
