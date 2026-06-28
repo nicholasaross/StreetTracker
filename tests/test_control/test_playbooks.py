@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from streettracker.analysis.makemodel.model import SUPPORTED_ARCHS
 from streettracker.control.introspect import ModelInfo
 from streettracker.control.jobs import JobRunner, JobSpec
 from streettracker.control.playbooks import (
@@ -162,6 +163,12 @@ def test_build_playbook_build_train_generates_dated_dirs(tmp_path: Path) -> None
         "makemodel-train-uk",
     ]
     assert "uk_crops_" in steps[0].job.args[0]  # type: ignore[union-attr]
+    # The --backbone value must be a real arch the CLI accepts (choices=
+    # SUPPORTED_ARCHS), not the "b5" shorthand from the docs -- argparse
+    # rejects an unknown choice with exit code 2 before training starts.
+    train_args = steps[1].job.args  # type: ignore[union-attr]
+    backbone = train_args[train_args.index("--backbone") + 1]
+    assert backbone in SUPPORTED_ARCHS
 
 
 def test_build_playbook_roll(tmp_path: Path) -> None:

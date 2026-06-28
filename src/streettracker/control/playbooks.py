@@ -245,9 +245,21 @@ def build_train_steps(
     out_dir: str,
     *,
     output_size: str = "512",
-    backbone: str = "b5",
+    # Must be a canonical arch name -- the makemodel-train-uk CLI's --backbone
+    # validates against SUPPORTED_ARCHS (efficientnet_b0/b4/b5), not the "b5"
+    # shorthand used in docs.
+    backbone: str = "efficientnet_b5",
     input_size: str = "456",
     epochs: str = "30",
+    # The CLI default batch (64) OOMs B5@456 on the dev-box 3080 (10 GB):
+    # peak VRAM is ~5.8 GB @8, ~8.4 GB @12, ~11 GB @16. 8 leaves headroom
+    # alongside the showcase/control GPU usage. Lower for a smaller card.
+    batch_size: str = "8",
+    # The control panel (and thus build-train) runs on the Windows dev box,
+    # where a multi-worker DataLoader stalls -- workers and GPU sit idle, no
+    # epoch completes. num_workers=0 (synchronous, single-process loading) is
+    # reliable; the per-epoch cost is acceptable since crops cache in RAM.
+    num_workers: str = "0",
 ) -> list[Step]:
     """Rebuild the UK crop corpus, then train the make classifier on it."""
     return [
@@ -269,6 +281,10 @@ def build_train_steps(
                     input_size,
                     "--epochs",
                     epochs,
+                    "--batch-size",
+                    batch_size,
+                    "--num-workers",
+                    num_workers,
                 ],
             ),
         ),
