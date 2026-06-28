@@ -56,11 +56,15 @@ from torchvision.models import (  # type: ignore[import-untyped]  # torchvision 
     efficientnet_b5,
 )
 
+# Arch names live torch-free in archs.py (so config/CLI/tests can validate
+# a --backbone choice without importing torch) and are re-exported here;
+# _BACKBONES below binds each to its torchvision constructor.
+from streettracker.analysis.makemodel.archs import DEFAULT_ARCH, SUPPORTED_ARCHS
+
 # Bumped whenever the on-disk checkpoint layout changes incompatibly.
 # load_checkpoint refuses formats it does not understand rather than
 # silently mis-loading a future schema.
 CHECKPOINT_FORMAT = 1
-DEFAULT_ARCH = "efficientnet_b0"
 
 # Backbone name -> (constructor, ImageNet weights). EfficientNet's
 # compound scaling pairs a larger backbone with a higher native input
@@ -73,7 +77,8 @@ _BACKBONES = {
     "efficientnet_b4": (efficientnet_b4, EfficientNet_B4_Weights.IMAGENET1K_V1),
     "efficientnet_b5": (efficientnet_b5, EfficientNet_B5_Weights.IMAGENET1K_V1),
 }
-SUPPORTED_ARCHS = tuple(_BACKBONES)
+# Keep the torch-free name list (archs.py) and the constructor mapping in lockstep.
+assert tuple(_BACKBONES) == SUPPORTED_ARCHS
 
 
 class MakeModelNet(nn.Module):

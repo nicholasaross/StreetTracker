@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from streettracker.analysis.makemodel.model import SUPPORTED_ARCHS
+from streettracker.analysis.makemodel.archs import SUPPORTED_ARCHS
 from streettracker.control.introspect import ModelInfo
 from streettracker.control.jobs import JobRunner, JobSpec
 from streettracker.control.playbooks import (
