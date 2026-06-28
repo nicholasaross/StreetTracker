@@ -124,20 +124,21 @@
   .jbar > div { height: 100%; background: var(--accent); border-radius: 5px; transition: width .3s; }
   .psteps { display: flex; flex-direction: column; gap: 9px; margin-top: 6px; }
   .pstep { border-left: 2px solid var(--line); padding-left: 10px; }
-  /* Playbook run = collapsible <details>. Active run expanded (+ LIVE badge);
-     finished runs minimise to the one-line <summary> by default. */
-  .pbrun { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px;
+  /* Playbook run + process = collapsible <details>. Active one expanded (+ LIVE
+     badge); finished ones minimise to the one-line <summary> by default. */
+  .pbrun, .jobrun { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px;
     margin-top: 10px; }
-  .pbrun.issue { border-color: var(--bad); }
-  .pbrun.islive { border-color: var(--ok); }
-  .pbrun > summary { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; cursor: pointer;
-    padding: 11px 13px; color: var(--fg); list-style: none; }
-  .pbrun > summary::-webkit-details-marker { display: none; }
-  .pbrun > summary::before { content: "▸"; color: var(--muted); font-size: 11px; flex: none; }
-  .pbrun[open] > summary::before { content: "▾"; }
-  .pbrun > summary .spacer { flex: 1; }
-  .pbrun[open] > summary { border-bottom: 1px solid var(--line); }
-  .pbrun .pbbody { padding: 10px 13px 12px; }
+  .pbrun.issue, .jobrun.issue { border-color: var(--bad); }
+  .pbrun.islive, .jobrun.islive { border-color: var(--ok); }
+  .pbrun > summary, .jobrun > summary { display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+    cursor: pointer; padding: 11px 13px; color: var(--fg); list-style: none; }
+  .pbrun > summary::-webkit-details-marker, .jobrun > summary::-webkit-details-marker { display: none; }
+  .pbrun > summary::before, .jobrun > summary::before { content: "▸"; color: var(--muted);
+    font-size: 11px; flex: none; }
+  .pbrun[open] > summary::before, .jobrun[open] > summary::before { content: "▾"; }
+  .pbrun > summary .spacer, .jobrun > summary .spacer { flex: 1; }
+  .pbrun[open] > summary, .jobrun[open] > summary { border-bottom: 1px solid var(--line); }
+  .pbrun .pbbody, .jobrun .jobbody { padding: 10px 13px 12px; }
   .livebadge { font-size: 10px; font-weight: 800; letter-spacing: .6px; color: #0e1116;
     background: var(--ok); padding: 2px 8px; border-radius: 999px; animation: pulse 1.6s infinite; }
   .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);

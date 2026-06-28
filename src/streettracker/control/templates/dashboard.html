@@ -276,14 +276,11 @@
       + ` · best ${best} (epoch ${m.best_epoch!=null?m.best_epoch:"?"})</div>`;
     return facts + `<div style="margin-top:6px">${trainChart(epochs)}</div>` + legend;
   }
-  function jobCard(j){
+  // Job detail (no header) — shared by the inline card and the collapsible row.
+  function jobBody(j){
     const p = j.progress || {};
     const bar = (p.frac!=null)
       ? `<div class="jbar"><div style="width:${(p.frac*100).toFixed(1)}%"></div></div>` : "";
-    const eta = (p.eta_s!=null && j.status==="running") ? " · ETA " + fmtDur(p.eta_s) : "";
-    const elapsed = (j.elapsed_s!=null) ? fmtDur(j.elapsed_s) : "";
-    const cancel = (j.status==="running" && IS_LOCAL)
-      ? `<button class="btn sm" onclick="cancelJob('${esc(j.id)}')">Cancel</button>` : "";
     let issueBlock = "";
     if (j.issue){
       issueBlock = `<div class="jmeta" style="color:var(--bad)">⚠ ${esc(j.issue)}</div>`;
@@ -297,22 +294,55 @@
     const logBlock = (j.log_tail && j.log_tail.length)
       ? `<details data-okey="out:${esc(j.id)}"><summary>output (${j.log_tail.length} lines)</summary><pre>${esc(j.log_tail.join("\n"))}</pre></details>`
       : "";
+    return `<div class="cmd">${esc(j.command)}</div>
+      ${p.phase?`<div class="jmeta">${esc(p.phase)}</div>`:""}
+      ${bar}${p.bytes_human?`<div class="jmeta">${esc(p.bytes_human)}</div>`:""}${trainBlock(p)}${issueBlock}${logBlock}`;
+  }
+  // Inline form (used inside a playbook step): always-expanded card with a header,
+  // so the running/failed step's progress + prompt stay visible in the playbook.
+  function jobCard(j){
+    const p = j.progress || {};
+    const eta = (p.eta_s!=null && j.status==="running") ? " · ETA " + fmtDur(p.eta_s) : "";
+    const elapsed = (j.elapsed_s!=null) ? fmtDur(j.elapsed_s) : "";
+    const cancel = (j.status==="running" && IS_LOCAL)
+      ? `<button class="btn sm" onclick="cancelJob('${esc(j.id)}')">Cancel</button>` : "";
     return `<div class="job ${j.issue?'issue':''}">
       <div class="jhead">
         <div class="left"><span class="dot ${jobDot(j.status)}"></span><b>${esc(j.kind)}</b>
           <span class="muted">${esc(j.status)}${eta}</span></div>
         <span class="muted">${elapsed}</span>${cancel}
       </div>
-      <div class="cmd">${esc(j.command)}</div>
-      ${p.phase?`<div class="jmeta">${esc(p.phase)}</div>`:""}
-      ${bar}${p.bytes_human?`<div class="jmeta">${esc(p.bytes_human)}</div>`:""}${trainBlock(p)}${issueBlock}${logBlock}
+      ${jobBody(j)}
     </div>`;
+  }
+  // Processes-panel form: collapsible row. The active (running) job is expanded
+  // (+ LIVE badge); finished/failed jobs minimise to the one-line summary by
+  // default (operator can expand — persists via data-okey, same as playbooks).
+  function jobRow(j){
+    const p = j.progress || {};
+    const live = j.status==="running";
+    const issue = !!j.issue || j.status==="failed" || j.status==="cancelled";
+    const liveBadge = live ? `<span class="livebadge">● LIVE</span>` : "";
+    const eta = (p.eta_s!=null && live) ? " · ETA " + fmtDur(p.eta_s) : "";
+    const pct = (p.frac!=null) ? ` · ${(p.frac*100).toFixed(0)}%` : "";
+    const elapsed = (j.elapsed_s!=null) ? fmtDur(j.elapsed_s) : "";
+    const cancel = (live && IS_LOCAL)
+      ? `<button class="btn sm" onclick="cancelJob('${esc(j.id)}')">Cancel</button>` : "";
+    return `<details class="jobrun${issue?' issue':''}${live?' islive':''}" data-okey="jobcard:${esc(j.id)}"${live?' open':''}>
+      <summary>
+        <span class="dot ${jobDot(j.status)}"></span><b>${esc(j.kind)}</b>${liveBadge}
+        <span class="muted">${esc(j.status)}${eta}${pct}</span>
+        <span class="spacer"></span>
+        <span class="muted">${esc(elapsed)}</span>
+      </summary>
+      <div class="jobbody">${jobBody(j)}${cancel?`<div style="margin-top:8px">${cancel}</div>`:""}</div>
+    </details>`;
   }
   function renderJobs(jobsList){
     ensureRunForm();
     const list = (jobsList || []).slice().reverse();  // newest first
     document.getElementById("jobsBody").innerHTML =
-      list.length ? list.map(jobCard).join("") : '<div class="empty">no processes run yet</div>';
+      list.length ? list.map(jobRow).join("") : '<div class="empty">no processes run yet</div>';
   }
 
   // ---------- Playbooks (multi-step workflows) ----------
