@@ -21,7 +21,13 @@ from pathlib import Path
 from typing import Any
 
 # User-editable keys. Anything else in a submitted payload is ignored.
-USER_FIELDS = ("name", "owner", "notes", "favourite")
+# ``make_override`` / ``make_hidden`` let an operator correct a wrong make
+# (e.g. a CNN guess that aliased a neighbouring car, or a lorry the car-only
+# classifier can't refuse): override replaces the displayed make, hidden
+# suppresses it entirely. Applied at display time (server `_apply_make_override`).
+USER_FIELDS = ("name", "owner", "notes", "favourite", "make_override", "make_hidden")
+# Keys coerced to bool; everything else is stripped text.
+_BOOL_FIELDS = ("favourite", "make_hidden")
 
 # File name used when only an output root is given.
 DEFAULT_FILENAME = "showcase_metadata.json"
@@ -37,9 +43,9 @@ def is_tagged(meta: dict[str, Any] | None) -> bool:
     all-blank counts as untagged."""
     if not meta:
         return False
-    if meta.get("favourite"):
+    if meta.get("favourite") or meta.get("make_hidden"):
         return True
-    return any((meta.get(k) or "").strip() for k in ("name", "owner", "notes"))
+    return any((meta.get(k) or "").strip() for k in ("name", "owner", "notes", "make_override"))
 
 
 @dataclass(slots=True)
@@ -98,7 +104,7 @@ def _clean(fields: dict[str, Any]) -> dict[str, Any]:
     for k in USER_FIELDS:
         if k not in fields:
             continue
-        if k == "favourite":
+        if k in _BOOL_FIELDS:
             out[k] = bool(fields[k])
         else:
             v = fields[k]

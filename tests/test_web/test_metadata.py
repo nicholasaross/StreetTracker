@@ -86,3 +86,21 @@ def test_is_tagged() -> None:
     assert is_tagged({"favourite": True}) is True
     assert is_tagged({"owner": "Shaun"}) is True
     assert is_tagged({"notes": "  ", "owner": ""}) is False
+
+
+def test_make_override_stored_and_stripped(tmp_path: Path) -> None:
+    s = _store(tmp_path)
+    entry = s.set("AB12CDE", {"make_override": "  DAF  "})
+    assert entry["make_override"] == "DAF"
+
+
+def test_make_hidden_coerced_to_bool(tmp_path: Path) -> None:
+    s = _store(tmp_path)
+    assert s.set("AB12CDE", {"make_hidden": "yes"})["make_hidden"] is True
+    assert s.set("AB12CDE", {"make_hidden": 0})["make_hidden"] is False
+
+
+def test_is_tagged_includes_make_correction() -> None:
+    assert is_tagged({"make_override": "DAF"}) is True
+    assert is_tagged({"make_hidden": True}) is True
+    assert is_tagged({"make_override": "  "}) is False  # blank override doesn't tag

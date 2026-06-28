@@ -17,7 +17,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from streettracker.common.schema import TrackRecord
-from streettracker.web.server import build_app
+from streettracker.web.server import _apply_make_override, build_app
 
 SESSION = "session_20260526_120000"
 _FAKE_JPEG = b"\xff\xd8\xff\xe0FAKEJPEG\xff\xd9"
@@ -142,6 +142,39 @@ async def test_put_metadata_persists(client: TestClient, output_root: Path) -> N
     store = json.loads((output_root / "showcase_metadata.json").read_text())
     assert store["AB12CDE"]["owner"] == "Shaun"
     assert store["AB12CDE"]["favourite"] is True
+
+
+async def test_put_make_override_wins_over_dvsa(client: TestClient) -> None:
+    # AB12CDE has DVSA make FORD; an operator override must win on the card.
+    r = await client.put("/api/cars/AB12CDE/metadata", json={"make_override": "DAF"})
+    assert r.status == 200
+    car = await (await client.get("/api/cars/AB12CDE")).json()
+    assert car["make"] == "DAF"
+    assert car["make_model_source"] == "manual"
+    assert car["model"] is None and car["year"] is None
+    assert car["meta"]["make_override"] == "DAF"
+    assert car["tagged"] is True
+
+
+async def test_put_make_hidden_suppresses_make(client: TestClient) -> None:
+    r = await client.put("/api/cars/AB12CDE/metadata", json={"make_hidden": True})
+    assert r.status == 200
+    car = await (await client.get("/api/cars/AB12CDE")).json()
+    assert car["make"] is None
+    assert car["make_model_source"] == "hidden"
+    assert car["meta"]["make_hidden"] is True
+
+
+def test_apply_make_override_noop_keeps_make() -> None:
+    d = {"make": "AUDI", "model": None, "year": None, "make_model_source": "dvsa"}
+    _apply_make_override(d, {})
+    assert d["make"] == "AUDI" and d["make_model_source"] == "dvsa"
+
+
+def test_apply_make_override_hide_wins_over_override() -> None:
+    d = {"make": "PORSCHE", "model": "911", "year": 2017, "make_model_source": "cnn"}
+    _apply_make_override(d, {"make_hidden": True, "make_override": "DAF"})
+    assert d["make"] is None and d["make_model_source"] == "hidden"
 
 
 async def test_put_metadata_unknown_plate_404(client: TestClient) -> None:

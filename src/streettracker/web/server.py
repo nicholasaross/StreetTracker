@@ -158,13 +158,33 @@ def _meta_view(raw: dict[str, Any]) -> dict[str, Any]:
         "owner": (raw.get("owner") or ""),
         "notes": (raw.get("notes") or ""),
         "favourite": bool(raw.get("favourite", False)),
+        "make_override": (raw.get("make_override") or ""),
+        "make_hidden": bool(raw.get("make_hidden", False)),
         "updated_at": (raw.get("updated_at") or ""),
     }
+
+
+def _apply_make_override(d: dict[str, Any], raw: dict[str, Any]) -> None:
+    """Let an operator correction win over the DVSA/CNN make on the displayed
+    card. ``make_hidden`` suppresses the make (e.g. a lorry the car-only CNN
+    mislabelled); a non-empty ``make_override`` replaces it. Model/year are
+    cleared since they no longer correspond to the corrected make."""
+    if raw.get("make_hidden"):
+        d["make"] = d["model"] = d["year"] = None
+        d["make_model_source"] = "hidden"
+        return
+    override = (raw.get("make_override") or "").strip()
+    if override:
+        d["make"] = override
+        d["model"] = None
+        d["year"] = None
+        d["make_model_source"] = "manual"
 
 
 def _merge(car: ShowcaseCar, store: dict[str, dict[str, Any]]) -> dict[str, Any]:
     raw = store.get(car.plate, {})
     d = car.to_json_dict()
+    _apply_make_override(d, raw)
     d["meta"] = _meta_view(raw)
     d["tagged"] = is_tagged(raw)
     return d

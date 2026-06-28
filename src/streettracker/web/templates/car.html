@@ -73,6 +73,13 @@
           <input type="text" name="owner" value="{{ car.meta.owner }}" placeholder="e.g. Shaun"></div>
         <div class="field"><label>Notes</label>
           <textarea name="notes" rows="3" placeholder="Anything worth remembering…">{{ car.meta.notes }}</textarea></div>
+        <div class="field"><label>Correct make <span class="muted">(overrides DVSA / CNN)</span></label>
+          <input type="text" name="make_override" value="{{ car.meta.make_override }}"
+                 placeholder="e.g. DAF — leave blank to keep the detected make"></div>
+        <div class="row-check">
+          <input type="checkbox" id="hideMake" name="make_hidden" {{ 'checked' if car.meta.make_hidden }}>
+          <label for="hideMake">🚫 Wrong make / not a car — hide it</label>
+        </div>
         <div class="row-check">
           <input type="checkbox" id="fav" name="favourite" {{ 'checked' if car.meta.favourite }}>
           <label for="fav">⭐ Favourite</label>
@@ -112,12 +119,16 @@
       name: f["name"].value,
       owner: f["owner"].value,
       notes: f["notes"].value,
+      make_override: f["make_override"].value,
+      make_hidden: f["make_hidden"].checked,
       favourite: f["favourite"].checked,
     };
     setMeta("{{ car.plate }}", fields).then(() => {
       const n = document.getElementById("saveNote");
       n.classList.add("show");
-      setTimeout(() => n.classList.remove("show"), 1600);
+      // Reload so a make override/hide is reflected in the make line + Details
+      // (and the gallery) immediately, not just on the next manual refresh.
+      setTimeout(() => window.location.reload(), 650);
     }).catch(e => alert(e.message));
     return false;
   }
