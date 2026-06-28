@@ -34,13 +34,18 @@ def test_append_none_path_is_noop() -> None:
 def test_prune_old_drops_aged_keeps_recent_and_undated() -> None:
     now = 1_000_000.0
     items = [
-        {"id": "old", "ended_at": now - 25 * 3600},  # >24h -> dropped
+        {"id": "old", "ended_at": now - 25 * 3600},  # >24h -> dropped at this threshold
         {"id": "fresh", "ended_at": now - 3600},  # 1h -> kept
         {"id": "no-ts"},  # undateable -> kept
         {"id": "by-created", "created_at": now - 30 * 3600},  # only created_at, old -> dropped
     ]
-    kept = {x["id"] for x in history.prune_old(items, now=now)}
+    # Explicit threshold so the test is independent of the configured default.
+    kept = {x["id"] for x in history.prune_old(items, max_age_s=24 * 3600, now=now)}
     assert kept == {"fresh", "no-ts"}
+
+
+def test_default_retention_is_60h() -> None:
+    assert history.MAX_AGE_S == 60 * 3600
 
 
 def test_append_prunes_old_entries(tmp_path: Path) -> None:

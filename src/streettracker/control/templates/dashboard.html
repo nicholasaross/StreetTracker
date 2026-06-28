@@ -396,7 +396,7 @@
     return s==="running" ? "live" : s==="succeeded" ? "ok" : (s==="failed"||s==="cancelled") ? "bad" : "idle";
   }
   function playbookCard(pb){
-    const steps = (pb.steps||[]).map(s=>{
+    const steps = (pb.steps||[]).map((s, idx)=>{
       let inner = `<div class="row" style="gap:8px"><span class="dot ${stepDot(s.status)}"></span>`
         + `<b>${esc(s.label)}</b> <span class="muted">${esc(s.status)}</span>`
         + `${s.message?` · <span class="muted">${esc(s.message)}</span>`:""}</div>`;
@@ -405,20 +405,40 @@
       // the copy-paste prompt surfaced.
       if (s.job && (s.status==="running" || s.status==="failed" || s.status==="cancelled")){
         inner += `<div style="margin:6px 0 0 4px">${jobCard(s.job)}</div>`;
+      } else if (s.prompt && (s.status==="failed" || s.status==="cancelled")){
+        // Action steps have no job, so surface their copy-paste Claude prompt here.
+        const pid = `pb:${pb.id}:${idx}`;
+        window.__prompts[pid] = s.prompt;
+        inner += `<details open data-okey="prompt:${esc(pid)}"><summary>Claude prompt — copy &amp; paste this to get help</summary>`
+          + `<div style="margin:7px 0 0 4px"><button class="btn sm" onclick="copyText(window.__prompts['${esc(pid)}'])">📋 Copy Claude prompt</button></div>`
+          + `<pre>${esc(s.prompt)}</pre></details>`;
       }
       return `<div class="pstep">${inner}</div>`;
     }).join("");
     const cancel = (pb.status==="running" && IS_LOCAL)
       ? `<button class="btn sm" onclick="cancelPlaybook('${esc(pb.id)}')">Cancel</button>` : "";
     const elapsed = (pb.elapsed_s!=null) ? fmtDur(pb.elapsed_s) : "";
-    return `<div class="job ${(pb.status==='failed'||pb.status==='cancelled')?'issue':''}">
-      <div class="jhead">
-        <div class="left"><span class="dot ${jobDot(pb.status)}"></span><b>${esc(pb.label)}</b>
-          <span class="muted">${esc(pb.status)}</span></div>
-        <span class="muted">${elapsed}</span>${cancel}
+    const live = pb.status==="running";
+    const issue = (pb.status==="failed" || pb.status==="cancelled");
+    const total = (pb.steps||[]).length;
+    const done = (pb.steps||[]).filter(s=>s.status==="succeeded").length;
+    const stepSummary = total ? `${done}/${total} steps` : "";
+    const liveBadge = live ? `<span class="livebadge">● LIVE</span>` : "";
+    // The active run is expanded; finished runs collapse to this one-line summary
+    // by default (operator can expand — the choice persists via data-okey, and the
+    // toggle/restoreDetails wiring in base.html handles it).
+    return `<details class="pbrun${issue?' issue':''}${live?' islive':''}" data-okey="pbcard:${esc(pb.id)}"${live?' open':''}>
+      <summary>
+        <span class="dot ${jobDot(pb.status)}"></span><b>${esc(pb.label)}</b>${liveBadge}
+        <span class="muted">${esc(pb.status)}</span>
+        <span class="spacer"></span>
+        <span class="muted">${esc(stepSummary)}${(stepSummary&&elapsed)?" · ":""}${esc(elapsed)}</span>
+      </summary>
+      <div class="pbbody">
+        <div class="psteps">${steps}</div>
+        ${cancel?`<div style="margin-top:8px">${cancel}</div>`:""}
       </div>
-      <div class="psteps">${steps}</div>
-    </div>`;
+    </details>`;
   }
   function renderPlaybooks(list){
     ensurePlaybookForm();

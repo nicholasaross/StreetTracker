@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_CAP = 200  # most recent N terminal snapshots kept on disk
-MAX_AGE_S = 24 * 3600  # snapshots older than this are dropped (keeps the UI list short)
+MAX_AGE_S = 60 * 3600  # snapshots older than this are dropped (the UI also minimises old runs)
 
 
 def load(path: Path | None) -> list[dict[str, Any]]:

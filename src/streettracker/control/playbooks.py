@@ -40,7 +40,7 @@ from typing import Any
 
 import aiohttp
 
-from streettracker.control import history, introspect, orin
+from streettracker.control import history, introspect, orin, prompts
 from streettracker.control.jobs import JobRunner, JobSpec
 
 logger = logging.getLogger(__name__)
@@ -96,6 +96,25 @@ class Playbook:
         return end - self.started_at
 
 
+def _action_prompt(pb: Playbook, step_label: str, message: str, *, cancelled: bool = False) -> str:
+    """A copy-paste Claude prompt for a failed/cancelled in-process *action* step.
+
+    Job steps get their prompt from the job runner; action steps (SSH restart,
+    model swap, showcase refresh) have no subprocess, so build the same kind of
+    self-contained prompt from the playbook name, the step, and its message."""
+    lines = [message] if message else []
+    report = prompts.JobReport(
+        kind=pb.name,
+        command=f"playbook '{pb.name}' → action step '{step_label}'",
+        cwd=str(Path.cwd()),
+        status="cancelled" if cancelled else "failed",
+        log_tail=lines,
+        issue=prompts.summarize_issue(None, lines),
+        summary=message,
+    )
+    return prompts.build_prompt(report)
+
+
 class PlaybookRunner:
     """Submits + tracks playbooks, running each step's job on the shared
     :class:`JobRunner` so the UI shows live per-step progress and prompts."""
@@ -110,8 +129,9 @@ class PlaybookRunner:
     def snapshots(self, limit: int = 50) -> list[dict[str, Any]]:
         """Persisted (prior-run) snapshots + live playbooks, most recent ``limit``.
 
-        Prior-run history older than 24h is dropped so the panel list stays short
-        even across a long-running panel (the on-disk file is pruned on append)."""
+        Prior-run history older than ``history.MAX_AGE_S`` (60h) is dropped so the
+        panel list stays bounded even across a long-running panel (the on-disk file
+        is pruned on append)."""
         combined = [*history.prune_old(self._history), *(self.snapshot(pb) for pb in self.list())]
         return combined[-limit:]
 
@@ -153,6 +173,8 @@ class PlaybookRunner:
                 "status": st["status"],
                 "message": st["message"],
             }
+            if st.get("prompt"):
+                entry["prompt"] = st["prompt"]
             if st["job_id"]:
                 job = self.jobs.get(st["job_id"])
                 entry["job"] = job.snapshot() if job is not None else None
@@ -212,12 +234,18 @@ class PlaybookRunner:
             try:
                 res = await step.action()
             except Exception as exc:
-                pb.states[i]["message"] = f"action error: {exc}"
+                msg = f"action error: {exc}"
+                pb.states[i]["message"] = msg
+                pb.states[i]["prompt"] = _action_prompt(pb, step.label, msg)
                 logger.exception("[control] playbook %s step %d action crashed", pb.id, i)
                 return (False, "failed")
             pb.states[i]["message"] = res.message
+            if not res.ok:
+                pb.states[i]["prompt"] = _action_prompt(pb, step.label, res.message)
             return (res.ok, "succeeded" if res.ok else "failed")
-        pb.states[i]["message"] = "step has neither a job nor an action"
+        msg = "step has neither a job nor an action"
+        pb.states[i]["message"] = msg
+        pb.states[i]["prompt"] = _action_prompt(pb, step.label, msg)
         return (False, "failed")
 
 
@@ -433,20 +461,41 @@ def promote_steps(ctx: PlaybookContext, run_name: str | None = None) -> list[Ste
     return [Step("Promote model (backup + swap + sidecar)", action=act)]
 
 
-async def refresh_showcase(url: str) -> StepResult:
+# /api/refresh rebuilds every session's vehicle aggregation, so it can take well
+# over a minute on a large output root (~45s observed at ~4.5k cars). The old 30s
+# cap timed out — and aiohttp's timeout raises an empty-str TimeoutError, which
+# surfaced as the unhelpful "not reachable (  )".
+SHOWCASE_REFRESH_TIMEOUT_S = 300
+
+
+async def refresh_showcase(
+    url: str, *, timeout_s: float = SHOWCASE_REFRESH_TIMEOUT_S
+) -> StepResult:
     """POST ``/api/refresh`` so the showcase site re-aggregates new predictions."""
     target = url.rstrip("/") + "/api/refresh"
     try:
         async with (
-            aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session,
+            aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout_s)) as session,
             session.post(target) as resp,
         ):
             if resp.status != 200:
                 return StepResult(False, f"showcase refresh returned HTTP {resp.status}")
             data = await resp.json()
             return StepResult(True, f"showcase refreshed ({data.get('cars', '?')} cars)")
-    except Exception as exc:  # showcase not running / network error
-        return StepResult(False, f"showcase not reachable at {url} ({exc})")
+    except asyncio.TimeoutError:
+        return StepResult(
+            False,
+            f"showcase refresh timed out after {timeout_s:.0f}s at {url} — the re-aggregation "
+            "may still be running; check the showcase, then re-run reinfer.",
+        )
+    except aiohttp.ClientError as exc:
+        return StepResult(
+            False,
+            f"showcase not reachable at {url} ({exc!r}) — is `streettracker showcase` running "
+            "on that port?",
+        )
+    except Exception as exc:  # never surface an empty "( )"
+        return StepResult(False, f"showcase refresh failed at {url} ({type(exc).__name__}: {exc})")
 
 
 def reinfer_steps(ctx: PlaybookContext) -> list[Step]:

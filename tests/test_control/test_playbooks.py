@@ -90,6 +90,11 @@ async def test_action_steps_success_and_failure() -> None:
     assert snap["steps"][0]["status"] == "succeeded" and snap["steps"][0]["message"] == "did it"
     assert snap["steps"][1]["status"] == "failed" and snap["steps"][1]["message"] == "nope"
     assert snap["steps"][2]["status"] == "skipped"
+    # A failed *action* step (no subprocess) still carries a copy-paste Claude
+    # prompt, just like a failed job step does.
+    assert "prompt" not in snap["steps"][0]  # the succeeded action has none
+    assert "nope" in snap["steps"][1]["prompt"]
+    assert "bad" in snap["steps"][1]["prompt"]  # the step label is named
 
 
 async def test_action_exception_is_caught() -> None:
@@ -101,7 +106,9 @@ async def test_action_exception_is_caught() -> None:
     pb = pr.submit("t", [Step("x", action=boom)])
     await pr.wait(pb.id)
     assert pb.status == "failed"
-    assert "kaboom" in pr.snapshot(pb)["steps"][0]["message"]
+    snap = pr.snapshot(pb)
+    assert "kaboom" in snap["steps"][0]["message"]
+    assert "kaboom" in snap["steps"][0]["prompt"]  # crash also yields a help prompt
 
 
 async def test_cancel_playbook_stops_and_skips_rest() -> None:
@@ -124,6 +131,37 @@ async def test_cancel_playbook_stops_and_skips_rest() -> None:
     await pr.wait(pb.id)
     assert pb.status == "cancelled"
     assert pr.snapshot(pb)["steps"][1]["status"] == "skipped"
+
+
+async def test_refresh_showcase_timeout_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A slow re-aggregation (TimeoutError has an empty str) must still produce a
+    clear, non-empty message — this was the '(  )' bug."""
+
+    class _FakeSession:
+        def __init__(self, *a: object, **k: object) -> None: ...
+        async def __aenter__(self) -> _FakeSession:
+            return self
+
+        async def __aexit__(self, *a: object) -> bool:
+            return False
+
+        def post(self, *a: object, **k: object) -> object:
+            raise asyncio.TimeoutError()
+
+    monkeypatch.setattr("streettracker.control.playbooks.aiohttp.ClientSession", _FakeSession)
+    res = await refresh_showcase("http://127.0.0.1:8090", timeout_s=5)
+    assert res.ok is False
+    assert "timed out" in res.message
+    assert res.message.strip().endswith((".",))  # not an empty "( )"
+
+
+async def test_refresh_showcase_unreachable_message() -> None:
+    """A genuinely-down showcase yields a non-empty, actionable message."""
+    # Port 1 is never a showcase -> a fast ClientConnectorError.
+    res = await refresh_showcase("http://127.0.0.1:1", timeout_s=5)
+    assert res.ok is False
+    assert "not reachable" in res.message
+    assert "()" not in res.message  # the exception repr is included, never empty
 
 
 # ---- the registry / factories ----

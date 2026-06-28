@@ -185,8 +185,9 @@ class JobRunner:
     def snapshots(self, limit: int = 50) -> list[dict[str, Any]]:
         """Persisted (prior-run) snapshots + live jobs, most recent ``limit``.
 
-        Prior-run history older than 24h is dropped so the panel list stays short
-        even across a long-running panel (the on-disk file is pruned on append)."""
+        Prior-run history older than ``history.MAX_AGE_S`` (60h) is dropped so the
+        panel list stays bounded even across a long-running panel (the on-disk file
+        is pruned on append)."""
         combined = [*history.prune_old(self._history), *(j.snapshot() for j in self.list())]
         return combined[-limit:]
 
