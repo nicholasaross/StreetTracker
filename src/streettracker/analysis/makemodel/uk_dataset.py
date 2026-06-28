@@ -52,14 +52,23 @@ from streettracker.analysis.snap_assets import (
     resolve_bbox_hint,
 )
 
+# DVSA sometimes returns two spellings for one marque (e.g. both "MERCEDES"
+# and "MERCEDES-BENZ"), which would otherwise split a make across two classes
+# and dilute its training signal. Fold known synonyms onto one canonical label.
+_MAKE_SYNONYMS = {
+    "MERCEDES": "MERCEDES-BENZ",
+}
+
 
 def normalize_make(make: str | None) -> str:
     """DVSA make -> class label. DVSA names are already canonical UK
-    strings ("FORD", "MERCEDES-BENZ", "LAND ROVER"); just upper/strip
-    and collapse internal whitespace for stable folder/label names."""
+    strings ("FORD", "MERCEDES-BENZ", "LAND ROVER"); upper/strip, collapse
+    internal whitespace, then fold known synonyms (see ``_MAKE_SYNONYMS``)
+    for stable folder/label names."""
     if not make:
         return ""
-    return " ".join(make.upper().split())
+    name = " ".join(make.upper().split())
+    return _MAKE_SYNONYMS.get(name, name)
 
 
 def _load_session_labels(session_dir: Path) -> dict[str, dict[str, Any]]:

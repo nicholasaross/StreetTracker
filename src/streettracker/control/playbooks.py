@@ -108,8 +108,11 @@ class PlaybookRunner:
         self._order: list[str] = []
 
     def snapshots(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Persisted (prior-run) snapshots + live playbooks, most recent ``limit``."""
-        combined = [*self._history, *(self.snapshot(pb) for pb in self.list())]
+        """Persisted (prior-run) snapshots + live playbooks, most recent ``limit``.
+
+        Prior-run history older than 24h is dropped so the panel list stays short
+        even across a long-running panel (the on-disk file is pruned on append)."""
+        combined = [*history.prune_old(self._history), *(self.snapshot(pb) for pb in self.list())]
         return combined[-limit:]
 
     def submit(self, name: str, steps: list[Step], label: str = "") -> Playbook:

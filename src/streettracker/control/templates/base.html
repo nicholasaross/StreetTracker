@@ -168,6 +168,28 @@
       finally { ta.remove(); }
     }
   }
+  // ---- <details> open-state persistence across re-renders + reloads ----
+  // The dashboard rebuilds panel innerHTML every 5s poll, which would collapse
+  // any <details> the operator had opened (e.g. a playbook step's output). Any
+  // <details data-okey="..."> has its open/closed state remembered (keyed stably,
+  // e.g. by job id) so it survives both the periodic re-render and a full reload.
+  const __DETAILS_KEY = "st_ctl_details_open";
+  let __detailsState = {};
+  try { __detailsState = JSON.parse(localStorage.getItem(__DETAILS_KEY) || "{}") || {}; } catch(e){}
+  document.addEventListener("toggle", (e)=>{
+    const el = e.target;
+    if (!el || el.tagName !== "DETAILS" || !el.dataset || !el.dataset.okey) return;
+    __detailsState[el.dataset.okey] = el.open;
+    try { localStorage.setItem(__DETAILS_KEY, JSON.stringify(__detailsState)); } catch(e){}
+  }, true);  // capture: the `toggle` event does not bubble
+  function restoreDetails(){
+    document.querySelectorAll("details[data-okey]").forEach(el=>{
+      const k = el.dataset.okey;
+      if (k in __detailsState) el.open = __detailsState[k];
+    });
+  }
+  window.restoreDetails = restoreDetails;
+
   // ---- shared formatting + fetch helpers (no external deps) ----
   const IS_LOCAL = {{ 'true' if is_local else 'false' }};
   function fmtInt(n){ return (n==null||isNaN(n)) ? "—" : Math.round(n).toLocaleString(); }

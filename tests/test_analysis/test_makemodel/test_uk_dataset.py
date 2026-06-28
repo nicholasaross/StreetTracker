@@ -33,6 +33,11 @@ def test_normalize_make() -> None:
     assert normalize_make("  Mercedes-Benz ") == "MERCEDES-BENZ"
     assert normalize_make("land  rover") == "LAND ROVER"
     assert normalize_make(None) == ""
+    # Synonym fold: DVSA's short "MERCEDES" collapses onto "MERCEDES-BENZ"
+    # so the marque isn't split across two classes.
+    assert normalize_make("MERCEDES") == "MERCEDES-BENZ"
+    assert normalize_make(" mercedes ") == "MERCEDES-BENZ"
+    assert normalize_make("MERCEDES-BENZ") == "MERCEDES-BENZ"
 
 
 def _write_dataset(root: Path) -> None:

@@ -14,10 +14,12 @@ import contextlib
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
 DEFAULT_CAP = 200  # most recent N terminal snapshots kept on disk
+MAX_AGE_S = 24 * 3600  # snapshots older than this are dropped (keeps the UI list short)
 
 
 def load(path: Path | None) -> list[dict[str, Any]]:
@@ -31,11 +33,40 @@ def load(path: Path | None) -> list[dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
-def append(path: Path | None, entry: dict[str, Any], *, cap: int = DEFAULT_CAP) -> None:
-    """Append ``entry`` to the on-disk list, trimmed to the last ``cap``."""
+def _entry_ts(entry: dict[str, Any]) -> float | None:
+    """Best wall-clock timestamp for an entry (terminal time preferred)."""
+    for key in ("ended_at", "started_at", "created_at"):
+        v = entry.get(key)
+        if isinstance(v, (int, float)):
+            return float(v)
+    return None
+
+
+def prune_old(
+    items: list[dict[str, Any]], *, max_age_s: float = MAX_AGE_S, now: float | None = None
+) -> list[dict[str, Any]]:
+    """Drop entries finished more than ``max_age_s`` ago. Entries without any
+    timestamp are kept (can't age them out safely)."""
+    cutoff = (time.time() if now is None else now) - max_age_s
+    out = []
+    for entry in items:
+        ts = _entry_ts(entry)
+        if ts is None or ts >= cutoff:
+            out.append(entry)
+    return out
+
+
+def append(
+    path: Path | None,
+    entry: dict[str, Any],
+    *,
+    cap: int = DEFAULT_CAP,
+    max_age_s: float = MAX_AGE_S,
+) -> None:
+    """Append ``entry``, drop snapshots older than ``max_age_s``, trim to ``cap``."""
     if path is None:
         return
-    items = load(path)
+    items = prune_old(load(path), max_age_s=max_age_s)
     items.append(entry)
     if len(items) > cap:
         items = items[-cap:]

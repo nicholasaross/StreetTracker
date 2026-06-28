@@ -289,13 +289,13 @@
       issueBlock = `<div class="jmeta" style="color:var(--bad)">⚠ ${esc(j.issue)}</div>`;
       if (j.prompt){
         window.__prompts[j.id] = j.prompt;
-        issueBlock += `<details open><summary>Claude prompt — copy &amp; paste this to get help</summary>
+        issueBlock += `<details open data-okey="prompt:${esc(j.id)}"><summary>Claude prompt — copy &amp; paste this to get help</summary>
           <div style="margin-top:7px"><button class="btn sm" onclick="copyText(window.__prompts['${esc(j.id)}'])">📋 Copy Claude prompt</button></div>
           <pre>${esc(j.prompt)}</pre></details>`;
       }
     }
     const logBlock = (j.log_tail && j.log_tail.length)
-      ? `<details><summary>output (${j.log_tail.length} lines)</summary><pre>${esc(j.log_tail.join("\n"))}</pre></details>`
+      ? `<details data-okey="out:${esc(j.id)}"><summary>output (${j.log_tail.length} lines)</summary><pre>${esc(j.log_tail.join("\n"))}</pre></details>`
       : "";
     return `<div class="job ${j.issue?'issue':''}">
       <div class="jhead">
@@ -316,12 +316,15 @@
   }
 
   // ---------- Playbooks (multi-step workflows) ----------
+  // `needsSession` mirrors the server PLAYBOOKS registry (playbooks.py): only
+  // playbooks that take an operator-chosen session show the session picker. roll
+  // resolves the live session server-side, so it doesn't need the dropdown.
   const PLAYBOOK_DEFS = [
-    {name:"enrich", label:"Enrich a session", destructive:false},
-    {name:"build-train", label:"Build corpus + train CNN", destructive:false},
-    {name:"roll", label:"Roll session + pull (restarts camera)", destructive:true},
-    {name:"promote", label:"Promote best model", destructive:true},
-    {name:"reinfer", label:"Re-infer all + refresh showcase", destructive:false},
+    {name:"enrich", label:"Enrich a session", destructive:false, needsSession:true},
+    {name:"build-train", label:"Build corpus + train CNN", destructive:false, needsSession:false},
+    {name:"roll", label:"Roll session + pull (restarts camera)", destructive:true, needsSession:false},
+    {name:"promote", label:"Promote best model", destructive:true, needsSession:false},
+    {name:"reinfer", label:"Re-infer all + refresh showcase", destructive:false, needsSession:false},
   ];
   function ensurePlaybookForm(){
     const host = document.getElementById("pbRunArea");
@@ -336,6 +339,16 @@
       <select id="pbSession" title="session to enrich (used by the enrich playbook only)"><option value="">loading sessions…</option></select>
       <button class="btn sm" id="pbRunBtn">Run playbook</button></span>`;
     document.getElementById("pbRunBtn").addEventListener("click", submitPlaybook);
+    // Show the session picker only for playbooks that take one (e.g. enrich).
+    document.getElementById("pbName").addEventListener("change", updateSessionVisibility);
+    updateSessionVisibility();
+  }
+  function updateSessionVisibility(){
+    const nameSel = document.getElementById("pbName");
+    const sessSel = document.getElementById("pbSession");
+    if (!nameSel || !sessSel) return;
+    const def = PLAYBOOK_DEFS.find(d=>d.name===nameSel.value) || {};
+    sessSel.style.display = def.needsSession ? "" : "none";
   }
   // (Re)fill the enrich session picker from the current status: newest first,
   // newest pre-selected, the operator's choice preserved. Rebuilds only when the
@@ -427,6 +440,7 @@
     renderPlaybooks(status.playbooks);
     renderJobs(status.jobs);
     document.getElementById("sessBody").innerHTML = sessionsHtml(local);
+    restoreDetails();  // re-apply any <details> the operator had opened (it survives this re-render)
     document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
     // Auto-fetch the pull estimate once per live session (a read-only remote du);
     // guarded so a failure doesn't re-fire every poll.

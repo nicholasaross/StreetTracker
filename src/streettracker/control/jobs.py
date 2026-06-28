@@ -183,8 +183,11 @@ class JobRunner:
         self._wake_refs = 0
 
     def snapshots(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Persisted (prior-run) snapshots + live jobs, most recent ``limit``."""
-        combined = [*self._history, *(j.snapshot() for j in self.list())]
+        """Persisted (prior-run) snapshots + live jobs, most recent ``limit``.
+
+        Prior-run history older than 24h is dropped so the panel list stays short
+        even across a long-running panel (the on-disk file is pruned on append)."""
+        combined = [*history.prune_old(self._history), *(j.snapshot() for j in self.list())]
         return combined[-limit:]
 
     def _lane_lock(self, lane: str) -> asyncio.Lock:
