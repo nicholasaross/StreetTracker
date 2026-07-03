@@ -30,6 +30,28 @@ def test_summarize_issue_priority_order() -> None:
     assert summarize_issue(0, lines) == "CUDA out of memory"
 
 
+def test_summarize_issue_ignores_zero_error_count_summary() -> None:
+    # dvsa-label's success line always ends with "…, 0 api errors …"; a zero
+    # count must not trip the bare "error" catch-all on an otherwise clean run.
+    dvsa_ok = (
+        "[dvsa-label] wrote out.json: 855 labelled, 470 unknown, 2078 skipped "
+        "(non-canonical), 0 api errors (855 new labels + 470 new unknown this run)"
+    )
+    assert summarize_issue(0, [dvsa_ok]) is None
+    assert summarize_issue(0, ["pipeline done: 0 errors"]) is None
+    # 10 errors ends in "0 errors" textually but is a real nonzero count -> flagged.
+    assert summarize_issue(0, ["finished with 10 errors"]) == "error reported in output"
+
+
+def test_summarize_issue_flags_nonzero_error_count() -> None:
+    # A genuine nonzero error count still surfaces via the "error" catch-all.
+    dvsa_bad = (
+        "[dvsa-label] wrote out.json: 800 labelled, 470 unknown, 2078 skipped "
+        "(non-canonical), 3 api errors (800 new labels + 470 new unknown this run)"
+    )
+    assert summarize_issue(0, [dvsa_bad]) == "error reported in output"
+
+
 def _report(**kw: object) -> JobReport:
     base: dict[str, object] = {
         "kind": "pull",

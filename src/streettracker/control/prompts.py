@@ -16,9 +16,17 @@ worth surfacing a prompt for.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 __all__ = ["JobReport", "build_prompt", "summarize_issue"]
+
+# Benign "N errors" / "N api errors" summary counts several commands print on a
+# clean finish (e.g. dvsa-label's "…, 0 api errors …"). A ZERO count is not a
+# problem, but the bare "error" catch-all below would otherwise match the word
+# "errors" and flag every successful run. Strip zero-count summaries before the
+# scan; a nonzero count ("3 api errors") is left intact so it still trips.
+_ZERO_ERROR_COUNT_RE = re.compile(r"\b0 (?:\w+ )?errors?\b")
 
 # Lines of captured output to embed. Enough to carry a full Python traceback
 # without burying the ask.
@@ -105,7 +113,7 @@ def summarize_issue(returncode: int | None, log_lines: list[str]) -> str | None:
     """
     if returncode is not None and returncode != 0:
         return f"process exited with code {returncode}"
-    haystack = "\n".join(log_lines).lower()
+    haystack = _ZERO_ERROR_COUNT_RE.sub("", "\n".join(log_lines).lower())
     for needle, label in _ISSUE_PATTERNS:
         if needle in haystack:
             return label
