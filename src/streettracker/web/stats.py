@@ -10,7 +10,12 @@ The same pass also aggregates **person tracks** (``class_name == "person"``)
 into the ``people`` block: walk counts, direction split, weekday x hour
 heatmap, and a time-in-view (dwell) distribution. One person track ~= one
 walk past, with the same BotSORT-split caveat as cars; a bicycle rider
-detects as a person.
+detects as a person. Where a session carries ``{session}_people.json``
+(``streettracker people``), its summary rolls into ``people["kinds"]`` —
+walker/jogger/cyclist counts + dog walks. Cyclist classification needs
+bicycle tracks (live since 2026-06-13) and dog pairing needs dog tracks
+(live since 2026-07-07); earlier sessions contribute zeros there, and
+their jogger counts include unfiltered riders.
 
 One car ``TrackRecord`` is treated as one "journey"/pass. BotSORT can split a
 single pass into two tracks, so counts are approximate -- surfaced as a caveat
@@ -111,6 +116,20 @@ def _empty_people() -> dict[str, Any]:
         "dow": {d: {"l2r": 0, "r2l": 0, "total": 0} for d in _DOW},
         "heatmap": [[0] * 24 for _ in range(7)],
         "dwell": {"hist": [], "median_s": 0, "p90_s": 0},
+        "kinds": _empty_kinds(),
+    }
+
+
+def _empty_kinds() -> dict[str, int]:
+    return {
+        "walkers": 0,
+        "joggers": 0,
+        "cyclists": 0,
+        "dog_walks": 0,
+        "classified": 0,  # person tracks covered by a _people.json
+        "pct_walkers": 0,
+        "pct_joggers": 0,
+        "pct_cyclists": 0,
     }
 
 
@@ -198,6 +217,7 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
     p_hour = [0] * 24
     p_dir = {"l2r": 0, "r2l": 0}
     p_durations: list[float] = []
+    p_kinds = _empty_kinds()
 
     for d in sessions:
         name = d.name
@@ -258,6 +278,18 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
             if (r.get("num_detections") or 0) >= _FASTEST_MIN_DETECTIONS:
                 fastest_raw.append((sp, name, r))
 
+        pp = d / f"{name}_people.json"
+        if pp.exists():
+            try:
+                psum = json.loads(pp.read_text(encoding="utf-8")).get("summary", {})
+            except (OSError, json.JSONDecodeError):
+                psum = {}
+            p_kinds["walkers"] += int(psum.get("walkers") or 0)
+            p_kinds["joggers"] += int(psum.get("joggers") or 0)
+            p_kinds["cyclists"] += int(psum.get("cyclists") or 0)
+            p_kinds["dog_walks"] += int(psum.get("dog_walkers") or 0)
+            p_kinds["classified"] += int(psum.get("n_person_tracks") or 0)
+
         dl = d / f"{name}_dvsa_labels.json"
         if dl.exists():
             try:
@@ -309,6 +341,9 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
 
     p_directed = p_dir["l2r"] + p_dir["r2l"]
     p_bh = max(range(24), key=lambda h: p_hour[h]) if p_total else None
+    if p_kinds["classified"]:
+        for k in ("walkers", "joggers", "cyclists"):
+            p_kinds[f"pct_{k}"] = round(100 * p_kinds[k] / p_kinds["classified"])
     people = {
         "total": p_total,
         "n_days": len(p_dates),
@@ -319,6 +354,7 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
         "dow": p_dow,
         "heatmap": p_heatmap,
         "dwell": _dwell_stats(p_durations),
+        "kinds": p_kinds,
     }
 
     return Stats(
