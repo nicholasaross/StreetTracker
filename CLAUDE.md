@@ -176,6 +176,13 @@ Session files:
 - `{session}_makemodel.json` + `{session}_makemodel_by_track.json` —
   per-image top-k + per-track confidence-weighted CNN make/model
   predictions (after `makemodel`; `make_model_source="cnn"`)
+- `{session}_people.json` — per-person-track activity enrichment
+  (after `people`): kind walker/jogger/cyclist + `dog_walker` flag via
+  temporal+direction pairing with dog/bicycle tracks. Jogger split
+  uses the showcase speed calibration (default boundary 2.5 m/s);
+  cyclist beats jogger so riders (who detect as person) don't land in
+  the jogger bucket. Dog pairing needs COCO class 16 in the live
+  `vehicle_classes`.
 
 JSON record fields: see `common/schema.py` (`TrackRecord`, `SessionMeta`).
 
@@ -193,6 +200,7 @@ uv run streettracker dvsa-label output/<session>         # DVSA make/model harve
 uv run streettracker dvsa-apply output/<session>         # fold DVSA make/model onto per-track records
 uv run streettracker vehicles output/<session>           # per-vehicle aggregation (+ DVSA make/model)
 uv run streettracker vehicles output/<a> --across output/<b> ...  # cross-session repeat vehicles
+uv run streettracker people output/<session>             # person activity enrichment (dog walkers / joggers / cyclists)
 uv run streettracker showcase --output-root output       # local website: enriched + recurring cars (http://127.0.0.1:8090/)
 uv run streettracker makemodel output/<session>          # CNN make/model inference -> _makemodel.json
 # Mine the Orin -> grow the UK make-classifier corpus (run pull from PowerShell):
