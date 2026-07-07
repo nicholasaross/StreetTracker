@@ -12,7 +12,7 @@ Scope of this slice:
 
 * **Per-lane execution.** Two lanes serialise independently: a **GPU lane**
   (alpr / makemodel / build / train / export-engine — they share one device) and
-  a **net lane** (pull / dvsa / vehicles). A pull can run while a train is in
+  a **net lane** (pull / dvsa / vehicles / people). A pull can run while a train is in
   flight, but two GPU jobs never overlap. ``JobSpec.lane`` overrides the
   kind-derived lane.
 * **Wake-lock while busy** — the dev box idle-sleeps and has killed overnight

@@ -16,7 +16,8 @@ next), so the lane model only matters for *other* concurrent work.
 Shipped playbooks are pure job-chains:
 
 * **enrich** — ``alpr-run`` → ``dvsa-label`` → ``dvsa-apply`` → ``vehicles`` →
-  ``makemodel`` on one pulled session (the documented enrichment order).
+  ``makemodel`` → ``people`` on one pulled session (the documented
+  enrichment order).
 * **build-train** — ``makemodel-build-uk`` → ``makemodel-train-uk``.
 
 The action-based playbooks (roll-session+pull, promote, re-infer+refresh) build
@@ -268,6 +269,7 @@ def enrich_steps(session_dir: str) -> list[Step]:
         Step("Apply DVSA labels", job=JobSpec("dvsa-apply", [session_dir])),
         Step("Per-vehicle aggregation", job=JobSpec("vehicles", [session_dir])),
         Step("Make/model classifier", job=JobSpec("makemodel", [session_dir])),
+        Step("People enrichment", job=JobSpec("people", [session_dir])),
     ]
 
 

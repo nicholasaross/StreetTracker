@@ -68,6 +68,11 @@ _KIND_HINTS: dict[str, str] = {
     "dvsa-apply": "This folds DVSA labels onto per-track records; check the session's "
     "_dvsa_labels.json exists.",
     "vehicles": "This aggregates per-vehicle records from data.json + alpr_by_track + dvsa_labels.",
+    "people": (
+        "This folds person tracks from data.json into _people.json (walker/jogger/cyclist "
+        "kinds + dog-walker pairing). Pure JSON, no GPU; check the session's data.json and "
+        "the speed calibration (configs/showcase.json)."
+    ),
     "makemodel": (
         "This runs the make/model CNN on the session's snaps. Check the model checkpoint "
         "(analysis/makemodel/models/) and CUDA availability."

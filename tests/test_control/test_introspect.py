@@ -55,6 +55,7 @@ def test_session_info_counts_and_span(tmp_path: Path) -> None:
     assert info.n_dvsa_labels == 0
     assert info.has_vehicles is False
     assert info.has_makemodel is False
+    assert info.has_people is False
 
 
 def test_session_info_enrichment_badges(tmp_path: Path) -> None:
@@ -65,11 +66,13 @@ def test_session_info_enrichment_badges(tmp_path: Path) -> None:
     )
     (d / f"{SESSION}_vehicles.json").write_text("[]")
     (d / f"{SESSION}_makemodel_by_track.json").write_text("{}")
+    (d / f"{SESSION}_people.json").write_text("{}")
     info = introspect.session_info(d)
     assert info.has_alpr is True
     assert info.n_dvsa_labels == 2
     assert info.has_vehicles is True
     assert info.has_makemodel is True
+    assert info.has_people is True
 
 
 def test_session_info_events_fallback(tmp_path: Path) -> None:

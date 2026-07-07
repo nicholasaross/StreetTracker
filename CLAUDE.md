@@ -334,8 +334,8 @@ timeout-bounded in `control/orin.py`), `common.output`, and
   (for SSH/file steps). Playbooks (`PLAYBOOKS` registry; `build_playbook(name,
   ctx, …)` dispatches, `PlaybookContext` carries paths + device config):
   - **enrich** (`alpr-run` → `dvsa-label` → `dvsa-apply` → `vehicles` →
-    `makemodel`) and **build-train** (`makemodel-build-uk` → `makemodel-train-uk`,
-    dated dirs) — pure job-chains.
+    `makemodel` → `people`) and **build-train** (`makemodel-build-uk` →
+    `makemodel-train-uk`, dated dirs) — pure job-chains.
   - **roll** (action: `orin.restart_service` finalises the live session + starts
     a new one, verifies the handover + counts finalised tracks → then a `pull`
     job of the closed session) and **promote** (action: back up `makemodel_b0.pt`

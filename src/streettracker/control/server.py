@@ -113,6 +113,7 @@ ALLOWED_JOB_KINDS = frozenset(
         "dvsa-label",
         "dvsa-apply",
         "vehicles",
+        "people",
         "makemodel",
         "makemodel-build-uk",
         "makemodel-train-uk",
