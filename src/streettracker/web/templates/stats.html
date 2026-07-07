@@ -136,6 +136,7 @@
   {% if p.busiest_hour %}<div class="tile"><div class="big">{{ "%02d:00"|format(p.busiest_hour.hour) }}</div><div class="lbl">busiest walking hour ({{ p.busiest_hour.total }})</div></div>{% endif %}
   <div class="tile"><div class="big">{{ p.dwell.median_s }}s</div><div class="lbl">median time in view</div></div>
   {% if p.kinds and p.kinds.classified %}
+  <div class="tile"><div class="big">{{ "{:,}".format(p.kinds.walks) }}</div><div class="lbl">distinct walks (splits merged)</div></div>
   <div class="tile"><div class="big">{{ p.kinds.pct_joggers }}%</div><div class="lbl">joggers ({{ "{:,}".format(p.kinds.joggers) }})</div></div>
   <div class="tile"><div class="big">{{ "{:,}".format(p.kinds.cyclists) }}</div><div class="lbl">cyclists (since 13 Jun)</div></div>
   <div class="tile"><div class="big">{{ "{:,}".format(p.kinds.dog_walks) }}</div><div class="lbl">dog walks (since 7 Jul)</div></div>

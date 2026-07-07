@@ -205,7 +205,12 @@ Session files:
   uses the showcase speed calibration (default boundary 2.5 m/s);
   cyclist beats jogger so riders (who detect as person) don't land in
   the jogger bucket. Dog pairing needs COCO class 16 in the live
-  `vehicle_classes`.
+  `vehicle_classes`. `class_suspect` tracks (kinematics guardrail) are
+  excluded (`n_suspect_excluded`). BotSORT-split fragments merge into
+  walks (`walk_id` per track; summary `walks` / `n_split_merged`; rule:
+  same direction, start within [-2 s, +3 s] of the walk's end, colours
+  not known-different — merges ~7.6 % of person tracks on the measured
+  soaks).
 
 JSON record fields: see `common/schema.py` (`TrackRecord`, `SessionMeta`).
 
@@ -479,7 +484,7 @@ names differ from the example.
 | Ghost-plate aliasing | Solved (Step 10). Parked-car mask + padding cap eliminate all 5 ghost plates (138 tracks). |
 | Per-image high-conf | **Honest post-verdict (2026-06-19, two ~70h post-deploy soaks, completion-time bboxes): L→R 73-76 % mid-road; R→L ~12-13 %/image, ~15-20 %/car — a camera-geometry ceiling.** History: the 06-10 triage (Step 16) correctly found 96 % of R→L failures were snap-latency stale-bbox, but the 06-11 motion-window-hint re-run **overcorrected** — its "41-46 % → 63.9 % pooled, R→L 69.0 % > L→R 58.6 %, asymmetry inverted" was a forward-extrapolation artifact. Completion-time bboxes (exact landing crops, no extrapolation) on the post-deploy soaks restored the pre-Step-16 "R→L ~14 % ceiling at any position" — right all along. L→R reads well; R→L doesn't, at any landing position (`.claude/band_position_done.py`). |
 | Per-car aliasing-free | **~78 %** — intrinsic floor of camera + scene, verified across two sessions. Further snap-budget tuning will not move it. |
-| Misclassification | Confidence-weighted class voting (PR #23) defends single-frame flips; consistent model errors still possible. |
+| Misclassification | Confidence-weighted class voting (PR #23) defends single-frame flips; kinematics guardrail (2026-07-07) flags car-shaped "persons" (`class_suspect`, median bbox w/h ≥ 1.5) — excluded from people analytics. |
 | Direction-aware throttling | **NOT live.** Deployed 2026-05-27 (`pipeline_interval_ms_by_direction={forward:300, reverse:400}`) but dropped from the live config (likely the 2026-06-13 splice); now `{}` (uniform 400 ms). Not restored — premise (pack R→L's clean-read window) falsified: R→L is camera-capped ~15-20 % at any position (2026-06-19 verdict). |
 | Dataset-level pivot | `vehicles` aggregator (Step 12) + fuzzy clustering (Step 14). **Make/model DVSA-first prong shipped** (PRs #41/#42/#43): `dvsa-label`→`dvsa-apply`→`vehicles` (+`--across`); covers the readable ~25-30 % of cars. **Universal CNN: CompCars trained (#46) but failed UK validation** (domain gap, ~1 %); **pivoted to a UK-native make classifier** (#47) trained on DVSA-auto-labelled local crops — the earlier "~21 % task-bound ceiling" was **wrong** — it was **resolution-bound** (the cropper hardcoded 224 px output, capping every prior lever). Lifting input resolution breaks it: **B0 @224/384/512 = 22 / 32 / 38 % make@1** (2026-06-03); bigger backbones (B4/B5) overfit 800 cars and don't beat B0. **Production UK model = EfficientNet-B5 @456** (make@1 **0.303**, 29 makes; B0 0.271 < B4 0.284 < B5 — bigger backbones win at 1,229 cars; `make_model_source="cnn"`). The old "37.6 %" was small-val optimism (audit: baseline scored 0.207 on unseen cars). Data IS a lever. See [Make/model classification](#makemodel-classification). Learned recolor + visual re-id still to do. |
 
@@ -679,8 +684,16 @@ sum(detection_score)]`; `class_id = argmax(class_votes)` always.
 Three new tests cover tie-break (insertion-order), majority resilience,
 and accumulated-evidence flipping. Doesn't fix the rare case where YOLO
 is *consistently* wrong on a scene (e.g. parked grey Prius+ labelled
-person) — that needs a heuristic guardrail (cross-check `class_name`
-against `speed_px_s` + bbox aspect ratio) or a detector retrain.
+person) — that case is now covered by the **kinematics guardrail**
+(2026-07-07): `compute_attributes` sets `TrackRecord.class_suspect=True`
+on a "person" whose median bbox aspect (w/h) ≥ 1.5. Measured on six
+completion-bbox soaks (10,691 person / 15,254 car tracks): person p99 =
+0.82, rider max = 1.44, car p25 = 1.40 — so 1.5 catches the
+misclassified parked cars (all wide AND slow; speed added no signal)
+with zero rider collateral. Suspects keep their class + assets but are
+excluded from `web/stats.py` people+car counts and `analysis/people.py`
+(summary `n_suspect_excluded`). Old sessions lack the field (treated
+as not-suspect).
 
 ### Schema-additive config changes
 

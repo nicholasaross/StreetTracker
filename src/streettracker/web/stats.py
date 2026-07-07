@@ -127,6 +127,7 @@ def _empty_kinds() -> dict[str, int]:
         "cyclists": 0,
         "dog_walks": 0,
         "classified": 0,  # person tracks covered by a _people.json
+        "walks": 0,  # distinct walks after BotSORT-split merging
         "pct_walkers": 0,
         "pct_joggers": 0,
         "pct_cyclists": 0,
@@ -229,6 +230,12 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
             cls = r.get("class_name")
             if cls not in ("car", "person"):
                 continue
+            # Kinematics guardrail: tracks whose voted class is
+            # contradicted by bbox geometry (today: car-shaped
+            # "persons" -- persistently misclassified parked cars)
+            # count as neither people nor cars.
+            if r.get("class_suspect"):
+                continue
             ts = r.get("time_start")
             if not ts:
                 continue
@@ -289,6 +296,9 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
             p_kinds["cyclists"] += int(psum.get("cyclists") or 0)
             p_kinds["dog_walks"] += int(psum.get("dog_walkers") or 0)
             p_kinds["classified"] += int(psum.get("n_person_tracks") or 0)
+            # Sidecars written before walk dedup lack "walks" -- count
+            # their tracks 1:1 so the walks total stays comparable.
+            p_kinds["walks"] += int(psum.get("walks") or psum.get("n_person_tracks") or 0)
 
         dl = d / f"{name}_dvsa_labels.json"
         if dl.exists():

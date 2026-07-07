@@ -21,6 +21,7 @@ from streettracker.device.track_buffer import (
     MotionPoint,
     TrackBuffer,
     compute_attributes,
+    median_bbox_aspect,
     safe_crop,
     sharpness_score,
     total_displacement,
@@ -542,8 +543,8 @@ def test_compute_attributes_main_snap_bboxes_aligned_with_main_snaps() -> None:
     assert result is not None
     assert result.main_snaps == [1, 2, 3]
     assert result.main_snap_bboxes == [
-        [50, 80, 150, 180],   # for snap 1
-        None,                  # for snap 2 (missing)
+        [50, 80, 150, 180],  # for snap 1
+        None,  # for snap 2 (missing)
         [250, 80, 350, 180],  # for snap 3
     ]
 
@@ -598,3 +599,71 @@ def test_compute_attributes_done_bboxes_parallel_to_main_snaps() -> None:
     assert result is not None
     assert result.main_snap_bboxes == [[50, 80, 150, 180], [250, 80, 350, 180]]
     assert result.main_snap_bboxes_done == [[90, 80, 190, 180], None]
+
+
+# ----------------------------------------------------------------------
+# class_suspect kinematics guardrail
+
+
+def _track_with_box_shape(class_id: int, w: float, h: float) -> BufferedTrack:
+    """Moving track (passes the parked filter) whose every bbox is w x h."""
+    tr = BufferedTrack(id=7, class_id=class_id)
+    for i, cx in enumerate((100.0, 300.0, 500.0)):
+        tr.points.append(
+            MotionPoint(
+                frame_idx=i,
+                t=float(i),
+                cx=cx,
+                cy=200.0,
+                x1=cx - w / 2,
+                y1=200.0 - h / 2,
+                x2=cx + w / 2,
+                y2=200.0 + h / 2,
+                score=0.9,
+            )
+        )
+    return tr
+
+
+def _finalize(tr: BufferedTrack) -> TrackRecord:
+    result = compute_attributes(
+        tr,
+        frame_h=_FRAME_H,
+        min_duration_s=1.0,
+        parked_disp_px=50.0,
+        color="red",
+        t_start_wall=_T0_WALL,
+    )
+    assert result is not None
+    return result
+
+
+def test_median_bbox_aspect_is_median_of_ratios() -> None:
+    tr = _track_with_box_shape(0, w=50, h=100)  # three samples at 0.5
+    tr.points[0].x2 = tr.points[0].x1 + 200  # one wide outlier (2.0)
+    assert median_bbox_aspect(tr.points) == pytest.approx(0.5)
+    assert median_bbox_aspect([]) == 0.0
+
+
+def test_person_with_car_shaped_boxes_is_suspect() -> None:
+    rec = _finalize(_track_with_box_shape(0, w=160, h=100))  # aspect 1.6
+    assert rec.class_name == "person"
+    assert rec.class_suspect is True
+
+
+def test_person_with_person_shaped_boxes_is_not_suspect() -> None:
+    rec = _finalize(_track_with_box_shape(0, w=45, h=100))  # aspect 0.45
+    assert rec.class_suspect is False
+
+
+def test_rider_shaped_person_is_not_suspect() -> None:
+    # Riders (person-class) max out at aspect ~1.44 in the measured
+    # soaks; the 1.5 threshold must leave them alone.
+    rec = _finalize(_track_with_box_shape(0, w=144, h=100))
+    assert rec.class_suspect is False
+
+
+def test_wide_car_is_not_suspect() -> None:
+    rec = _finalize(_track_with_box_shape(2, w=160, h=100))
+    assert rec.class_name == "car"
+    assert rec.class_suspect is False
