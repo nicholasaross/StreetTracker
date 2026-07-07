@@ -487,7 +487,8 @@ def train_main(argv: list[str] | None = None) -> int:
         "--backbone",
         choices=SUPPORTED_ARCHS,
         default=defaults.backbone,
-        help="EfficientNet backbone; b4 (380px) / b5 (456px) are compound-scaled for hi-res crops",
+        help="EfficientNet backbone; b4 (380px) / b5 (456px) / b6 (528px) / b7 (600px) "
+        "are compound-scaled for hi-res crops (b6+ wants --batch-size 4 on a 10GB GPU)",
     )
     parser.add_argument(
         "--freeze-backbone", action="store_true", help="linear-probe (frozen backbone)"

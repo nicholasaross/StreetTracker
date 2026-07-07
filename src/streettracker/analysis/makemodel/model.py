@@ -51,9 +51,13 @@ from torchvision.models import (  # type: ignore[import-untyped]  # torchvision 
     EfficientNet_B0_Weights,
     EfficientNet_B4_Weights,
     EfficientNet_B5_Weights,
+    EfficientNet_B6_Weights,
+    EfficientNet_B7_Weights,
     efficientnet_b0,
     efficientnet_b4,
     efficientnet_b5,
+    efficientnet_b6,
+    efficientnet_b7,
 )
 
 # Arch names live torch-free in archs.py (so config/CLI/tests can validate
@@ -68,14 +72,17 @@ CHECKPOINT_FORMAT = 1
 
 # Backbone name -> (constructor, ImageNet weights). EfficientNet's
 # compound scaling pairs a larger backbone with a higher native input
-# resolution -- B0@224, B4@380, B5@456 -- so a higher-resolution crop
-# set wants the matching backbone, not just a bigger input fed to B0.
-# feature_dim is read off each backbone's own classifier, so the heads
-# adapt (B0=1280, B4=1792, B5=2048) with no per-arch wiring.
+# resolution -- B0@224, B4@380, B5@456, B6@528, B7@600 -- so a
+# higher-resolution crop set wants the matching backbone, not just a
+# bigger input fed to B0. feature_dim is read off each backbone's own
+# classifier, so the heads adapt (B0=1280, B4=1792, B5=2048, B6=2304,
+# B7=2560) with no per-arch wiring.
 _BACKBONES = {
     "efficientnet_b0": (efficientnet_b0, EfficientNet_B0_Weights.IMAGENET1K_V1),
     "efficientnet_b4": (efficientnet_b4, EfficientNet_B4_Weights.IMAGENET1K_V1),
     "efficientnet_b5": (efficientnet_b5, EfficientNet_B5_Weights.IMAGENET1K_V1),
+    "efficientnet_b6": (efficientnet_b6, EfficientNet_B6_Weights.IMAGENET1K_V1),
+    "efficientnet_b7": (efficientnet_b7, EfficientNet_B7_Weights.IMAGENET1K_V1),
 }
 # Keep the torch-free name list (archs.py) and the constructor mapping in lockstep.
 assert tuple(_BACKBONES) == SUPPORTED_ARCHS
