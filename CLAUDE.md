@@ -205,7 +205,12 @@ Session files:
   uses the showcase speed calibration (default boundary 2.5 m/s);
   cyclist beats jogger so riders (who detect as person) don't land in
   the jogger bucket. Dog pairing needs COCO class 16 in the live
-  `vehicle_classes`.
+  `vehicle_classes`. `class_suspect` tracks (kinematics guardrail) are
+  excluded (`n_suspect_excluded`). BotSORT-split fragments merge into
+  walks (`walk_id` per track; summary `walks` / `n_split_merged`; rule:
+  same direction, start within [-2 s, +3 s] of the walk's end, colours
+  not known-different — merges ~7.6 % of person tracks on the measured
+  soaks).
 
 JSON record fields: see `common/schema.py` (`TrackRecord`, `SessionMeta`).
 

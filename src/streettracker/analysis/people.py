@@ -34,12 +34,14 @@ Output schema::
       "summary": {"n_person_tracks": 4211, "walkers": ..., "joggers": ...,
                   "cyclists": ..., "dog_walkers": ...,
                   "n_dog_tracks": ..., "n_dogs_paired": ...,
-                  "n_bicycle_tracks": ..., "n_bicycles_paired": ...},
+                  "n_bicycle_tracks": ..., "n_bicycles_paired": ...,
+                  "n_suspect_excluded": ..., "walks": ...,
+                  "n_split_merged": ...},
       "people": [
         {"track_id": 42, "time_start": "...", "time_end": "...",
          "direction": "left to right", "duration_visible": 12.8,
          "speed_px_s": 37.1, "speed_m_s": 1.56, "num_detections": 61,
-         "kind": "walker", "dog_walker": true,
+         "kind": "walker", "dog_walker": true, "walk_id": 42,
          "dog_track_ids": [43], "bicycle_track_ids": []},
         ...
       ]
@@ -82,6 +84,20 @@ MIN_DETECTIONS_FOR_SPEED = 6
 # not import from web/). Measured from .claude/triggers_proposal.json.
 DEFAULT_ROAD_AXIS_PX = 801.0
 
+# Walk dedup: BotSORT can split one pass into consecutive tracks. Track
+# B joins A's walk when it starts within [-WALK_OVERLAP_MAX_S,
+# +walk_gap_s] of A's end, same direction, and their clothing-colour
+# votes aren't known-different. Six-soak sweep (15,913 person tracks):
+# gap 3 s + this colour rule merges 7.6 % of tracks (strict colour
+# equality 3.3 % -- too strict, 31 % of tracks vote colour "unknown"
+# and split fragments are short/small-crop, exactly the unknown-voters;
+# no colour check 10.9 % -- merges distinct same-direction people).
+# Companions walking together are naturally excluded: their tracks
+# overlap for most of their life, far beyond the -2 s bound.
+WALK_GAP_S_DEFAULT = 3.0
+_WALK_OVERLAP_MAX_S = 2.0
+_WALK_PRUNE_S = 30.0  # drop open walks this stale (bounds the scan)
+
 
 @dataclass(slots=True)
 class PersonTrack:
@@ -99,6 +115,9 @@ class PersonTrack:
     num_detections: int
     kind: str  # "walker" | "jogger" | "cyclist"
     dog_walker: bool
+    # Walk group: BotSORT-split fragments of one pass share a walk_id
+    # (the first fragment's track_id). Distinct-walk counting uses this.
+    walk_id: int = 0
     dog_track_ids: list[int] = field(default_factory=list)
     bicycle_track_ids: list[int] = field(default_factory=list)
 
@@ -142,6 +161,49 @@ def pair_companions(
     return paired
 
 
+def group_walks(
+    persons: list[dict[str, Any]],
+    *,
+    gap_s: float = WALK_GAP_S_DEFAULT,
+) -> dict[int, int]:
+    """Group BotSORT-split person tracks into walks.
+
+    Greedy chain over tracks sorted by start time: a track joins an
+    open walk when it starts within ``[-2 s, +gap_s]`` of that walk's
+    end, moves the same direction, and the colour votes aren't
+    known-different (an ``unknown`` on either side is compatible --
+    split fragments are short and often vote unknown). Returns
+    ``{track_id: walk_id}`` where walk_id is the walk's first track_id.
+    """
+    walks: dict[int, int] = {}
+    # open walk: [end_unix, direction, colour, walk_id]
+    open_walks: list[list[Any]] = []
+    for r in sorted(persons, key=lambda r: float(r.get("time_start_unix") or 0.0)):
+        start = float(r.get("time_start_unix") or 0.0)
+        end = float(r.get("time_end_unix") or 0.0)
+        d, c = r.get("direction"), r.get("color") or "unknown"
+        joined: list[Any] | None = None
+        for w in open_walks:
+            if d != w[1]:
+                continue
+            if not (-_WALK_OVERLAP_MAX_S <= start - w[0] <= gap_s):
+                continue
+            if c != "unknown" and w[2] != "unknown" and c != w[2]:
+                continue
+            joined = w
+            break
+        if joined is None:
+            open_walks.append([end, d, c, r["track_id"]])
+            walks[r["track_id"]] = r["track_id"]
+        else:
+            joined[0] = max(joined[0], end)
+            if joined[2] == "unknown":
+                joined[2] = c
+            walks[r["track_id"]] = joined[3]
+        open_walks = [w for w in open_walks if w[0] >= start - _WALK_PRUNE_S]
+    return walks
+
+
 def classify_kind(
     *,
     speed_m_s: float | None,
@@ -170,6 +232,7 @@ def build_people(
     m_per_px: float | None = None,
     jogger_min_m_s: float = JOGGER_MIN_M_S_DEFAULT,
     min_overlap_s: float = MIN_OVERLAP_S_DEFAULT,
+    walk_gap_s: float = WALK_GAP_S_DEFAULT,
 ) -> tuple[list[PersonTrack], dict[str, Any]]:
     """Fold a session's raw track records into person enrichment rows
     plus the summary block. ``records`` is the parsed ``data.json``
@@ -186,6 +249,7 @@ def build_people(
 
     dog_by_person = pair_companions(persons, dogs, min_overlap_s=min_overlap_s)
     bike_by_person = pair_companions(persons, bikes, min_overlap_s=min_overlap_s)
+    walk_by_person = group_walks(persons, gap_s=walk_gap_s)
 
     out: list[PersonTrack] = []
     for r in persons:
@@ -214,6 +278,7 @@ def build_people(
                     jogger_min_m_s=jogger_min_m_s,
                 ),
                 dog_walker=bool(dog_ids),
+                walk_id=walk_by_person.get(tid, tid),
                 dog_track_ids=dog_ids,
                 bicycle_track_ids=bike_ids,
             )
@@ -230,6 +295,10 @@ def build_people(
         "n_bicycle_tracks": len(bikes),
         "n_bicycles_paired": sum(len(v) for v in bike_by_person.values()),
         "n_suspect_excluded": n_suspect,
+        # Distinct walks after BotSORT-split merging; the difference to
+        # n_person_tracks is how many fragments were folded in.
+        "walks": len(set(walk_by_person.values())),
+        "n_split_merged": len(out) - len(set(walk_by_person.values())),
     }
     return out, summary
 
@@ -279,6 +348,12 @@ def _build_parser() -> argparse.ArgumentParser:
         f"(default {MIN_OVERLAP_S_DEFAULT})",
     )
     ap.add_argument(
+        "--walk-gap-s",
+        type=float,
+        default=WALK_GAP_S_DEFAULT,
+        help=f"max gap between split fragments of one walk, seconds (default {WALK_GAP_S_DEFAULT})",
+    )
+    ap.add_argument(
         "--m-per-px",
         type=float,
         default=None,
@@ -319,6 +394,7 @@ def main(argv: list[str] | None = None) -> int:
         m_per_px=m_per_px,
         jogger_min_m_s=args.jogger_min_ms,
         min_overlap_s=args.min_overlap_s,
+        walk_gap_s=args.walk_gap_s,
     )
 
     out_path = args.out or (session_dir / f"{session}_people.json")
@@ -330,6 +406,7 @@ def main(argv: list[str] | None = None) -> int:
                     "m_per_px": m_per_px,
                     "jogger_min_m_s": args.jogger_min_ms,
                     "min_overlap_s": args.min_overlap_s,
+                    "walk_gap_s": args.walk_gap_s,
                 },
                 "summary": summary,
                 "people": [p.to_json_dict() for p in people],
@@ -338,7 +415,10 @@ def main(argv: list[str] | None = None) -> int:
         ),
         encoding="utf-8",
     )
-    print(f"[people] wrote {out_path}  ({summary['n_person_tracks']} person tracks)")
+    print(
+        f"[people] wrote {out_path}  ({summary['n_person_tracks']} person tracks, "
+        f"{summary['walks']} walks after split-merge)"
+    )
     print(
         f"  walkers: {summary['walkers']}   joggers: {summary['joggers']}   "
         f"cyclists: {summary['cyclists']}   dog walkers: {summary['dog_walkers']}"

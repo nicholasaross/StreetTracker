@@ -452,6 +452,8 @@ def test_people_kinds_roll_up_across_sessions(tmp_path: Path) -> None:
     assert k["walkers"] == 10 and k["joggers"] == 4 and k["cyclists"] == 1
     assert k["dog_walks"] == 2
     assert k["pct_walkers"] == 67 and k["pct_joggers"] == 27 and k["pct_cyclists"] == 7
+    # Sidecars without a "walks" key (pre-dedup) fall back to 1:1 tracks.
+    assert k["walks"] == 15
 
 
 def test_people_kinds_zero_without_sidecars(tmp_path: Path) -> None:

@@ -172,6 +172,8 @@ def test_build_people_kinds_flags_and_summary() -> None:
         "n_bicycle_tracks": 1,
         "n_bicycles_paired": 1,
         "n_suspect_excluded": 0,
+        "walks": 3,
+        "n_split_merged": 0,
     }
 
 
@@ -180,6 +182,60 @@ def test_build_people_uncalibrated() -> None:
     assert people[0].speed_m_s is None
     assert people[0].kind == "walker"
     assert summary["joggers"] == 0
+
+
+def test_group_walks_merges_split_fragments() -> None:
+    from streettracker.analysis.people import group_walks
+
+    a = _rec(1, start=0.0, end=10.0)
+    b = _rec(2, start=12.0, end=20.0)  # 2 s gap: same walk
+    c = _rec(3, start=22.5, end=30.0)  # 2.5 s after b: chains on
+    assert group_walks([a, b, c]) == {1: 1, 2: 1, 3: 1}
+
+
+def test_group_walks_respects_direction_and_gap() -> None:
+    from streettracker.analysis.people import group_walks
+
+    a = _rec(1, start=0.0, end=10.0)
+    other_dir = _rec(2, start=11.0, end=20.0, direction=_R2L)
+    too_late = _rec(3, start=14.0, end=25.0)  # 4 s after a: new walk
+    walks = group_walks([a, other_dir, too_late])
+    assert walks == {1: 1, 2: 2, 3: 3}
+
+
+def test_group_walks_colour_rules() -> None:
+    from streettracker.analysis.people import group_walks
+
+    a = _rec(1, start=0.0, end=10.0)
+    a["color"] = "red"
+    diff = _rec(2, start=11.0, end=20.0)
+    diff["color"] = "blue"  # known-different: two people
+    unk = _rec(3, start=11.0, end=20.0)
+    unk["color"] = "unknown"  # unknown: compatible with a
+    assert group_walks([a, diff]) == {1: 1, 2: 2}
+    assert group_walks([a, unk]) == {1: 1, 3: 1}
+
+
+def test_group_walks_leaves_companions_apart() -> None:
+    """Two people walking together overlap for most of their tracks --
+    far beyond the 2 s overlap bound -- and must stay separate walks."""
+    from streettracker.analysis.people import group_walks
+
+    a = _rec(1, start=0.0, end=12.0)
+    b = _rec(2, start=1.0, end=13.0)
+    assert group_walks([a, b]) == {1: 1, 2: 2}
+
+
+def test_build_people_reports_walks_and_walk_ids() -> None:
+    a = _rec(1, start=0.0, end=10.0)
+    b = _rec(2, start=12.0, end=20.0)  # fragment of a's walk
+    c = _rec(3, start=100.0, end=110.0)
+    people, summary = build_people([a, b, c], m_per_px=0.05)
+    by_id = {p.track_id: p for p in people}
+    assert by_id[1].walk_id == 1 and by_id[2].walk_id == 1
+    assert by_id[3].walk_id == 3
+    assert summary["walks"] == 2
+    assert summary["n_split_merged"] == 1
 
 
 def test_build_people_excludes_class_suspect_tracks() -> None:
