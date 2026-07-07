@@ -382,11 +382,11 @@ def test_people_block_aggregates_person_tracks(tmp_path: Path) -> None:
     assert p["dwell"]["median_s"] == 12.0
     assert p["dwell"]["p90_s"] == 70.0
     hist = p["dwell"]["hist"]
-    assert hist[0]["n"] == 1          # 5s  -> [0, 10)
-    assert hist[1]["n"] == 1          # 12s -> [10, 20)
-    assert hist[-1]["lo"] == 60.0     # open-ended 60+ bucket
+    assert hist[0]["n"] == 1  # 5s  -> [0, 10)
+    assert hist[1]["n"] == 1  # 12s -> [10, 20)
+    assert hist[-1]["lo"] == 60.0  # open-ended 60+ bucket
     assert hist[-1]["hi"] is None
-    assert hist[-1]["n"] == 1         # 70s
+    assert hist[-1]["n"] == 1  # 70s
 
 
 def test_people_block_empty_without_person_tracks(tmp_path: Path) -> None:
@@ -397,6 +397,52 @@ def test_people_block_empty_without_person_tracks(tmp_path: Path) -> None:
     assert s.people["total"] == 0
     assert s.people["dwell"]["hist"] == []
     assert s.people["busiest_hour"] is None
+
+
+def _people_json(walkers: int, joggers: int, cyclists: int, dog_walkers: int) -> dict:
+    n = walkers + joggers + cyclists
+    return {
+        "session": "x",
+        "params": {"m_per_px": 0.05, "jogger_min_m_s": 2.5, "min_overlap_s": 3.0},
+        "summary": {
+            "n_person_tracks": n,
+            "walkers": walkers,
+            "joggers": joggers,
+            "cyclists": cyclists,
+            "dog_walkers": dog_walkers,
+            "n_dog_tracks": dog_walkers,
+            "n_dogs_paired": dog_walkers,
+            "n_bicycle_tracks": cyclists,
+            "n_bicycles_paired": cyclists,
+        },
+        "people": [],
+    }
+
+
+def test_people_kinds_roll_up_across_sessions(tmp_path: Path) -> None:
+    """_people.json summaries sum into people["kinds"] with percentages;
+    sessions without the sidecar contribute nothing (not an error)."""
+    d1 = _mk_session(tmp_path, "session_a", [_track(1, cls="person")])
+    (d1 / "session_a_people.json").write_text(json.dumps(_people_json(6, 3, 1, 2)))
+    d2 = _mk_session(tmp_path, "session_b", [_track(2, cls="person")])
+    (d2 / "session_b_people.json").write_text(json.dumps(_people_json(4, 1, 0, 0)))
+    _mk_session(tmp_path, "session_c", [_track(3, cls="person")])  # no sidecar
+
+    k = build_stats(tmp_path).people["kinds"]
+
+    assert k["classified"] == 15
+    assert k["walkers"] == 10 and k["joggers"] == 4 and k["cyclists"] == 1
+    assert k["dog_walks"] == 2
+    assert k["pct_walkers"] == 67 and k["pct_joggers"] == 27 and k["pct_cyclists"] == 7
+
+
+def test_people_kinds_zero_without_sidecars(tmp_path: Path) -> None:
+    _mk_session(tmp_path, "session_p", [_track(1, cls="person")])
+
+    k = build_stats(tmp_path).people["kinds"]
+
+    assert k["classified"] == 0
+    assert k["pct_walkers"] == 0  # no division by zero
 
 
 async def test_api_stats_includes_people(client: TestClient) -> None:

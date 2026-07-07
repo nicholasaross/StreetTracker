@@ -60,8 +60,9 @@ refreshed. Data-is-the-lever, confirmed again (4× data → +5.3 pp). The
    camera on the approach), not a tuning one.
 2. **Then:** a bigger backbone may now pay (B5 still won at 4× data, so the
    corpus isn't capacity-saturated); VLM bake-off (Qwen3-VL vs the CNN's 0.402
-   on the by-car val); people P1→P2 (attribute tags) / P0 (retention policy);
-   legacy-repo archival (last migration tail).
+   on the by-car val); people P0 (retention policy — P2 attribute tags SHIPPED
+   2026-07-07: `streettracker people` + panel + stats page; dog class 16 live
+   on the Orin same day). Legacy-repo archival DONE 2026-07-07.
 
 **Ops (learned the hard way):** launch long jobs **detached (WMI/VBS, outside
 the Claude helper tree)** AND **verify completion by artifact mtimes, never a
@@ -248,7 +249,11 @@ uv run streettracker showcase --output-root output   # http://127.0.0.1:8090/
   bucketed by camera-local `time_start`, so a multi-date session splits
   correctly): daily L→R/R→L journeys (click a day → its 15-min profile),
   day-of-week histogram, weekday×hour heatmap, speed distribution + fastest
-  cars, and make/colour mix. Charts are dependency-free SVG/CSS. One car track
+  cars, and make/colour mix. A **People** section aggregates person tracks
+  (footfall, dwell, heatmap) and — where sessions carry `_people.json` —
+  rolls up walker/jogger/cyclist/dog-walk counts (cyclists classified since
+  2026-06-13, dog walks since 2026-07-07; earlier jogger counts include
+  unfiltered riders, ~+4pp). Charts are dependency-free SVG/CSS. One car track
   ≈ one pass (BotSORT can split). **Speed**: `speed_px_s` is inference-frame
   pixels, shown as px/s unless a calibration is set, then mph. Calibrate via
   `configs/showcase.json` (`{"m_per_px": X}` or `{"road_length_m": D}` →
@@ -377,8 +382,8 @@ shortcut buttons on the sessions table, and surfacing `control_*.json` in
 
 ## Migration status
 
-Clean-slate replacement for VehicleTracker + NanoTracker. All phases
-code-complete; the only remaining tail is repo archival on GitHub.
+Clean-slate replacement for VehicleTracker + NanoTracker. **Migration
+complete** — both ancestor repos archived on GitHub 2026-07-07.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -390,7 +395,7 @@ code-complete; the only remaining tail is repo archival on GitHub.
 | 4b | `analysis/alpr/` wholesale port | done |
 | 5 | CLI: `pull`, `export-engine`, `setup_orin.sh`, systemd | done |
 | 6 | (opt) Nano archive role | not started |
-| 7 | cutover: enable systemd on Orin + decommission Nano + archive old repos | **mostly done** — Orin live since 2026-05-22; only `VehicleTracker` + `NanoTracker` repo archival on GitHub outstanding |
+| 7 | cutover: enable systemd on Orin + decommission Nano + archive old repos | **done** — Orin live since 2026-05-22; `VehicleTracker` + `NanoTracker` archived 2026-07-07 with superseded-by banners |
 
 Tests at HEAD: **606 passing on Python 3.10, ruff clean.**
 
@@ -424,10 +429,9 @@ plate-anchored aggregator. Place the bespoke detector at
 
 Phase 7 cutover happened **2026-05-22**. Orin `streettracker.service`
 active since 15:42 BST; old Jetson Nano `nano_tracker.py` SIGTERM'd
-cleanly after 986,619 frames over 27.6h. **Repo archival on GitHub
-(VehicleTracker + NanoTracker) pending** — wait ~a week of clean
-operation, then Settings → Archive with a "Superseded by StreetTracker
-as of `<date>`; read-only" CLAUDE.md one-liner on each.
+cleanly after 986,619 frames over 27.6h. **Repo archival DONE
+2026-07-07** — both repos archived with a "Superseded by StreetTracker
+as of 2026-07-07; read-only" banner prepended to each CLAUDE.md.
 
 Two config-mismatch bugs surfaced + hardened in PR #15:
 
