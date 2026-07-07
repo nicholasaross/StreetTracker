@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="168" height="44" viewBox="0 0 168 44" role="img" aria-label="ST26 TRK number plate">
+  <!-- UK rear-plate mark for StreetTracker. Matches the documentation
+       artifact's masthead: plate yellow #F2C200, dark inset border,
+       bold letter-spaced monospace. -->
+  <rect x="1.5" y="1.5" width="165" height="41" rx="5" fill="#F2C200" stroke="#1B2026" stroke-opacity="0.55" stroke-width="3"/>
+  <text x="84" y="29.5" text-anchor="middle"
+        font-family="'Cascadia Code','Consolas','DejaVu Sans Mono',monospace"
+        font-size="17" font-weight="700" letter-spacing="2.4" fill="#1B2026">ST26 TRK</text>
+</svg>

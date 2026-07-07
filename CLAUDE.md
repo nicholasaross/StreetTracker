@@ -1,4 +1,4 @@
-# CLAUDE.md
+# CLAUDE.md <img src="docs/assets/st26trk.svg" alt="ST26 TRK" height="40" align="right"/>
 
 Guidance for Claude Code when working in StreetTracker.
 

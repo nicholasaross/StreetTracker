@@ -1,4 +1,4 @@
-# StreetTracker
+# StreetTracker <img src="docs/assets/st26trk.svg" alt="ST26 TRK" height="40" align="right"/>
 
 Detect, track, and characterise vehicles and people from video files or a live
 RTSP camera — then enrich the results with number-plate reads, make/model/year,
@@ -9,7 +9,7 @@ RTSP on the original Jetson Nano / JetPack 4.6.1 / Python 3.6), unified onto one
 modern stack: **Python 3.10 · Ultralytics + BotSORT · TensorRT · uv-managed**.
 
 **Status:** production. Running live on a Jetson Orin Nano 8GB Super watching a
-street through a Reolink camera since 2026-05-22. `ruff` clean, **660** unit
+street through a Reolink camera since 2026-05-22. `ruff` clean, **870** unit
 tests green on the dev box. (Migration from the two legacy repos is
 code-complete; the only open tail is the JetPack 7.2 device upgrade — see
 [Roadmap](#roadmap).)
@@ -192,13 +192,15 @@ and the snap-gate geometry.
 
 Scene-specific (oblique residential-street view), measured over multi-hour soaks:
 
-- **4K snap coverage:** ≈98 % of cars get ≥1 snapshot.
-- **Plate reads:** a clean canonical UK plate for ~40–45 % of cars — a
-  camera-geometry floor (oblique angles, motion blur, occlusion), not a
-  tuning gap; capture-side levers are exhausted.
+- **4K snap coverage:** ≈98 % of cars get ≥1 snapshot; ≈67 % of person tracks.
+- **Plate reads:** a clean canonical UK plate for ~58 % of cars net —
+  rear plates (L→R here) read ~92 % per car; front plates are
+  camera-geometry-capped ~23 % at every position, so the remaining lever
+  is a second approach camera, not tuning.
 - **DVSA make/model/year:** the readable, ≥3-year-old subset (~25–30 % of cars).
-- **CNN make classifier:** EfficientNet-B0 @512 px ≈ 38 % make@1 for the
-  unreadable majority — growing the training corpus is the remaining lever.
+- **CNN make classifier:** EfficientNet-B5 @456 px, **44 % make@1** over 42
+  makes for the unreadable majority — the corpus (43.8k crops) grows as a
+  by-product of operation, and data remains the lever.
 
 ## Roadmap
 
