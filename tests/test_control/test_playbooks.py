@@ -183,6 +183,7 @@ def test_enrich_steps_chain() -> None:
         "dvsa-apply",
         "vehicles",
         "makemodel",
+        "people",
     ]
     assert "--ghost-mask" in steps[0].job.args  # type: ignore[union-attr]
 

@@ -209,6 +209,7 @@
           ${estep(x.n_dvsa_labels>0,"DVSA","DVSA MOT make/model/colour lookups by plate. The number is how many plates resolved.", x.n_dvsa_labels||"")}
           ${estep(x.has_vehicles,"Vehicles","Per-vehicle aggregation (streettracker vehicles → _vehicles.json). Optional — the showcase rebuilds this view live, so it is only saved where the command was run explicitly.")}
           ${estep(x.has_makemodel,"Make/model","Make/model CNN inference has run on this session's snaps.")}
+          ${estep(x.has_people,"People","Person activity enrichment (streettracker people → _people.json): walker/jogger/cyclist kinds + dog-walker pairing. Dog pairing only yields hits on sessions recorded after the dog class went live (2026-07-07).")}
         </td>
       </tr>`;
     });
@@ -216,7 +217,7 @@
       <thead><tr><th>#</th><th>session</th><th>started</th><th>duration</th><th>tracks</th><th>snaps</th><th>enrichment</th></tr></thead>
       <tbody>${rows}</tbody></table>
       <div class="legend">
-        <span><b>Enrichment pipeline:</b> Plates → DVSA → Vehicles → Make/model</span>
+        <span><b>Enrichment pipeline:</b> Plates → DVSA → Vehicles → Make/model → People</span>
         <span><span class="tag on">done</span> step has run</span>
         <span><span class="tag">pending</span> not run yet</span>
         <span class="muted">Pending (grey) steps are the to-do — Phase 2 runs them from here.</span>
@@ -225,7 +226,7 @@
 
   // ---------- Processes (jobs) ----------
   const JOB_KINDS = [
-    "pull", "alpr-run", "dvsa-label", "dvsa-apply", "vehicles",
+    "pull", "alpr-run", "dvsa-label", "dvsa-apply", "vehicles", "people",
     "makemodel", "makemodel-build-uk", "makemodel-train-uk", "export-engine",
   ];
   window.__prompts = {};  // id -> full prompt, kept out of inline attributes
