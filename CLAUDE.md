@@ -41,28 +41,50 @@ backed up beside it), and **all 17 sessions re-inferred** with it + showcase
 refreshed. Data-is-the-lever, confirmed again (4× data → +5.3 pp). The
 `*_0613_*` runs are dead partials from a sleep-killed overnight job — ignore.
 
-**Tomorrow, priority order:**
-1. **Band-deploy verdict — DONE (2026-06-19).** Two ~70h post-deploy soaks
-   (`session_20260613_090331`, `session_20260616_121115`) assessed with
-   completion-time bboxes (100 % coverage). **L→R is the win** — per-car
-   ~73-82 %, 73-76 % at mid-road landings. **R→L is camera-geometry-capped at
-   ~15-20 % at *every* landing position** — the 2026-06-11 "R→L reads far
-   (56-76 %)" prescription was a motion-window-hint forward-extrapolation
-   artifact that completion-time bboxes corrected (restoring the pre-Step-16
-   "~14 % R→L ceiling", right all along). **Honest net per-car ~48 %, not the
-   inflated 63.9 %.** 4-class expansion did NOT blow up snaps (~252-282 fires/h,
-   HTTP 100 %). Follow-up: reverse band lower edge nudged 0.25→0.30 (2026-06-19),
-   **validated 2026-06-22** on the ~72h `session_20260619_111111` soak
-   (`.claude/verdict_band_0613.py`): L→R per-car **92.3 %** (up from 73-82 % at
-   [0.25,0.60], best of all three completion-bbox soaks), L→R per-image
-   **77.4 %**, net per-car **57.9 %**; R→L flat at ~23 % (geometry, untouched by
-   the reverse-band nudge). **R→L is now a hardware problem** (2nd discreet
-   camera on the approach), not a tuning one.
-2. **Then:** a bigger backbone may now pay (B5 still won at 4× data, so the
-   corpus isn't capacity-saturated); VLM bake-off (Qwen3-VL vs the CNN's 0.402
-   on the by-car val); people P0 (retention policy — P2 attribute tags SHIPPED
-   2026-07-07: `streettracker people` + panel + stats page; dog class 16 live
-   on the Orin same day). Legacy-repo archival DONE 2026-07-07.
+**People side (shipped 2026-07-07):** `streettracker people` writes
+`{session}_people.json` — walker/jogger/cyclist kinds (jogger ≥2.5 m/s,
+the empirical valley; cyclist via bicycle-track pairing so riders don't
+pollute joggers) + `dog_walker` via temporal+direction pairing (PR #70).
+Panel-integrated: allowed job kind (net lane), 6th enrich-playbook step,
+sessions-table badge (PR #71). All 23 local sessions backfilled (~28k
+classified: 76 % walkers / 23 % joggers / 1 % cyclists; pre-06-13 jogger
+counts include unfiltered riders, ~+4pp — no bicycle class then).
+**Dog class 16 live on the Orin** since 2026-07-07 08:11
+(`vehicle_classes=[0,1,2,3,5,7,16]`, rollback
+`camera.json.bak.20260707T065646Z`); 3 dog tracks in the first 5 h, so
+YOLOv8m sees dogs here. Coverage soak (`.claude/person_coverage.py`,
+5 soaks / 13,359 person tracks): 66.7 % of person tracks get a 4K snap
+(cars 94.4 %) — gap is short-dwell/BotSORT-splits, NOT band geometry;
+no person-specific snap gate needed. Both ancestor repos archived
+2026-07-07 (migration closed).
+
+**Next steps (updated 2026-07-07), priority order:**
+1. **Merge PR #72** (stats-page people kinds; CI green, awaiting operator
+   merge) → restart the showcase on :8090 to pick it up.
+2. **Dog-walk first light — tokenless operator loop.** Let the live
+   session soak a few days → panel **roll** → **enrich** (now writes
+   `_people.json`) → first real `dog_walkers` count on `/stats`.
+3. **Person-count hardening:** (a) class-flip guardrail — cross-check
+   `class_name` against `speed_px_s` + bbox aspect ratio at finalize
+   (kills the parked-car-labelled-person corruption, hardens footfall);
+   (b) same-session walk dedup — BotSORT splits inflate walk counts;
+   within-session appearance matching only (reuse `vote_color` infra),
+   deliberately NO cross-session person re-id (privacy line).
+4. **Make classifier:** a bigger backbone may now pay (B5 still won at
+   4× data, corpus not capacity-saturated); VLM bake-off (Qwen3-VL vs
+   the CNN's 0.402 on the by-car val); body-type coarse target untried.
+5. **R→L hardware:** 2nd discreet camera on the approach — the only
+   remaining ANPR lever (R→L geometry-capped ~23 %). Needs multi-camera
+   architecture first: RoadGate assumes one road/one axis, so per-camera
+   gates + cross-camera track fusion before any purchase.
+6. **JP7:** wheel gate re-checked 2026-07-07 — still no jp7 index.
+   Re-run `scripts/check_jp7_wheel.ps1` before any flash; stay on JP6.
+7. **Parked by choice — people P0 (retention policy).** Deliberately
+   deprioritised (operator call, 2026-07-07). Person 4K imagery
+   accumulates indefinitely on the dev box (Orin prunes at 7 d, dev box
+   never); records-forever/sweep-images-after-N-days is the sketched
+   design. Revisit when ready — it stays last until the operator says
+   otherwise.
 
 **Ops (learned the hard way):** launch long jobs **detached (WMI/VBS, outside
 the Claude helper tree)** AND **verify completion by artifact mtimes, never a
