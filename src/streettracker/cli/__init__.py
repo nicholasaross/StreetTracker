@@ -7,6 +7,7 @@ Subcommands:
 - ``streettracker recolor <session>`` — rerun color heuristic
 - ``streettracker debug-color <crop.jpg>`` — inspect a single crop
 - ``streettracker vehicles <session>`` — plate-anchored per-vehicle aggregation
+- ``streettracker people <session>`` — person-track activity enrichment (dog walkers, joggers)
 - ``streettracker export-engine`` — ``.pt`` → ``.engine``
 - ``streettracker alpr-run <session>`` — run ALPR pipelines on a session
 - ``streettracker alpr-score <session>`` — score ALPR pipelines vs labels
@@ -41,6 +42,7 @@ commands:
   recolor         rerun color heuristic on a closed session
   debug-color     inspect HSV vote on one or more crop JPEGs
   vehicles        plate-anchored per-vehicle aggregation
+  people          person-track activity enrichment (dog walkers, joggers, cyclists)
   export-engine   export .pt to .engine via Ultralytics
   alpr-run        run ALPR pipelines over a session's main snaps
   alpr-score      score ALPR pipelines against labels
@@ -94,6 +96,10 @@ def main(argv: list[str] | None = None) -> int:
         from streettracker.analysis.vehicles import main as vehicles_main
 
         return vehicles_main(rest)
+    if head == "people":
+        from streettracker.analysis.people import main as people_main
+
+        return people_main(rest)
     if head == "pull":
         from streettracker.cli.pull import main as pull_main
 
