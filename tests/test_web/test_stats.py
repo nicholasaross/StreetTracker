@@ -389,6 +389,24 @@ def test_people_block_aggregates_person_tracks(tmp_path: Path) -> None:
     assert hist[-1]["n"] == 1  # 70s
 
 
+def test_class_suspect_tracks_excluded_from_people_and_cars(tmp_path: Path) -> None:
+    """The runtime's kinematics guardrail (car-shaped "person" bboxes)
+    keeps flagged tracks out of both the people block and car totals."""
+    from dataclasses import replace
+
+    tracks = [
+        replace(_track(1, cls="person"), class_suspect=True),  # flagged
+        _track(2, cls="person"),
+        _track(3, cls="car"),
+    ]
+    _mk_session(tmp_path, "session_s", tracks)
+
+    s = build_stats(tmp_path)
+
+    assert s.people["total"] == 1  # suspect excluded
+    assert s.overall["total_journeys"] == 1  # and not re-counted as a car
+
+
 def test_people_block_empty_without_person_tracks(tmp_path: Path) -> None:
     _mk_session(tmp_path, "session_c", [_track(1, cls="car")])
 

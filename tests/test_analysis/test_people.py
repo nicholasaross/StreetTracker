@@ -171,6 +171,7 @@ def test_build_people_kinds_flags_and_summary() -> None:
         "n_dogs_paired": 1,
         "n_bicycle_tracks": 1,
         "n_bicycles_paired": 1,
+        "n_suspect_excluded": 0,
     }
 
 
@@ -179,6 +180,16 @@ def test_build_people_uncalibrated() -> None:
     assert people[0].speed_m_s is None
     assert people[0].kind == "walker"
     assert summary["joggers"] == 0
+
+
+def test_build_people_excludes_class_suspect_tracks() -> None:
+    suspect = _rec(1)
+    suspect["class_suspect"] = True
+    people, summary = build_people([suspect, _rec(2)], m_per_px=0.05)
+
+    assert [p.track_id for p in people] == [2]
+    assert summary["n_person_tracks"] == 1
+    assert summary["n_suspect_excluded"] == 1
 
 
 # ----------------------------------------------------------------------

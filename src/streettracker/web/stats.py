@@ -229,6 +229,12 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
             cls = r.get("class_name")
             if cls not in ("car", "person"):
                 continue
+            # Kinematics guardrail: tracks whose voted class is
+            # contradicted by bbox geometry (today: car-shaped
+            # "persons" -- persistently misclassified parked cars)
+            # count as neither people nor cars.
+            if r.get("class_suspect"):
+                continue
             ts = r.get("time_start")
             if not ts:
                 continue

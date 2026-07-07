@@ -18,6 +18,7 @@ from typing import Any
 # Track record (one per finalized track)
 # ----------------------------------------------------------------------
 
+
 @dataclass(slots=True)
 class TrackRecord:
     """One finalized track. Written as a single JSONL line and folded into
@@ -36,22 +37,22 @@ class TrackRecord:
     track_id: int
     class_id: int
     class_name: str
-    time_start: str           # ISO-local with tz offset
+    time_start: str  # ISO-local with tz offset
     time_end: str
     time_start_unix: float
     time_end_unix: float
-    time_start_s: float       # seconds since session start
+    time_start_s: float  # seconds since session start
     time_end_s: float
     duration_visible: float
-    direction: str            # "left to right" | "right to left"
+    direction: str  # "left to right" | "right to left"
     speed_px_s: float
-    color: str                # see common.color.vote_color()
-    lane: str                 # "top" | "middle" | "bottom"
+    color: str  # see common.color.vote_color()
+    lane: str  # "top" | "middle" | "bottom"
     avg_confidence: float
     displacement_px: float
     net_displacement_px: float
     num_detections: int
-    asset_prefix: str = "vehicle"   # "vehicle" | "person"
+    asset_prefix: str = "vehicle"  # "vehicle" | "person"
     main_snaps: list[int] = field(default_factory=list)
     # Parallel to ``main_snaps``: the BotSORT-tracked sub-stream bbox at
     # the moment that snap was fired, as ``[x1, y1, x2, y2]`` in
@@ -82,6 +83,17 @@ class TrackRecord:
     model: str | None = None
     year: int | None = None
     make_model_source: str | None = None
+    # Kinematics guardrail (set at finalize by ``compute_attributes``):
+    # True when the voted class is contradicted by the track's bbox
+    # geometry -- today, a "person" whose median bbox is car-shaped
+    # (w/h >= 1.5; measured person p99 = 0.82, rider max = 1.44, car
+    # p25 = 1.40 on six 2026-06/07 soaks). YOLO is *consistently* wrong
+    # on some parked cars, so the class vote can't defend against it
+    # (PR #23 covers stray frames, not persistent errors). Suspect
+    # tracks keep their voted class + assets but are excluded from
+    # people analytics (web/stats.py, analysis/people.py). False on
+    # sessions written before the field existed.
+    class_suspect: bool = False
 
     def to_json_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -98,13 +110,14 @@ class TrackRecord:
 # Session metadata
 # ----------------------------------------------------------------------
 
+
 @dataclass(slots=True)
 class IRPeriod:
     """A stretch of frames in which IR/night mode was active and inference
     was paused. Persisted so analysis can tell 'no traffic this hour' apart
     from 'we were asleep'."""
 
-    start: str          # ISO local
+    start: str  # ISO local
     end: str
     duration_s: float
 

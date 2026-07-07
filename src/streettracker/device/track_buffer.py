@@ -60,6 +60,16 @@ _HQ_EDGE_MARGIN_PX = 4  # bboxes touching the frame edge are clipped
 _HQ_AREA_KEEP_FRAC = 0.7  # re-score sharpness only if area >= this * current best
 _HQ_SHARPNESS_TARGET_PX = 128  # downsample for sub-millisecond Laplacian
 
+# Class-flip guardrail: a "person" track whose median bbox is wider than
+# this w/h ratio is geometrically a vehicle, not a person. Measured on
+# six 2026-06/07 soaks (done-bbox medians, 10,691 person / 15,254 car
+# tracks): person p99 = 0.82, cyclist-paired rider max = 1.44, car
+# p25 = 1.40 -- 1.5 flags the persistently-misclassified parked cars
+# (all wide AND slow) with zero rider collateral in that sample. The
+# per-frame class vote (PR #23) can't defend against YOLO being
+# *consistently* wrong on a scene, hence this geometry cross-check.
+_PERSON_ASPECT_SUSPECT = 1.5
+
 
 # ----------------------------------------------------------------------
 # Per-track state.
@@ -134,17 +144,13 @@ class BufferedTrack:
     # the exact tracked vehicle in the 4K snap instead of falling back
     # to "largest vehicle bbox", which aliases onto parked cars on the
     # far side of the road (see CLAUDE.md ANPR tuning loop, Step 7).
-    snap_fire_bboxes: dict[int, tuple[int, int, int, int]] = field(
-        default_factory=dict
-    )
+    snap_fire_bboxes: dict[int, tuple[int, int, int, int]] = field(default_factory=dict)
     # Per-snap-index bbox re-captured when the snap's HTTP task
     # COMPLETED (the image is exposed near response time, ~0.7-1.3 s
     # after fire -- see Step 16). Persisted into
     # :attr:`TrackRecord.main_snap_bboxes_done`; offline hint
     # resolution prefers it over the fire-time bbox when present.
-    snap_done_bboxes: dict[int, tuple[int, int, int, int]] = field(
-        default_factory=dict
-    )
+    snap_done_bboxes: dict[int, tuple[int, int, int, int]] = field(default_factory=dict)
     # Set in ``finalize_track`` to lock the prefix used for the
     # TrackRecord. ``None`` while the track is still active.
     final_prefix: str | None = None
@@ -228,6 +234,14 @@ def save_thumbnail(crop: np.ndarray, path: Path, *, quality: int = 85) -> bool:
         return bool(cv2.imwrite(str(path), crop, [cv2.IMWRITE_JPEG_QUALITY, quality]))
     except Exception:
         return False
+
+
+def median_bbox_aspect(points: list[MotionPoint]) -> float:
+    """Median w/h of the track's bboxes. Entry/exit frames contribute
+    edge-clipped partials, but the median is dominated by the mid-track
+    samples the threshold was measured on. 0.0 when unmeasurable."""
+    ratios = sorted((p.x2 - p.x1) / (p.y2 - p.y1) for p in points if p.y2 > p.y1)
+    return ratios[len(ratios) // 2] if ratios else 0.0
 
 
 def total_displacement(points: list[MotionPoint]) -> float:
@@ -323,9 +337,7 @@ class TrackBuffer:
             # YOLO/BotSORT producing a stray bad class on the last
             # visible frame of an otherwise correctly-classified
             # track.
-            tr.class_votes[d.class_id] = (
-                tr.class_votes.get(d.class_id, 0.0) + d.score
-            )
+            tr.class_votes[d.class_id] = tr.class_votes.get(d.class_id, 0.0) + d.score
             tr.class_id = max(tr.class_votes, key=tr.class_votes.__getitem__)
             self._append_point(tr, d, frame_idx, t, frame, w, h)
 
@@ -441,6 +453,10 @@ def compute_attributes(
     lane = "top" if avg_y < third else ("middle" if avg_y < 2 * third else "bottom")
 
     avg_conf = sum(p.score for p in track.points) / len(track.points)
+    suspect = (
+        class_name(track.class_id) == "person"
+        and median_bbox_aspect(track.points) >= _PERSON_ASPECT_SUSPECT
+    )
     return TrackRecord(
         track_id=track.id,
         class_id=track.class_id,
@@ -468,16 +484,23 @@ def compute_attributes(
         # field stays ``None`` if no snaps fired -- keeps the JSON
         # diff minimal for tracks that don't have any 4K assets.
         main_snap_bboxes=(
-            [list(track.snap_fire_bboxes[n]) if n in track.snap_fire_bboxes else None
-             for n in sorted(main_snaps)]
-            if main_snaps else None
+            [
+                list(track.snap_fire_bboxes[n]) if n in track.snap_fire_bboxes else None
+                for n in sorted(main_snaps)
+            ]
+            if main_snaps
+            else None
         ),
         # Parallel list of completion-time bboxes (where the car was
         # when the 4K snap actually landed). ``None`` per element for
         # fires whose completion callback never recorded a bbox.
         main_snap_bboxes_done=(
-            [list(track.snap_done_bboxes[n]) if n in track.snap_done_bboxes else None
-             for n in sorted(main_snaps)]
-            if main_snaps else None
+            [
+                list(track.snap_done_bboxes[n]) if n in track.snap_done_bboxes else None
+                for n in sorted(main_snaps)
+            ]
+            if main_snaps
+            else None
         ),
+        class_suspect=suspect,
     )

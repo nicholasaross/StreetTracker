@@ -174,7 +174,13 @@ def build_people(
     """Fold a session's raw track records into person enrichment rows
     plus the summary block. ``records`` is the parsed ``data.json``
     array; non-person/dog/bicycle records are ignored."""
-    persons = [r for r in records if r.get("class_name") == "person"]
+    # class_suspect = the runtime's kinematics guardrail (car-shaped
+    # "person" bboxes, i.e. persistently misclassified parked cars);
+    # excluded from people analytics but counted in the summary.
+    persons = [r for r in records if r.get("class_name") == "person" and not r.get("class_suspect")]
+    n_suspect = sum(
+        1 for r in records if r.get("class_name") == "person" and r.get("class_suspect")
+    )
     dogs = [r for r in records if r.get("class_name") == "dog"]
     bikes = [r for r in records if r.get("class_name") == "bicycle"]
 
@@ -223,6 +229,7 @@ def build_people(
         "n_dogs_paired": sum(len(v) for v in dog_by_person.values()),
         "n_bicycle_tracks": len(bikes),
         "n_bicycles_paired": sum(len(v) for v in bike_by_person.values()),
+        "n_suspect_excluded": n_suspect,
     }
     return out, summary
 
