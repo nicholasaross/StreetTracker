@@ -40,6 +40,17 @@ def test_normalize_make() -> None:
     assert normalize_make("MERCEDES-BENZ") == "MERCEDES-BENZ"
 
 
+def test_normalize_make_drops_dvsa_placeholders() -> None:
+    """DVSA placeholder "makes" must not become training classes — the
+    literal "UNKNOWN" trained as a real class in the 0707 corpus (5 cars
+    crossed min_cars_per_make). Placeholders normalise to "" so
+    extract_crops drops them like a missing make."""
+    assert normalize_make("UNKNOWN") == ""
+    assert normalize_make(" unknown ") == ""
+    assert normalize_make("Not  Known") == ""
+    assert normalize_make("NONE") == ""
+
+
 def _write_dataset(root: Path) -> None:
     """Manifest with 2 makes x 2 cars; FORD car P1 has 2 crops."""
     root.mkdir(parents=True, exist_ok=True)

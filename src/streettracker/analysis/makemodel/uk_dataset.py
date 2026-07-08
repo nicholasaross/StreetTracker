@@ -59,15 +59,25 @@ _MAKE_SYNONYMS = {
     "MERCEDES": "MERCEDES-BENZ",
 }
 
+# DVSA also emits placeholder "makes" for vehicles it can't attribute.
+# These are not marques and must never become training classes — the
+# literal "UNKNOWN" crossed min_cars_per_make=5 and trained as a real
+# class in the 0707 corpus (caught in the 2026-07-08 VLM bake-off, where
+# the VLM used it as an escape hatch for 12% of OOD answers).
+_MAKE_PLACEHOLDERS = frozenset({"UNKNOWN", "NOT KNOWN", "NONE"})
+
 
 def normalize_make(make: str | None) -> str:
     """DVSA make -> class label. DVSA names are already canonical UK
     strings ("FORD", "MERCEDES-BENZ", "LAND ROVER"); upper/strip, collapse
     internal whitespace, then fold known synonyms (see ``_MAKE_SYNONYMS``)
-    for stable folder/label names."""
+    for stable folder/label names. Placeholder values ("UNKNOWN", ...)
+    normalise to ``""`` so callers drop them like a missing make."""
     if not make:
         return ""
     name = " ".join(make.upper().split())
+    if name in _MAKE_PLACEHOLDERS:
+        return ""
     return _MAKE_SYNONYMS.get(name, name)
 
 
