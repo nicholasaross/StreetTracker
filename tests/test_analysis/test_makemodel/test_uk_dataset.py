@@ -52,23 +52,31 @@ def test_normalize_make_drops_dvsa_placeholders() -> None:
 
 
 def _write_dataset(root: Path) -> None:
-    """Manifest with 2 makes x 2 cars; FORD car P1 has 2 crops."""
+    """Manifest with 2 makes x 2 cars; FORD car P1 has 2 crops. Each car
+    also carries a body_type so the same fixture drives the make and
+    body-type dataset paths (FORD -> hatchback, AUDI -> saloon)."""
     root.mkdir(parents=True, exist_ok=True)
     samples = [
-        ("FORD", "P1", 2),
-        ("FORD", "P2", 1),
-        ("AUDI", "P3", 2),
-        ("AUDI", "P4", 1),
+        ("FORD", "hatchback", "P1", 2),
+        ("FORD", "hatchback", "P2", 1),
+        ("AUDI", "saloon", "P3", 2),
+        ("AUDI", "saloon", "P4", 1),
     ]
     manifest_samples = []
-    for make, car, n in samples:
+    for make, body, car, n in samples:
         (root / make).mkdir(exist_ok=True)
         for i in range(n):
             rel = f"{make}/{car}_{i}.jpg"
             Image.new("RGB", (224, 224), (80, 80, 80)).save(root / rel)
-            manifest_samples.append({"path": rel, "make": make, "car": car})
+            manifest_samples.append({"path": rel, "make": make, "car": car, "body_type": body})
     (root / "manifest.json").write_text(
-        json.dumps({"makes": ["AUDI", "FORD"], "samples": manifest_samples})
+        json.dumps(
+            {
+                "makes": ["AUDI", "FORD"],
+                "body_types": ["hatchback", "saloon"],
+                "samples": manifest_samples,
+            }
+        )
     )
 
 
@@ -96,6 +104,54 @@ def test_dataset_yields_tensor_and_make_index(tmp_path: Path) -> None:
     counts = ds.class_counts()
     assert set(counts) == {"make"}
     assert sum(counts["make"]) == len(ds)
+
+
+def test_body_type_dataset_split(tmp_path: Path) -> None:
+    """label_field='body_type' trains the coarse head: classes in canonical
+    BODY_TYPES order, by-car split, no leakage, labels keyed 'body_type'."""
+    _write_dataset(tmp_path)
+    train = UKMakeDataset(tmp_path, "train", label_field="body_type", val_frac=0.5, seed=0)
+    val = UKMakeDataset(
+        tmp_path,
+        "val",
+        label_field="body_type",
+        class_names=train.class_names,
+        val_frac=0.5,
+        seed=0,
+    )
+    assert train.class_names == ("hatchback", "saloon")  # canonical order, present-only
+    assert {s.car for s in train._samples}.isdisjoint({s.car for s in val._samples})
+    assert len(train) + len(val) == 6
+    _img, lab = train[0]
+    assert set(lab) == {"body_type"}
+    assert set(train.class_counts()) == {"body_type"}
+
+
+def test_body_type_dataset_drops_unlabelled(tmp_path: Path) -> None:
+    """A car whose model wasn't covered (body_type == '') is excluded from
+    the body-type dataset but would still count for make training."""
+    root = tmp_path / "c"
+    root.mkdir()
+    (root / "FORD").mkdir()
+    samples = []
+    for car, body in (("P1", "hatchback"), ("P2", "hatchback"), ("P3", "")):
+        rel = f"FORD/{car}.jpg"
+        Image.new("RGB", (224, 224), (80, 80, 80)).save(root / rel)
+        samples.append({"path": rel, "make": "FORD", "car": car, "body_type": body})
+    (root / "manifest.json").write_text(
+        json.dumps({"makes": ["FORD"], "body_types": ["hatchback"], "samples": samples})
+    )
+    train = UKMakeDataset(root, "train", label_field="body_type", val_frac=0.5, seed=0)
+    val = UKMakeDataset(
+        root,
+        "val",
+        label_field="body_type",
+        class_names=train.class_names,
+        val_frac=0.5,
+        seed=0,
+    )
+    seen = {s.car for s in train._samples} | {s.car for s in val._samples}
+    assert seen == {"P1", "P2"}  # P3 (empty body_type) dropped from both splits
 
 
 def test_extract_crops_from_synthetic_session(tmp_path: Path) -> None:
@@ -130,6 +186,11 @@ def test_extract_crops_from_synthetic_session(tmp_path: Path) -> None:
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["makes"] == ["FORD"]
     assert len(manifest["samples"]) == 2
+    # FOCUS -> hatchback body-type label is derived + carried through.
+    assert manifest["body_types"] == ["hatchback"]
+    assert all(s["body_type"] == "hatchback" for s in manifest["samples"])
+    assert stats["n_cars_body_labelled"] == 1
+    assert stats["body_car_counts"] == {"hatchback": 1}
     assert all((out / s["path"]).exists() for s in manifest["samples"])
 
 
@@ -258,7 +319,9 @@ def test_train_main_input_size_passthrough(tmp_path: Path, monkeypatch: pytest.M
     _write_dataset(tmp_path / "crops")
     seen: dict[str, int] = {}
 
-    def _fake_train(dataset_dir: object, out_dir: object, config: object) -> dict:
+    def _fake_train(
+        dataset_dir: object, out_dir: object, config: object, *, target: str = "make"
+    ) -> dict:
         seen["input_size"] = config.input_size  # type: ignore[attr-defined]
         return {}
 
@@ -275,7 +338,9 @@ def test_train_main_backbone_passthrough(tmp_path: Path, monkeypatch: pytest.Mon
     _write_dataset(tmp_path / "crops")
     seen: dict[str, str] = {}
 
-    def _fake_train(dataset_dir: object, out_dir: object, config: object) -> dict:
+    def _fake_train(
+        dataset_dir: object, out_dir: object, config: object, *, target: str = "make"
+    ) -> dict:
         seen["backbone"] = config.backbone  # type: ignore[attr-defined]
         return {}
 
@@ -283,3 +348,32 @@ def test_train_main_backbone_passthrough(tmp_path: Path, monkeypatch: pytest.Mon
     rc = train_main([str(tmp_path / "crops"), "--backbone", "efficientnet_b4", "--cpu"])
     assert rc == 0
     assert seen["backbone"] == "efficientnet_b4"
+
+
+def test_train_main_target_body_type(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--target body_type reaches train_uk_make when the corpus carries
+    body-type labels (guards the manifest-key check: body_types, plural)."""
+    import streettracker.analysis.makemodel.uk_dataset as uk
+
+    _write_dataset(tmp_path / "crops")  # writes a "body_types" manifest key
+    seen: dict[str, str] = {}
+
+    def _fake_train(
+        dataset_dir: object, out_dir: object, config: object, *, target: str = "make"
+    ) -> dict:
+        seen["target"] = target
+        return {}
+
+    monkeypatch.setattr(uk, "train_uk_make", _fake_train)
+    rc = train_main([str(tmp_path / "crops"), "--target", "body_type", "--cpu"])
+    assert rc == 0
+    assert seen["target"] == "body_type"
+
+
+def test_train_main_body_type_rejects_legacy_corpus(tmp_path: Path) -> None:
+    """A corpus built before body-type labels (no body_types key) is
+    refused for --target body_type rather than silently training nothing."""
+    root = tmp_path / "crops"
+    root.mkdir()
+    (root / "manifest.json").write_text(json.dumps({"makes": ["FORD"], "samples": []}))
+    assert train_main([str(root), "--target", "body_type", "--cpu"]) == 1

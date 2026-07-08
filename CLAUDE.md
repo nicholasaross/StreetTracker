@@ -82,9 +82,16 @@ no person-specific snap gate needed. Both ancestor repos archived
    structural after all. Bake-off methodology gotchas recorded in
    `.claude/vlm_bakeoff.py` (cross-corpus val leakage: 276/400 of the
    0707 val cars were in B5's train set; per-car-largest is a harder
-   metric than the trainer's per-crop val). Remaining: body-type
-   coarse target untried; corpus has a literal DVSA "UNKNOWN" make
-   class (5 cars) to filter at the next build. Ops: the 8B VLM spills
+   metric than the trainer's per-crop val). **Body-type coarse target —
+   infra SHIPPED (2026-07-08):** `analysis/makemodel/bodytype.py` maps
+   the DVSA *model* string (prefix-matched, trim-suffix-tolerant) to a
+   silhouette class {hatchback, saloon, suv, mpv, van, pickup, coupe} at
+   **90 % of labelled cars** (45 % hatchback / 32 % suv / ~8 % van+saloon
+   / ...). `makemodel-build-uk` now tags `body_type` per crop; train it
+   with `makemodel-train-uk <corpus> --target body_type` (the make path
+   is byte-identical when `--target make`). The DVSA "UNKNOWN" placeholder
+   is now filtered in `normalize_make` (PR #76). A trained body-type model
+   + accuracy-vs-make verdict is the follow-up run. Ops: the 8B VLM spills
    ~17 GB commit to system RAM on the 10 GB 3080 — never run it beside
    panel jobs (it starved an `alpr-run` to death on 2026-07-08).
 5. **R→L hardware:** 2nd discreet camera on the approach — the only
