@@ -70,9 +70,23 @@ no person-specific snap gate needed. Both ancestor repos archived
    (b) same-session walk dedup — BotSORT splits inflate walk counts;
    within-session appearance matching only (reuse `vote_color` infra),
    deliberately NO cross-session person re-id (privacy line).
-4. **Make classifier:** a bigger backbone may now pay (B5 still won at
-   4× data, corpus not capacity-saturated); VLM bake-off (Qwen3-VL vs
-   the CNN's 0.402 on the by-car val); body-type coarse target untried.
+4. **Make classifier — B6 SHIPPED, VLM FALSIFIED (2026-07-08):**
+   B6@528 trained on `uk_crops_0707_576` (45 makes / 3,942 cars /
+   47,881 crops) → **make@1 0.451**, promoted over B5's 0.441. VLM
+   bake-off DONE — **Qwen3-VL 8B loses decisively** (0.15-0.18 vs B6's
+   ~0.29-0.30 per-car-largest-crop on 400 val cars; ~15 s/image vs ms)
+   and shows its own OOD attractor (MINI 23 %) — no pipeline role at
+   this size. **Positive surprise: B6 largely fixed the June OOD
+   VW-collapse** (VW max-share on unlabelled tracks: B5 19 % → B6 11 %,
+   plausible Ford-topped mix) — corpus growth + capacity, not
+   structural after all. Bake-off methodology gotchas recorded in
+   `.claude/vlm_bakeoff.py` (cross-corpus val leakage: 276/400 of the
+   0707 val cars were in B5's train set; per-car-largest is a harder
+   metric than the trainer's per-crop val). Remaining: body-type
+   coarse target untried; corpus has a literal DVSA "UNKNOWN" make
+   class (5 cars) to filter at the next build. Ops: the 8B VLM spills
+   ~17 GB commit to system RAM on the 10 GB 3080 — never run it beside
+   panel jobs (it starved an `alpr-run` to death on 2026-07-08).
 5. **R→L hardware:** 2nd discreet camera on the approach — the only
    remaining ANPR lever (R→L geometry-capped ~23 %). Needs multi-camera
    architecture first: RoadGate assumes one road/one axis, so per-camera
