@@ -583,11 +583,11 @@ def train_main(argv: list[str] | None = None) -> int:
         pretrained=not args.no_pretrained,
         force_cpu=args.cpu,
     )
-    if args.target == "body_type" and "body_type" not in json.loads(
+    if args.target == "body_type" and not json.loads(
         (args.crops_dir / "manifest.json").read_text()
-    ):
+    ).get("body_types"):
         print(
-            "[makemodel-train-uk] this corpus predates body-type labels "
+            "[makemodel-train-uk] this corpus has no body-type labels "
             "-- rebuild with makemodel-build-uk to add them"
         )
         return 1

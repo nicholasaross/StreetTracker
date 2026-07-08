@@ -348,3 +348,32 @@ def test_train_main_backbone_passthrough(tmp_path: Path, monkeypatch: pytest.Mon
     rc = train_main([str(tmp_path / "crops"), "--backbone", "efficientnet_b4", "--cpu"])
     assert rc == 0
     assert seen["backbone"] == "efficientnet_b4"
+
+
+def test_train_main_target_body_type(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--target body_type reaches train_uk_make when the corpus carries
+    body-type labels (guards the manifest-key check: body_types, plural)."""
+    import streettracker.analysis.makemodel.uk_dataset as uk
+
+    _write_dataset(tmp_path / "crops")  # writes a "body_types" manifest key
+    seen: dict[str, str] = {}
+
+    def _fake_train(
+        dataset_dir: object, out_dir: object, config: object, *, target: str = "make"
+    ) -> dict:
+        seen["target"] = target
+        return {}
+
+    monkeypatch.setattr(uk, "train_uk_make", _fake_train)
+    rc = train_main([str(tmp_path / "crops"), "--target", "body_type", "--cpu"])
+    assert rc == 0
+    assert seen["target"] == "body_type"
+
+
+def test_train_main_body_type_rejects_legacy_corpus(tmp_path: Path) -> None:
+    """A corpus built before body-type labels (no body_types key) is
+    refused for --target body_type rather than silently training nothing."""
+    root = tmp_path / "crops"
+    root.mkdir()
+    (root / "manifest.json").write_text(json.dumps({"makes": ["FORD"], "samples": []}))
+    assert train_main([str(root), "--target", "body_type", "--cpu"]) == 1
