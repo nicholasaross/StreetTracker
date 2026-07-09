@@ -27,13 +27,19 @@ StreetTracker_ControlPanel.pptx
 *.engine
 *.onnx
 *.pt
+# DR exceptions: the small live inference models travel with the code so a
+# fresh checkout can run inference. The 164 MB make model is too big for a
+# public repo -- it lives as a GitHub Release asset (see the tracked
+# makemodel_b0.meta.json sidecar for which release/model is in production).
+!src/streettracker/analysis/makemodel/models/bodytype_b0.pt
+!src/streettracker/analysis/alpr/models/license_plate_detector.pt
 *.weights
 output/
 # make/model CNN training runs (checkpoints, history.json, logs)
 runs/
-# Per-install production-model sidecar (metadata for the gitignored .pt) +
-# control-panel runtime state (written under the output root).
-src/streettracker/analysis/makemodel/models/*.meta.json
+# Production-model sidecars are now TRACKED -- they record each promoted
+# model's arch / input_size / training-corpus fingerprint (incl. the
+# Release-hosted make model). Control-panel runtime state stays ignored.
 control_jobs.json
 control_playbooks.json
 camera_config.json
@@ -55,7 +61,22 @@ configs/showcase.json
 *.swp
 .DS_Store
 
-# Claude Code workspace: per-install operator artifacts, scratch
-# scripts, sample-snap bundles, embedded worktrees. Never committed --
-# all checked-in CLAUDE-related content goes in CLAUDE.md and src/.
-.claude/
+# Claude Code workspace: mostly per-install scratch + sample-snap bundles
+# (stay ignored). DR exceptions are TRACKED: the analysis/measurement
+# scripts and the operator-traced scene geometry (polygon / triggers /
+# ghost-mask / sketch) -- irreplaceable without physical access to the
+# camera. The two camera-ISP helpers are re-ignored (they hardcode the LAN
+# IP + admin account). NOTE: uses `.claude/*` not `.claude/` so git still
+# descends the dir to honour these negations.
+.claude/*
+!.claude/*.py
+.claude/setexp.py
+.claude/setexp_auto.py
+!.claude/ghost_mask.json
+!.claude/snap_gate.json
+!.claude/triggers_proposal.json
+!.claude/road_polygon_user.json
+!.claude/road_zones.json
+!.claude/road_polygon.json
+!.claude/reolink_isp_current.json
+!.claude/sketch_me_done.png

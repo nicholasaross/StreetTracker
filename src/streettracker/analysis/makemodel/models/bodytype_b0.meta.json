@@ -1,0 +1,22 @@
+{
+  "arch": "efficientnet_b0",
+  "input_size": 384,
+  "n_body_types": 7,
+  "body_types": [
+    "hatchback",
+    "saloon",
+    "suv",
+    "mpv",
+    "van",
+    "pickup",
+    "coupe"
+  ],
+  "val_body_type_top1": 0.6942,
+  "promoted_at": "2026-07-09",
+  "source_run": "uk_body_0708_b0",
+  "trained_corpus": {
+    "name": "uk_crops_0708_bt_384",
+    "n_makes": 44,
+    "n_crops": 47855
+  }
+}

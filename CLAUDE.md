@@ -834,6 +834,38 @@ Three things are not in the repo and not portable from a fresh OS:
 The TRT engine (`yolov8m.engine`) is deliberately *not* on this list —
 it's GPU-architecture-bound and must be rebuilt on the target device.
 
+### Dev-box disaster recovery
+
+The table above is **Orin-side only**. The dev box (this analysis
+machine) holds a separate, mostly-irreplaceable set. As of 2026-07-09
+the durable, non-sensitive pieces are pushed so a fresh `git clone`
+recovers them (the repo is **public**, so secrets and plate/person
+imagery are deliberately kept out):
+
+| Artifact | Where it now lives | Recreate cost if lost |
+|---|---|---|
+| Operator-traced **scene geometry** (`.claude/{ghost_mask,snap_gate,triggers_proposal,road_polygon_user,road_zones,road_polygon,reolink_isp_current}.json` + `sketch_me_done.png`) | **In repo** (gitignore negations) | Irreplaceable without the physical camera + operator re-sketch + weeks of band re-tuning |
+| **Analysis / measurement scripts** (`.claude/*.py` — verdict/band/eval/bakeoff/coverage) | **In repo** | Re-derive methodology from scratch |
+| **Small inference models** (`bodytype_b0.pt` 16 MB, ALPR `license_plate_detector.pt` 6 MB) + all `*.meta.json` sidecars | **In repo** | 12 h train / hard to reacquire |
+| **Production make model** `makemodel_b0.pt` (164 MB, B6) | **GitHub Release `models-2026-07-09`** (too big for the public repo) | 12 h train on a months-built corpus |
+
+Still **NOT** in GitHub — keep a private/external backup (too big, or
+PII, or secret):
+
+- **Training corpora** `runs/uk_crops_0707_576` (make) + `runs/uk_crops_0708_bt_384`
+  (body-type) — the distilled datasets; source Orin sessions prune at 7 d,
+  so these can't be re-mined once the box dies.
+- **Per-session derived JSON** `output/*_{data,alpr,dvsa_labels,vehicles,makemodel,bodytype,people}.json`
+  — all the ANPR/DVSA/people labels (plate PII); tar the non-image files.
+- **Secrets**: `configs/dvsa.json` (DVSA API key), any `camera.json`
+  (Reolink pw) — encrypted store / password manager, never the public repo.
+- **Camera-ISP helpers** `.claude/setexp*.py` — re-ignored (hardcode the
+  LAN IP + admin account); recover from the private backup.
+
+The `output/` 4K images and `.claude/v*_main_*.jpg` debug snaps are
+disposable (raw imagery, plate/person PII) — external backup only if the
+imagery itself matters, not for tooling recovery.
+
 ### One-time host setup
 
 ```bash
@@ -1046,7 +1078,17 @@ The local artifact `.claude/snap_gate.json` historically only carried
 the live config, edit only what you need, scp back. See [Adjusting the
 snap_gate](#adjusting-the-snap_gate).
 
-### Artifacts in `.claude/` (per-install, gitignored)
+### Artifacts in `.claude/` (mostly per-install/gitignored)
+
+Most of `.claude/` is per-install scratch and stays ignored, but since
+2026-07-09 the **scene geometry** (`ghost_mask.json`, `snap_gate.json`,
+`triggers_proposal.json`, `road_polygon_user.json`, `road_zones.json`,
+`road_polygon.json`, `reolink_isp_current.json`, `sketch_me_done.png`)
+and the **analysis scripts** (`.claude/*.py`, except the `setexp*.py`
+camera-ISP helpers which hardcode the LAN IP + admin account) are
+**tracked** via gitignore negations — see [Dev-box disaster
+recovery](#dev-box-disaster-recovery). The `.jpg` overlays / debug snaps
+below stay ignored (regenerate from the tracked JSON).
 
 | File | Purpose |
 |---|---|

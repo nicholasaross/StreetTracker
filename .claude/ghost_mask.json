@@ -1,0 +1,7 @@
+{
+  "_comment": "Per-install ghost-plate mask, applied at ALPR time by `streettracker alpr-run --ghost-mask <this file>`. Each rect in `rects_4k` is in snap pixel coords [x1, y1, x2, y2] at the resolution declared in `source_size`. The runner scales the rects to the actual snap dims so the mask survives a Reolink firmware update that changes the main-stream resolution. Mask is zeroed out on the image before the plate detector runs so it cannot see plates that aren't from passing traffic. Currently masks the parked FD61PVX car -- detections clustered tightly at snap coords (853, 780) across 165 snaps in session_20260525_200916. The Reolink on this install actually produces 4512x2512 snaps despite the colloquial '4K' label (verified 2026-05-26).",
+  "source_size": [4512, 2512],
+  "rects_4k": [
+    [750, 700, 960, 860]
+  ]
+}
