@@ -123,6 +123,15 @@
   <div class="hbars" id="colours"></div>
 </div>
 
+{% if stats.bodytypes %}
+<div class="panel stat">
+  <h3>Vehicle body types</h3>
+  <p class="hint">Coarse silhouette per car — from the plate's model where known (reliable),
+  else the body-type classifier (estimated; hatchback + SUV read best).</p>
+  <div class="hbars" id="bodytypes"></div>
+</div>
+{% endif %}
+
 {% if stats.people and stats.people.total %}
 {% set p = stats.people %}
 <h2 style="margin:34px 0 4px;font-size:18px">People</h2>
@@ -381,6 +390,11 @@ function init(){
   renderDaily(); renderDow(); renderQuarter(sel.value); renderHeatmap(); renderSpeed();
   hbars("makes", STATS.makes, {prefix: makeIcon});
   hbars("colours", STATS.colours, {swatch: colHex, fill: colHex});
+  if (STATS.bodytypes && STATS.bodytypes.length && el("bodytypes")) {
+    const BODY_HEX = {hatchback:"#5b9dff",suv:"#1fb6a8",saloon:"#8a6fd0",mpv:"#e08a3d",
+      van:"#9aa3b2",pickup:"#8a6240",coupe:"#e0584f"};
+    hbars("bodytypes", STATS.bodytypes, {swatch: k=>BODY_HEX[k]||"#5b9dff", fill: k=>BODY_HEX[k]||"#5b9dff"});
+  }
   renderPeople();
 }
 init();

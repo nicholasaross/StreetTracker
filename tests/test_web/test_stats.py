@@ -280,10 +280,40 @@ def test_colour_distribution(tmp_path: Path) -> None:
     assert colours == {"white": 2, "black": 1}
 
 
+def test_body_type_mix_dvsa_preferred_cnn_fallback(tmp_path: Path) -> None:
+    """The body-type mix uses the DVSA-model-derived class where a plate is
+    known (reliable) and the CNN sidecar only for tracks DVSA didn't cover."""
+    d = _mk_session(
+        tmp_path,
+        "session_bt",
+        [_track(1), _track(2), _track(3)],
+        dvsa={
+            "labels": {
+                # track 1: DVSA FOCUS -> hatchback (wins over any CNN guess).
+                "AB12CDE": {"make": "FORD", "model": "FOCUS", "track_ids": [1]},
+            }
+        },
+    )
+    (d / "session_bt_bodytype_by_track.json").write_text(
+        json.dumps(
+            {
+                "tracks": [
+                    {"track_id": 1, "body_type": "van", "conf": 0.9},  # ignored: DVSA wins
+                    {"track_id": 2, "body_type": "suv", "conf": 0.9},  # used: no DVSA
+                    {"track_id": 3, "body_type": None, "conf": 0.2},  # unconfident: skipped
+                ]
+            }
+        )
+    )
+    mix = dict(build_stats(tmp_path).bodytypes)
+    assert mix == {"hatchback": 1, "suv": 1}  # track 3 has no usable body type
+
+
 def test_empty_root(tmp_path: Path) -> None:
     s = build_stats(tmp_path)
     assert s.overall["total_journeys"] == 0
     assert s.daily == [] and s.makes == [] and s.speed["fastest"] == []
+    assert s.bodytypes == []
 
 
 # ----------------------------------------------------------------------

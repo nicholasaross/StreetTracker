@@ -77,6 +77,11 @@ _KIND_HINTS: dict[str, str] = {
         "This runs the make/model CNN on the session's snaps. Check the model checkpoint "
         "(analysis/makemodel/models/) and CUDA availability."
     ),
+    "bodytype": (
+        "This runs the body-type CNN on the session's snaps (writes _bodytype_by_track.json). "
+        "Check analysis/makemodel/models/bodytype_b0.pt + CUDA. Inference pad_frac must match "
+        "the training corpus (0.1) or the shape classifier skews toward van."
+    ),
     "makemodel-build-uk": (
         "This extracts DVSA-labelled crops into a runs/uk_crops_* dataset. Check the labelled "
         "sessions and free disk space."

@@ -17,6 +17,7 @@ Subcommands:
 - ``streettracker dvsa-apply <session>`` — write DVSA make/model onto per-track records
 - ``streettracker makemodel-train <sv_data>`` — fine-tune the make/model CNN on CompCars
 - ``streettracker makemodel <session>`` — classify make/model on a session's snaps
+- ``streettracker bodytype <session>`` — classify coarse body type on a session's snaps
 - ``streettracker makemodel-build-uk <out>`` — extract DVSA-labelled UK make crops
 - ``streettracker makemodel-train-uk <crops>`` — train the UK make classifier
 - ``streettracker showcase`` — local website showcasing enriched + recurring vehicles
@@ -52,6 +53,7 @@ commands:
   dvsa-apply      write harvested DVSA make/model onto a session's records
   makemodel-train fine-tune the make/model CNN on the CompCars sv_data
   makemodel        classify make/model on a session's snaps (writes _makemodel.json)
+  bodytype        classify coarse body type (hatchback/suv/...) on a session's snaps
   makemodel-build-uk  extract DVSA-labelled UK make crops from sessions
   makemodel-train-uk  train the UK make classifier on extracted crops
   showcase        local website: enriched + recurring vehicles, with tagging
@@ -140,6 +142,10 @@ def main(argv: list[str] | None = None) -> int:
         from streettracker.analysis.makemodel.infer import main as makemodel_main
 
         return makemodel_main(rest)
+    if head == "bodytype":
+        from streettracker.analysis.makemodel.bodytype_infer import main as bodytype_main
+
+        return bodytype_main(rest)
     if head == "makemodel-build-uk":
         from streettracker.analysis.makemodel.uk_dataset import (
             build_main as makemodel_build_uk_main,
