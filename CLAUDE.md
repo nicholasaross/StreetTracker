@@ -14,7 +14,14 @@ NRestarts=0):
   {forward(R→L):[0.10,0.20], reverse(L→R):[0.30,0.60]}` (reverse lower edge
   nudged 0.25→0.30 on 2026-06-19, **validated 2026-06-22** on the ~72h
   `session_20260619_111111` soak — L→R per-car 73-82 % → **92.3 %**, net
-  per-car ~48 % → **57.9 %**). **Post-deploy verdict
+  per-car ~48 % → **57.9 %**). **SUSTAINED-RATE CORRECTION (2026-07-09):
+  that 57.9 % was ONE favorable soak — three later completion-bbox
+  sessions (0628/0703/0707) cluster at net **~40-45 %** (L→R ~73-80 %,
+  R→L ~9-11 %), and 0628 predates the 07-07 dog-class deploy so it's
+  session variance, not snap-contention. The reverse-band conclusion is
+  unchanged (L→R = win, R→L HW-only); only the headline number was
+  over-anchored on one good soak — quote ~40-45 % net, not 57.9 %.**
+  **Post-deploy verdict
   (2026-06-19, two ~70h soaks) falsified the R→L half** of the 2026-06-11
   re-analysis: L→R is the win (per-car ~73-82 %), R→L is camera-geometry-capped
   at ~15-20 % at *every* position (the "R→L reads far" finding was a
@@ -1020,7 +1027,11 @@ fires landed in the weak far zone) and **validated 2026-06-22** on the ~72h
 confirms the mechanism — L→R reads peak **83-89 % at 0.20-0.40 t_norm**, exactly
 where the raised 0.30 floor now lands them (vs 26-62 % below 0.20); R→L
 unchanged at ~23 % per-car, as designed (the nudge only touches the reverse
-band). And
+band). **NB (2026-07-09): the 92.3 %/57.9 % here was that single soak's
+high-water mark — three later completion-bbox sessions (0628/0703/0707)
+sit at net ~40-45 % (L→R ~73-80 %, R→L ~9-11 %); the band mechanism is
+sound, the sustained number is just lower. See
+`.claude/verdict_band_0613.py output/session_<id>`.** And
 `pipeline_interval_ms_by_direction` is **`{}`** (uniform 400 ms) — the
 Step 13a `{forward:300,reverse:400}` throttle is not live and won't be
 restored (same falsified R→L premise, and faster R→L firing only burns the
