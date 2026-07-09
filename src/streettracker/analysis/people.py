@@ -8,10 +8,14 @@ tracks set the ``dog_walker`` flag, bicycle tracks produce the
 
 Track records carry no trajectory, so pairing is temporal +
 directional: a companion track (dog / bicycle) is attributed to the
-person track with the largest time overlap among those overlapping at
-least ``--min-overlap-s`` seconds in the same recorded direction. Each
-companion pairs with at most one person; a person can accumulate
-several companions (two dogs, one walker).
+person track with the largest time overlap in the same recorded
+direction whose overlap clears a *duration-relative* floor —
+``min(--min-overlap-s, --overlap-frac * min(companion_dwell,
+person_dwell))``. Dogs and bikes often cross in under ``--min-overlap-s``;
+the fraction lets a short companion pair on most of its own brief life
+while long tracks keep the absolute cap. Each companion pairs with at
+most one person; a person can accumulate several companions (two dogs,
+one walker).
 
 Speed: ``speed_px_s`` is inference-frame pixels. With a calibration
 (``--m-per-px``, ``--road-length-m``, or ``configs/showcase.json`` —
@@ -30,7 +34,7 @@ Output schema::
     {
       "session": "session_20260628_073521",
       "params": {"m_per_px": 0.0421, "jogger_min_m_s": 2.5,
-                 "min_overlap_s": 3.0},
+                 "min_overlap_s": 3.0, "overlap_frac": 0.6},
       "summary": {"n_person_tracks": 4211, "walkers": ..., "joggers": ...,
                   "cyclists": ..., "dog_walkers": ...,
                   "n_dog_tracks": ..., "n_dogs_paired": ...,
@@ -70,9 +74,21 @@ from typing import Any
 # and a distinct jogging bump at 2.5-4.0.
 JOGGER_MIN_M_S_DEFAULT = 2.5
 
-# A companion (dog/bicycle) must co-occur with a person for at least
-# this long to pair. Median person dwell on this scene is ~11 s.
+# A companion (dog/bicycle) must co-occur with a person to pair. The
+# required overlap is ``min(MIN_OVERLAP_S_DEFAULT, OVERLAP_FRAC_DEFAULT *
+# min(companion_dwell, person_dwell))`` -- an absolute cap for long
+# tracks, but a *duration-relative* floor for short ones. Dogs and bikes
+# are small/fast-crossing: on the 2026-07-07 dog first-light soak 44 % of
+# dog tracks and 49 % of bike tracks were visible < 3 s, so a flat 3 s
+# floor structurally rejected them even when the owner/rider was present
+# (16 of 17 unpaired dogs failed the overlap rule, only 1 on direction).
+# frac 0.6 lifted dog-pair recall 47 %->81 % and bike 43 %->90 % on that
+# soak with dog ambiguity unchanged (see .claude/dog_pair_sweep note in
+# the 2026-07-09 review). The cap keeps long tracks needing solid
+# co-presence, so a brief passer-by near a long-dwelling person still
+# won't pair.
 MIN_OVERLAP_S_DEFAULT = 3.0
+OVERLAP_FRAC_DEFAULT = 0.6
 
 # Speed classification needs this many detections — same guard as the
 # stats page's fastest board, against 2-3 frame BotSORT glitch tracks
@@ -132,28 +148,42 @@ def _overlap_s(a: dict[str, Any], b: dict[str, Any]) -> float:
     return end - start
 
 
+def _dwell_s(r: dict[str, Any]) -> float:
+    return float(r.get("time_end_unix") or 0.0) - float(r.get("time_start_unix") or 0.0)
+
+
 def pair_companions(
     persons: list[dict[str, Any]],
     companions: list[dict[str, Any]],
     *,
     min_overlap_s: float = MIN_OVERLAP_S_DEFAULT,
+    overlap_frac: float = OVERLAP_FRAC_DEFAULT,
 ) -> dict[int, list[int]]:
     """Attribute companion tracks (dogs / bicycles) to person tracks.
 
-    Each companion pairs with the person track it overlaps longest,
-    among persons overlapping >= ``min_overlap_s`` in the same recorded
-    direction. Returns ``{person_track_id: [companion_track_id, ...]}``
-    (only persons that gained a companion appear).
+    Each companion pairs with the person track it overlaps longest, in
+    the same recorded direction, whose overlap meets a duration-relative
+    floor: ``min(min_overlap_s, overlap_frac * min(companion_dwell,
+    person_dwell))``. Long tracks keep the absolute ``min_overlap_s`` cap;
+    short companions (dogs/bikes crossing in < min_overlap_s) only need to
+    overlap a fraction of their own brief life -- otherwise they could
+    never reach the flat floor. Returns ``{person_track_id:
+    [companion_track_id, ...]}`` (only persons that gained a companion
+    appear).
     """
     paired: dict[int, list[int]] = {}
     for comp in companions:
+        comp_dwell = _dwell_s(comp)
         best_person: int | None = None
-        best_overlap = min_overlap_s
+        best_overlap = 0.0
         for person in persons:
             if person.get("direction") != comp.get("direction"):
                 continue
             ov = _overlap_s(person, comp)
-            if ov >= best_overlap:
+            if ov <= 0.0:
+                continue
+            required = min(min_overlap_s, overlap_frac * min(comp_dwell, _dwell_s(person)))
+            if ov >= required and ov > best_overlap:
                 best_overlap = ov
                 best_person = person["track_id"]
         if best_person is not None:
@@ -232,6 +262,7 @@ def build_people(
     m_per_px: float | None = None,
     jogger_min_m_s: float = JOGGER_MIN_M_S_DEFAULT,
     min_overlap_s: float = MIN_OVERLAP_S_DEFAULT,
+    overlap_frac: float = OVERLAP_FRAC_DEFAULT,
     walk_gap_s: float = WALK_GAP_S_DEFAULT,
 ) -> tuple[list[PersonTrack], dict[str, Any]]:
     """Fold a session's raw track records into person enrichment rows
@@ -247,8 +278,12 @@ def build_people(
     dogs = [r for r in records if r.get("class_name") == "dog"]
     bikes = [r for r in records if r.get("class_name") == "bicycle"]
 
-    dog_by_person = pair_companions(persons, dogs, min_overlap_s=min_overlap_s)
-    bike_by_person = pair_companions(persons, bikes, min_overlap_s=min_overlap_s)
+    dog_by_person = pair_companions(
+        persons, dogs, min_overlap_s=min_overlap_s, overlap_frac=overlap_frac
+    )
+    bike_by_person = pair_companions(
+        persons, bikes, min_overlap_s=min_overlap_s, overlap_frac=overlap_frac
+    )
     walk_by_person = group_walks(persons, gap_s=walk_gap_s)
 
     out: list[PersonTrack] = []
@@ -344,8 +379,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--min-overlap-s",
         type=float,
         default=MIN_OVERLAP_S_DEFAULT,
-        help="minimum person/companion time overlap to pair, seconds "
-        f"(default {MIN_OVERLAP_S_DEFAULT})",
+        help="absolute cap on the person/companion overlap needed to pair, "
+        f"seconds (default {MIN_OVERLAP_S_DEFAULT})",
+    )
+    ap.add_argument(
+        "--overlap-frac",
+        type=float,
+        default=OVERLAP_FRAC_DEFAULT,
+        help="duration-relative overlap floor: a short companion needs to "
+        "overlap this fraction of the shorter track's dwell (default "
+        f"{OVERLAP_FRAC_DEFAULT}); the cap above still applies to long tracks",
     )
     ap.add_argument(
         "--walk-gap-s",
@@ -394,6 +437,7 @@ def main(argv: list[str] | None = None) -> int:
         m_per_px=m_per_px,
         jogger_min_m_s=args.jogger_min_ms,
         min_overlap_s=args.min_overlap_s,
+        overlap_frac=args.overlap_frac,
         walk_gap_s=args.walk_gap_s,
     )
 
@@ -406,6 +450,7 @@ def main(argv: list[str] | None = None) -> int:
                     "m_per_px": m_per_px,
                     "jogger_min_m_s": args.jogger_min_ms,
                     "min_overlap_s": args.min_overlap_s,
+                    "overlap_frac": args.overlap_frac,
                     "walk_gap_s": args.walk_gap_s,
                 },
                 "summary": summary,
