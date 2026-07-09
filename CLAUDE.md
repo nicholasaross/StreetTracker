@@ -232,6 +232,15 @@ Session files:
 - `{session}_makemodel.json` + `{session}_makemodel_by_track.json` —
   per-image top-k + per-track confidence-weighted CNN make/model
   predictions (after `makemodel`; `make_model_source="cnn"`)
+- `{session}_bodytype.json` + `{session}_bodytype_by_track.json` —
+  per-image + per-track confidence-weighted coarse body type (after
+  `bodytype`; classes hatchback/saloon/suv/mpv/van/pickup/coupe). The
+  stats page's "Vehicle body types" mix prefers the DVSA-model-derived
+  class for plated cars and falls back to this CNN for the unplated
+  majority. **CRITICAL: `bodytype` inference must use `--pad-frac 0.1`
+  to match the training corpus** (the CLI default; the make model's
+  0.25 loosens the crop and skews a *shape* classifier toward "van" —
+  CNN-vs-DVSA agreement dropped 79 %→42 % at 0.25 on session_20260703).
 - `{session}_people.json` — per-person-track activity enrichment
   (after `people`): kind walker/jogger/cyclist + `dog_walker` flag via
   temporal+direction pairing with dog/bicycle tracks. Jogger split
@@ -264,6 +273,7 @@ uv run streettracker vehicles output/<a> --across output/<b> ...  # cross-sessio
 uv run streettracker people output/<session>             # person activity enrichment (dog walkers / joggers / cyclists)
 uv run streettracker showcase --output-root output       # local website: enriched + recurring cars (http://127.0.0.1:8090/)
 uv run streettracker makemodel output/<session>          # CNN make/model inference -> _makemodel.json
+uv run streettracker bodytype output/<session>           # CNN body-type inference -> _bodytype_by_track.json (pad_frac 0.1)
 # Mine the Orin -> grow the UK make-classifier corpus (run pull from PowerShell):
 uv run streettracker pull --session <S> --only-main      # pull a session's 4K snaps from the Orin
 uv run streettracker makemodel-build-uk runs/uk_crops --output-size 512  # DVSA-labelled UK make crops @512 (auto-discovers sessions)
@@ -399,8 +409,9 @@ timeout-bounded in `control/orin.py`), `common.output`, and
   (for SSH/file steps). Playbooks (`PLAYBOOKS` registry; `build_playbook(name,
   ctx, …)` dispatches, `PlaybookContext` carries paths + device config):
   - **enrich** (`alpr-run` → `dvsa-label` → `dvsa-apply` → `vehicles` →
-    `makemodel` → `people`) and **build-train** (`makemodel-build-uk` →
-    `makemodel-train-uk`, dated dirs) — pure job-chains.
+    `makemodel` → `bodytype` → `people`) and **build-train**
+    (`makemodel-build-uk` → `makemodel-train-uk`, dated dirs) — pure
+    job-chains.
   - **roll** (action: `orin.restart_service` finalises the live session + starts
     a new one, verifies the handover + counts finalised tracks → then a `pull`
     job of the closed session) and **promote** (action: back up `makemodel_b0.pt`

@@ -115,6 +115,7 @@ ALLOWED_JOB_KINDS = frozenset(
         "vehicles",
         "people",
         "makemodel",
+        "bodytype",
         "makemodel-build-uk",
         "makemodel-train-uk",
         "export-engine",

@@ -58,7 +58,14 @@ _WATCH_INTERVAL = 1.5  # seconds between local-dir size samples (pull byte-ETA)
 # Jobs that contend for the one GPU share a lane and run one-at-a-time;
 # everything else runs in the "net" lane, which may overlap the GPU lane.
 _GPU_KINDS = frozenset(
-    {"alpr-run", "makemodel", "makemodel-build-uk", "makemodel-train-uk", "export-engine"}
+    {
+        "alpr-run",
+        "makemodel",
+        "bodytype",
+        "makemodel-build-uk",
+        "makemodel-train-uk",
+        "export-engine",
+    }
 )
 
 

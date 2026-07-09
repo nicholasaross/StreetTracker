@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from streettracker.analysis.dvsa import is_canonical_uk_plate
+from streettracker.analysis.makemodel.bodytype import body_type_for
 from streettracker.web.aggregate import discover_sessions, resolve_image_urls
 
 # m/s -> mph.
@@ -83,6 +84,7 @@ class Stats:
     speed: dict[str, Any]
     makes: list[list[Any]]  # [[make, n_distinct_cars], ...]
     colours: list[list[Any]]  # [[colour, n_journeys], ...]
+    bodytypes: list[list[Any]]  # [[body_type, n_journeys], ...]; DVSA-derived + CNN fallback
     people: dict[str, Any]  # person-track aggregates; see _empty_people()
     speed_unit: str  # "mph" | "px/s"
 
@@ -177,6 +179,7 @@ def _empty_stats(unit: str) -> Stats:
         speed={"hist": [], "avg_all": 0, "avg_l2r": 0, "avg_r2l": 0, "unit": unit, "fastest": []},
         makes=[],
         colours=[],
+        bodytypes=[],
         people=_empty_people(),
         speed_unit=unit,
     )
@@ -204,6 +207,7 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
     speeds_r2l: list[float] = []
     all_speeds: list[float] = []
     colours: Counter[str] = Counter()
+    bodytypes: Counter[str] = Counter()
     makes_by_plate: dict[str, str] = {}
     fastest_raw: list[tuple[float, str, dict[str, Any]]] = []
     total = 0
@@ -226,6 +230,37 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
             data = json.loads((d / f"{name}_data.json").read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             data = []
+
+        # Per-track body type for the mix chart: prefer the DVSA-model-derived
+        # class (reliable, plated cars) and fall back to the confident CNN
+        # prediction (the unreadable majority). Built here so the car loop can
+        # count it. Also harvests makes_by_plate from the same DVSA read.
+        track_body: dict[int, str] = {}
+        dl = d / f"{name}_dvsa_labels.json"
+        if dl.exists():
+            try:
+                labels = json.loads(dl.read_text(encoding="utf-8")).get("labels", {})
+            except (OSError, json.JSONDecodeError):
+                labels = {}
+            for plate, row in labels.items():
+                make = (row.get("make") or "").strip()
+                if make and plate not in makes_by_plate:
+                    makes_by_plate[plate] = make
+                bt = body_type_for(row.get("make"), row.get("model"))
+                if bt:
+                    for tid in row.get("track_ids", []):
+                        track_body[int(tid)] = bt
+        bp = d / f"{name}_bodytype_by_track.json"
+        if bp.exists():
+            try:
+                bt_tracks = json.loads(bp.read_text(encoding="utf-8")).get("tracks", [])
+            except (OSError, json.JSONDecodeError):
+                bt_tracks = []
+            for t in bt_tracks:
+                tid, bt = t.get("track_id"), t.get("body_type")
+                if bt and tid is not None and tid not in track_body:  # DVSA wins
+                    track_body[int(tid)] = bt
+
         for r in data:
             cls = r.get("class_name")
             if cls not in ("car", "person"):
@@ -270,6 +305,9 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
             heatmap[wd][dt.hour] += 1
             hour_totals[dt.hour] += 1
             colours[r.get("color") or "unknown"] += 1
+            bt = track_body.get(r.get("track_id"))
+            if bt:
+                bodytypes[bt] += 1
             if dkey:
                 daily[date][dkey] += 1
                 dow[_DOW[wd]][dkey] += 1
@@ -299,17 +337,6 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
             # Sidecars written before walk dedup lack "walks" -- count
             # their tracks 1:1 so the walks total stays comparable.
             p_kinds["walks"] += int(psum.get("walks") or psum.get("n_person_tracks") or 0)
-
-        dl = d / f"{name}_dvsa_labels.json"
-        if dl.exists():
-            try:
-                labels = json.loads(dl.read_text(encoding="utf-8")).get("labels", {})
-            except (OSError, json.JSONDecodeError):
-                labels = {}
-            for plate, row in labels.items():
-                make = (row.get("make") or "").strip()
-                if make and plate not in makes_by_plate:
-                    makes_by_plate[plate] = make
 
     daily_list = [{"date": dt, **counts} for dt, counts in sorted(daily.items())]
     n_days = len(dates)
@@ -348,6 +375,7 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
 
     makes = [[m, n] for m, n in Counter(makes_by_plate.values()).most_common(N_TOP_MAKES)]
     colours_out = [[c, n] for c, n in colours.most_common(N_TOP_COLOURS)]
+    bodytypes_out = [[b, n] for b, n in bodytypes.most_common()]
 
     p_directed = p_dir["l2r"] + p_dir["r2l"]
     p_bh = max(range(24), key=lambda h: p_hour[h]) if p_total else None
@@ -376,6 +404,7 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
         speed=speed,
         makes=makes,
         colours=colours_out,
+        bodytypes=bodytypes_out,
         people=people,
         speed_unit=unit,
     )
