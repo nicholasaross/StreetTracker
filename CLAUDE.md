@@ -90,8 +90,20 @@ no person-specific snap gate needed. Both ancestor repos archived
    / ...). `makemodel-build-uk` now tags `body_type` per crop; train it
    with `makemodel-train-uk <corpus> --target body_type` (the make path
    is byte-identical when `--target make`). The DVSA "UNKNOWN" placeholder
-   is now filtered in `normalize_make` (PR #76). A trained body-type model
-   + accuracy-vs-make verdict is the follow-up run. Ops: the 8B VLM spills
+   is now filtered in `normalize_make` (PR #76, #77). **VERDICT
+   (2026-07-09, `runs/uk_body_0708_b0`, b0@384, 20ep early-stop @12):
+   body_type@1 = 0.694 per-crop / 0.667 per-car — beats make (0.45) by
+   ~+24 pp but short of the 80-90 % hope.** The win is CONCENTRATED: the
+   two dominant, visually-distinct classes — **hatchback + suv, 77 % of
+   cars — read ~0.75 per-car**; the minority classes are weak (saloon
+   0.37 / mpv 0.42 / van 0.59 / coupe 0.43 / pickup 0.21 recall),
+   capped by rear-view ambiguity + tiny support + label noise (one model
+   name → predominant body style mislabels estates/variants), and mostly
+   confuse INTO hatchback. So body type is a usable coarse "hatchback vs
+   suv vs other" tag for the majority, NOT a clean win — surface it only
+   if that split is wanted; inference/showcase wiring is an unbuilt,
+   optional follow-up. Reproduce: `.claude/bodytype_eval.py`. Ops: the
+   8B VLM spills
    ~17 GB commit to system RAM on the 10 GB 3080 — never run it beside
    panel jobs (it starved an `alpr-run` to death on 2026-07-08).
 5. **R→L hardware:** 2nd discreet camera on the approach — the only
