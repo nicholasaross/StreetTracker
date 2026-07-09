@@ -1,0 +1,14 @@
+{
+  "arch": "efficientnet_b6",
+  "input_size": 528,
+  "n_makes": 45,
+  "val_make_top1": 0.4509,
+  "promoted_at": "2026-07-08",
+  "source_run": "uk_make_0707_b6",
+  "trained_corpus": {
+    "name": "uk_crops_0707_576",
+    "n_cars": 3942,
+    "n_makes": 45,
+    "n_crops": 47881
+  }
+}
