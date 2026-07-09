@@ -99,6 +99,42 @@ def test_two_dogs_one_walker() -> None:
     assert pair_companions(persons, dogs) == {1: [50, 51]}
 
 
+def test_short_dog_pairs_on_duration_relative_floor() -> None:
+    # A 2 s dog visible next to a long-dwelling person for 1.5 s pairs:
+    # the flat 3 s floor would reject it (longer than the whole dog track),
+    # but the duration-relative floor is min(3.0, 0.6*2) = 1.2 s.
+    person = _rec(1, start=0.0, end=20.0)
+    dog = _rec(50, "dog", start=5.0, end=7.0)  # 2 s dwell, 2 s overlap
+    assert pair_companions([person], [dog]) == {1: [50]}
+
+
+def test_short_dog_needs_majority_of_its_life_overlapping() -> None:
+    # Same 2 s dog but only 0.5 s of it overlaps the person (< 1.2 s
+    # required) -> no pair. Guards against a brief incidental crossing.
+    person = _rec(1, start=0.0, end=5.5)
+    dog = _rec(50, "dog", start=5.0, end=7.0)  # overlap 5.0..5.5 = 0.5 s
+    assert pair_companions([person], [dog]) == {}
+
+
+def test_lower_overlap_frac_is_more_permissive() -> None:
+    # A 2 s dog overlapping a person for only 0.4 s: rejected at the
+    # default 0.6 (needs 1.2 s) but paired at 0.15 (needs 0.3 s). The
+    # knob lowers the bar directionally.
+    person = _rec(1, start=0.0, end=5.4)
+    dog = _rec(50, "dog", start=5.0, end=7.0)  # overlap 5.0..5.4 = 0.4 s
+    assert pair_companions([person], [dog]) == {}
+    assert pair_companions([person], [dog], overlap_frac=0.15) == {1: [50]}
+
+
+def test_long_companion_still_needs_the_full_cap() -> None:
+    # Two long tracks overlapping only 2 s (< 3 s cap): the relative term
+    # (0.6*20 = 12 s) is far above the cap, so the cap binds and they
+    # don't pair -- long-track behaviour is unchanged by the new floor.
+    person = _rec(1, start=0.0, end=20.0)
+    dog = _rec(50, "dog", start=18.0, end=40.0)  # 22 s dwell, 2 s overlap
+    assert pair_companions([person], [dog]) == {}
+
+
 # ----------------------------------------------------------------------
 # classify_kind
 # ----------------------------------------------------------------------
