@@ -264,16 +264,19 @@
   function trainBlock(p){
     const m = p.metrics || {};
     const epochs = m.epochs || [];
+    // Metric name follows the run's --target (make@1 / body_type@1).
+    const target = m.target || "make";
+    const classesLabel = target === "make" ? "makes" : "classes";
     let facts = "";
     if (m.train_crops != null){
-      facts = `<div class="jmeta">${esc(m.device||"")} · ${fmtInt(m.makes)} makes · `
+      facts = `<div class="jmeta">${esc(m.device||"")} · ${fmtInt(m.makes)} ${classesLabel} · `
         + `${fmtInt(m.train_crops)} train / ${fmtInt(m.val_crops)} val crops</div>`;
     }
     if (!epochs.length) return facts;
     const last = epochs[epochs.length-1];
     const best = (m.best_make1!=null) ? (m.best_make1*100).toFixed(1)+"%" : "—";
     const legend = `<div class="jmeta"><span style="color:var(--warn)">■ loss ${last.loss.toFixed(3)}</span>`
-      + ` · <span style="color:var(--ok)">■ make@1 ${(last.make1*100).toFixed(1)}%</span>`
+      + ` · <span style="color:var(--ok)">■ ${esc(target)}@1 ${(last.make1*100).toFixed(1)}%</span>`
       + ` · best ${best} (epoch ${m.best_epoch!=null?m.best_epoch:"?"})</div>`;
     return facts + `<div style="margin-top:6px">${trainChart(epochs)}</div>` + legend;
   }

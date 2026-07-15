@@ -278,16 +278,20 @@ def build_train_steps(
     corpus_dir: str,
     out_dir: str,
     *,
-    output_size: str = "512",
+    # Defaults reproduce the PRODUCTION recipe: B6@528 on 576px crops (the
+    # promoted uk_make_0707_b6 run, make@1 0.451). Bumped from B5@456/512
+    # on 2026-07-15 -- the playbook had gone stale against the B6 promotion.
+    output_size: str = "576",
     # Must be a canonical arch name -- the makemodel-train-uk CLI's --backbone
-    # validates against SUPPORTED_ARCHS (efficientnet_b0/b4/b5), not the "b5"
-    # shorthand used in docs.
-    backbone: str = "efficientnet_b5",
-    input_size: str = "456",
+    # validates against SUPPORTED_ARCHS (efficientnet_b0/b4/b5/b6/b7), not the
+    # "b6" shorthand used in docs.
+    backbone: str = "efficientnet_b6",
+    input_size: str = "528",
     epochs: str = "30",
-    # The CLI default batch (64) OOMs B5@456 on the dev-box 3080 (10 GB):
-    # peak VRAM is ~5.8 GB @8, ~8.4 GB @12, ~11 GB @16. 8 leaves headroom
-    # alongside the showcase/control GPU usage. Lower for a smaller card.
+    # The CLI default batch (64) OOMs big backbones on the dev-box 3080
+    # (10 GB). 8 fits B6@528 (proven by the promoted 0707 run on this box)
+    # and leaves headroom alongside the showcase/control GPU usage. Lower
+    # for a smaller card.
     batch_size: str = "8",
     # The control panel (and thus build-train) runs on the Windows dev box,
     # where a multi-worker DataLoader stalls -- workers and GPU sit idle, no
@@ -559,8 +563,8 @@ def build_playbook(
         return f"Enrich {session}", enrich_steps(str(ctx.output_root / session))
     if name == "build-train":
         mmdd = datetime.now().strftime("%m%d")
-        corpus_dir = str(ctx.runs_dir / f"uk_crops_{mmdd}_512")
-        out_dir = str(ctx.runs_dir / f"uk_make_{mmdd}_b5")
+        corpus_dir = str(ctx.runs_dir / f"uk_crops_{mmdd}_576")
+        out_dir = str(ctx.runs_dir / f"uk_make_{mmdd}_b6")
         return f"Build + train -> {out_dir}", build_train_steps(corpus_dir, out_dir)
     if name == "roll":
         if not old_session:

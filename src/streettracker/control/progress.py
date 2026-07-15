@@ -154,23 +154,36 @@ class BatchParser(ProgressParser):
 # UK make-classifier training (the live loss curve)
 # ----------------------------------------------------------------------
 
+# The trainer prints ``target=make|body_type`` + ``classes=N`` since the
+# --target generalisation (PR #77); the older format said ``makes=N`` with no
+# target. Both are accepted (target defaults to "make") so canned transcripts
+# and any pre-#77 output still parse.
 _TRAIN_PREAMBLE_RE = re.compile(
-    r"device=(\S+)\s+amp=(\S+)\s+makes=(\d+)\s+train_crops=(\d+)\s+val_crops=(\d+)"
+    r"(?:target=(\S+)\s+)?device=(\S+)\s+amp=(\S+)\s+"
+    r"(?:makes|classes)=(\d+)\s+train_crops=(\d+)\s+val_crops=(\d+)"
 )
+# The metric name follows --target: ``make@1``/``make@5`` or ``body_type@1``/
+# ``body_type@5``. The captured name feeds metrics["target"] so the UI can
+# label the curve; the row keys stay ``make1``/``make5`` regardless (the
+# templates and stored history snapshots key on them).
 _TRAIN_EPOCH_RE = re.compile(
-    r"epoch\s+(\d+)\s*/\s*(\d+)\s+loss=([\d.]+)\s+make@1=([\d.]+)\s+make@5=([\d.]+)\s+\((\d+)s\)"
+    r"epoch\s+(\d+)\s*/\s*(\d+)\s+loss=([\d.]+)\s+(\w+)@1=([\d.]+)\s+\w+@5=([\d.]+)\s+\((\d+)s\)"
 )
-_TRAIN_DONE_RE = re.compile(r"done:\s+best make@1=([\d.]+)\s+\(epoch\s+(\d+)\)\s+->\s+(.+)$")
+_TRAIN_DONE_RE = re.compile(r"done:\s+best \w+@1=([\d.]+)\s+\(epoch\s+(\d+)\)\s+->\s+(.+)$")
 _TRAIN_EARLYSTOP_RE = re.compile(r"early stop after\s+(\d+)\s+epochs")
 
 
 class TrainParser(ProgressParser):
-    """``makemodel-train-uk``: per-epoch loss / make@1 for the live chart.
+    """``makemodel-train-uk``: per-epoch loss / top-1 for the live chart.
 
-    ``metrics["epochs"]`` accumulates one row per epoch
-    (``{epoch, loss, make1, make5, sec}``); ``metrics`` also carries the
-    pre-training facts (device, makes, train/val crop counts) and the running
-    best so the training view can show before/after at a glance.
+    Works for both training targets (``make`` and ``body_type``);
+    ``metrics["target"]`` records which one this run is so the UI labels the
+    metric correctly. ``metrics["epochs"]`` accumulates one row per epoch
+    (``{epoch, loss, make1, make5, sec}`` — the ``make1``/``make5`` keys are
+    kept for either target for template/history compatibility); ``metrics``
+    also carries the pre-training facts (device, class count, train/val crop
+    counts) and the running best so the training view can show before/after
+    at a glance.
     """
 
     kind = "makemodel-train-uk"
@@ -185,11 +198,12 @@ class TrainParser(ProgressParser):
         m = _TRAIN_PREAMBLE_RE.search(text)
         if m:
             self.progress.metrics.update(
-                device=m.group(1),
-                amp=(m.group(2).lower() == "true"),
-                makes=int(m.group(3)),
-                train_crops=int(m.group(4)),
-                val_crops=int(m.group(5)),
+                target=m.group(1) or "make",
+                device=m.group(2),
+                amp=(m.group(3).lower() == "true"),
+                makes=int(m.group(4)),
+                train_crops=int(m.group(5)),
+                val_crops=int(m.group(6)),
             )
             self.progress.phase = "starting"
             return
@@ -197,12 +211,13 @@ class TrainParser(ProgressParser):
         m = _TRAIN_EPOCH_RE.search(text)
         if m:
             epoch, total = int(m.group(1)), int(m.group(2))
+            self.progress.metrics.setdefault("target", m.group(4))
             row = {
                 "epoch": epoch,
                 "loss": float(m.group(3)),
-                "make1": float(m.group(4)),
-                "make5": float(m.group(5)),
-                "sec": int(m.group(6)),
+                "make1": float(m.group(5)),
+                "make5": float(m.group(6)),
+                "sec": int(m.group(7)),
             }
             self.progress.metrics["epochs"].append(row)
             self.progress.current = epoch
