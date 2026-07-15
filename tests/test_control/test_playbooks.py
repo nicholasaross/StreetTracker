@@ -204,11 +204,18 @@ def test_build_playbook_build_train_generates_dated_dirs(tmp_path: Path) -> None
     ]
     assert "uk_crops_" in steps[0].job.args[0]  # type: ignore[union-attr]
     # The --backbone value must be a real arch the CLI accepts (choices=
-    # SUPPORTED_ARCHS), not the "b5" shorthand from the docs -- argparse
+    # SUPPORTED_ARCHS), not the "b6" shorthand from the docs -- argparse
     # rejects an unknown choice with exit code 2 before training starts.
     train_args = steps[1].job.args  # type: ignore[union-attr]
     backbone = train_args[train_args.index("--backbone") + 1]
     assert backbone in SUPPORTED_ARCHS
+    # Pin the PRODUCTION recipe (B6@528 on 576px crops -- the promoted
+    # uk_make_0707_b6 run) so the playbook can't silently drift from what's
+    # actually shipped again (it sat on B5@456/512 for two promotions).
+    build_args = steps[0].job.args  # type: ignore[union-attr]
+    assert build_args[build_args.index("--output-size") + 1] == "576"
+    assert backbone == "efficientnet_b6"
+    assert train_args[train_args.index("--input-size") + 1] == "528"
 
 
 def test_build_playbook_roll(tmp_path: Path) -> None:

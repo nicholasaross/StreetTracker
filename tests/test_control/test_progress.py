@@ -91,12 +91,15 @@ def test_batch_parser_makemodel_batch_tag_and_wrote_summary() -> None:
 
 
 def test_train_parser_preamble_epochs_and_best() -> None:
+    # Current trainer format (post --target): "target=make ... classes=N".
     p = _feed(
         TrainParser(),
-        "[makemodel-uk] device=cuda amp=true makes=36 train_crops=26500 val_crops=6277",
+        "[makemodel-uk] target=make device=cuda amp=True classes=36 "
+        "train_crops=26500 val_crops=6277",
         "[makemodel-uk] epoch 1/30 loss=2.1456 make@1=0.325 make@5=0.612 (45s)",
         "[makemodel-uk] epoch 2/30 loss=1.8923 make@1=0.361 make@5=0.651 (44s)",
     )
+    assert p.metrics["target"] == "make"
     assert p.metrics["device"] == "cuda"
     assert p.metrics["amp"] is True
     assert p.metrics["makes"] == 36
@@ -113,6 +116,44 @@ def test_train_parser_preamble_epochs_and_best() -> None:
     assert p.current == 2 and p.total == 30
     assert p.phase == "epoch 2/30"
     assert p.metrics["best_make1"] == 0.361 and p.metrics["best_epoch"] == 2
+
+
+def test_train_parser_accepts_legacy_preamble() -> None:
+    # Pre --target format: no target=, "makes=" instead of "classes=".
+    p = _feed(
+        TrainParser(),
+        "[makemodel-uk] device=cuda amp=true makes=36 train_crops=26500 val_crops=6277",
+    )
+    assert p.metrics["target"] == "make"
+    assert p.metrics["makes"] == 36
+    assert p.metrics["train_crops"] == 26500
+
+
+def test_train_parser_body_type_target() -> None:
+    # --target body_type runs print body_type@1/@5; the row keys stay
+    # make1/make5 (template/history compatibility) and metrics["target"]
+    # records which metric this actually is.
+    p = _feed(
+        TrainParser(),
+        "[makemodel-uk] target=body_type device=cuda amp=True classes=7 "
+        "train_crops=38000 val_crops=9500",
+        "[makemodel-uk] epoch 1/20 loss=1.2345 body_type@1=0.581 body_type@5=0.998 (95s)",
+        "[makemodel-uk] epoch 2/20 loss=0.9871 body_type@1=0.652 body_type@5=0.999 (93s)",
+        "[makemodel-uk] done: best body_type@1=0.694 (epoch 12) -> /runs/uk_body_0708_b0/best.pt",
+    )
+    assert p.metrics["target"] == "body_type"
+    assert p.metrics["makes"] == 7
+    assert len(p.metrics["epochs"]) == 2
+    assert p.metrics["epochs"][1] == {
+        "epoch": 2,
+        "loss": 0.9871,
+        "make1": 0.652,
+        "make5": 0.999,
+        "sec": 93,
+    }
+    assert p.metrics["best_make1"] == 0.694 and p.metrics["best_epoch"] == 12
+    assert p.metrics["checkpoint"] == "/runs/uk_body_0708_b0/best.pt"
+    assert p.phase == "done"
 
 
 def test_train_parser_best_does_not_regress() -> None:

@@ -57,6 +57,11 @@
 
     const p = job.progress || {}, m = p.metrics || {};
     const epochs = m.epochs || [];
+    // --target make|body_type: parsed from the trainer preamble/epoch rows,
+    // with the command line as fallback before the first output arrives.
+    const target = m.target || argVal(job.command, "--target") || "make";
+    const isMake = target === "make";
+    const metric = target + "@1";
     const backbone = argVal(job.command, "--backbone");
     const insize = argVal(job.command, "--input-size");
     const eta = (p.eta_s != null && job.status === "running") ? " · ETA " + fmtDur(p.eta_s) : "";
@@ -75,25 +80,27 @@
         <div class="metric"><div class="k">phase</div><div class="v sm">${esc(p.phase || "—")}</div></div>
         <div class="metric"><div class="k">backbone</div><div class="v sm mono">${backbone ? ("B" + backbone.replace(/\D/g, "")) : "—"}</div></div>
         <div class="metric"><div class="k">input</div><div class="v sm mono">${insize ? (esc(insize) + "px") : "—"}</div></div>
-        <div class="metric"><div class="k">makes</div><div class="v">${fmtInt(m.makes)}</div></div>
+        <div class="metric"><div class="k">${isMake ? "makes" : "classes"}</div><div class="v">${fmtInt(m.makes)}</div></div>
         <div class="metric"><div class="k">train crops</div><div class="v">${fmtInt(m.train_crops)}</div></div>
         <div class="metric"><div class="k">val crops</div><div class="v">${fmtInt(m.val_crops)}</div></div>
       </div>
     </section>`;
 
-    // Live curve.
+    // Live curve. The production make@1 reference/delta only makes sense for
+    // make runs — a body_type@1 vs production-make comparison is meaningless.
     if (epochs.length){
       const last = epochs[epochs.length - 1];
       const best = (m.best_make1 != null) ? (m.best_make1 * 100).toFixed(1) + "%" : "—";
-      const delta = (m.best_make1 != null && prodAcc != null) ? (m.best_make1 - prodAcc) : null;
+      const prodRef = isMake ? prodAcc : null;
+      const delta = (m.best_make1 != null && prodRef != null) ? (m.best_make1 - prodRef) : null;
       h += `<section class="panel" style="margin-top:16px">
-        <h2>Loss &amp; make@1 per epoch</h2>
-        ${trainChart(epochs, {height:240, refMake1: prodAcc || 0})}
+        <h2>Loss &amp; ${esc(metric)} per epoch</h2>
+        ${trainChart(epochs, {height:240, refMake1: prodRef || 0})}
         <div class="jmeta" style="margin-top:8px">
           <span style="color:var(--warn)">■ loss ${last.loss.toFixed(3)}</span> ·
-          <span style="color:var(--ok)">■ make@1 ${(last.make1 * 100).toFixed(1)}%</span> ·
+          <span style="color:var(--ok)">■ ${esc(metric)} ${(last.make1 * 100).toFixed(1)}%</span> ·
           best ${best} (epoch ${m.best_epoch != null ? m.best_epoch : "?"})
-          ${prodAcc != null ? ` · production ${(prodAcc * 100).toFixed(1)}%` : ""}
+          ${prodRef != null ? ` · production ${(prodRef * 100).toFixed(1)}%` : ""}
           ${delta != null ? ` · <b style="color:${delta >= 0 ? "var(--ok)" : "var(--bad)"}">${delta >= 0 ? "+" : ""}${(delta * 100).toFixed(1)} pp</b>` : ""}
         </div>
       </section>`;
@@ -103,7 +110,7 @@
         + `<td>${(e.make5 * 100).toFixed(1)}%</td><td>${fmtDur(e.sec)}</td></tr>`).join("");
       h += `<section class="panel" style="margin-top:16px"><h2>Epochs</h2>
         <div style="overflow-x:auto"><table class="sessions">
-          <thead><tr><th>epoch</th><th>train loss</th><th>val make@1</th><th>val make@5</th><th>time</th></tr></thead>
+          <thead><tr><th>epoch</th><th>train loss</th><th>val ${esc(metric)}</th><th>val ${esc(target)}@5</th><th>time</th></tr></thead>
           <tbody>${rows}</tbody></table></div></section>`;
     } else {
       h += `<section class="panel" style="margin-top:16px"><div class="empty">waiting for the first epoch…</div></section>`;
@@ -119,8 +126,17 @@
         <div style="margin-top:10px">${hbarList(top)}</div></section>`;
     }
 
-    // Promote, once the run is finished.
-    if (job.status === "succeeded" && m.checkpoint){
+    // Promote, once the run is finished. Make runs only — the promote
+    // playbook copies into makemodel_b0.pt and scores by make@1, so offering
+    // it for a body_type run would promote the wrong model to the wrong path
+    // (body-type promotion is a manual copy to bodytype_b0.pt + sidecar).
+    if (job.status === "succeeded" && m.checkpoint && !isMake){
+      h += `<section class="panel" style="margin-top:16px"><h2>Promote</h2>
+        <div class="muted">This is a <b>${esc(target)}</b> run — the panel's Promote targets the
+        make model (makemodel_b0.pt). To ship it, copy <span class="mono">${esc(m.checkpoint)}</span>
+        to <span class="mono">src/streettracker/analysis/makemodel/models/bodytype_b0.pt</span>
+        and update its .meta.json sidecar.</div></section>`;
+    } else if (job.status === "succeeded" && m.checkpoint){
       const parts = String(m.checkpoint).replace(/\\/g, "/").split("/").filter(Boolean);
       const run = parts.length >= 2 ? parts[parts.length - 2] : null;
       const beats = (m.best_make1 != null && prodAcc != null) ? m.best_make1 > prodAcc : null;
