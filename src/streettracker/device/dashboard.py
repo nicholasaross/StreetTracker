@@ -40,6 +40,8 @@ from pathlib import Path
 
 from aiohttp import web
 
+from streettracker.common.summary import ST26_FAVICON_LINK, ST26_LOGO_SVG
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,9 +51,10 @@ logger = logging.getLogger(__name__)
 _NO_SESSIONS_HTML = (
     "<!DOCTYPE html><html><head><title>StreetTracker</title>"
     '<meta http-equiv="refresh" content="5">'
-    "<style>body{font-family:sans-serif;max-width:40em;margin:4em auto;"
+    + ST26_FAVICON_LINK
+    + "<style>body{font-family:sans-serif;max-width:40em;margin:4em auto;"
     "color:#444;text-align:center}</style></head><body>"
-    "<h1>StreetTracker</h1>"
+    "<h1>" + ST26_LOGO_SVG + "StreetTracker</h1>"
     "<p>No sessions yet -- the first summary will appear here shortly.</p>"
     "</body></html>"
 )

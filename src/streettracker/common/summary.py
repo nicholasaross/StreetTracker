@@ -27,6 +27,31 @@ from typing import Any
 
 from streettracker.common.schema import TrackRecord
 
+# Inline ST26 TRK number-plate brand mark — the project logo, shared with the
+# showcase/control headers (docs/assets/st26trk.svg is the canonical source).
+# Inlined so the generated summary stays a single self-contained file.
+ST26_LOGO_SVG = (
+    '<svg style="height:26px;width:auto;vertical-align:-5px;margin-right:10px" '
+    'viewBox="0 0 168 44" role="img" aria-label="ST26 TRK number plate" '
+    'xmlns="http://www.w3.org/2000/svg">'
+    '<rect x="1.5" y="1.5" width="165" height="41" rx="5" fill="#F2C200" '
+    'stroke="#1B2026" stroke-opacity="0.55" stroke-width="3"/>'
+    '<text x="84" y="29.5" text-anchor="middle" '
+    'font-family="\'Cascadia Code\',\'Consolas\',\'DejaVu Sans Mono\',monospace" '
+    'font-size="17" font-weight="700" letter-spacing="2.4" fill="#1B2026">ST26 TRK</text>'
+    "</svg>"
+)
+
+# Matching browser-tab icon (URL-encoded inline SVG; same mark as the showcase).
+ST26_FAVICON_LINK = (
+    '<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,'
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>"
+    "<rect x='2' y='7' width='28' height='18' rx='3.5' fill='%23F2C200' "
+    "stroke='%231B2026' stroke-width='2'/>"
+    "<text x='16' y='21' text-anchor='middle' font-family='monospace' "
+    "font-size='13' font-weight='700' fill='%231B2026'>ST</text></svg>\">"
+)
+
 
 def generate_html(
     records: list[TrackRecord | dict[str, Any]],
@@ -85,6 +110,7 @@ def generate_html(
     page = (
         '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
         + '<title>StreetTracker — ' + html_mod.escape(session_label) + '</title>'
+        + ST26_FAVICON_LINK
         + '<style>'
         + '*{margin:0;padding:0;box-sizing:border-box}'
         + 'body{background:#1a1a1a;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,monospace;padding:24px}'
@@ -116,7 +142,7 @@ def generate_html(
         + '.tab .ct{color:#666;font-weight:400;margin-left:6px;font-size:0.8rem}'
         + '.tab.active .ct{color:#888}'
         + '</style></head><body>'
-        + '<h1>StreetTracker Summary</h1>'
+        + '<h1>' + ST26_LOGO_SVG + 'StreetTracker Summary</h1>'
         + '<div class="summary">Session: ' + html_mod.escape(session_label)
         + ' &mdash; <span id="summary-text">' + html_mod.escape(summary_text) + '</span></div>'
         + '<div class="meta">' + html_mod.escape(meta_kv) + '</div>'
