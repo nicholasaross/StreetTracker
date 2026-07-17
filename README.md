@@ -152,6 +152,14 @@ Three browsable UIs, all dependency-free SVG/CSS:
   pwsh -NoProfile -File scripts/control_panel.ps1
   ```
 
+### Screenshots
+
+| Showcase — identified & recurring cars | Control panel — operator dashboard | Control panel — live training |
+|---|---|---|
+| [<img src="docs/assets/screenshot_showcase.png" alt="Showcase gallery"/>](docs/assets/screenshot_showcase.png) | [<img src="docs/assets/screenshot_control.png" alt="Control panel dashboard"/>](docs/assets/screenshot_control.png) | [<img src="docs/assets/screenshot_training.png" alt="Training page with live loss/accuracy curve"/>](docs/assets/screenshot_training.png) |
+
+*Number plates and owner tags in the gallery are pixelated for publication.*
+
 ## Output
 
 Per finalised track: a dashboard tile (`{prefix}_{id}.jpg`), an HQ crop
