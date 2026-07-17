@@ -287,7 +287,11 @@ def build_train_steps(
     # "b6" shorthand used in docs.
     backbone: str = "efficientnet_b6",
     input_size: str = "528",
-    epochs: str = "30",
+    # 20, not 30: CosineAnnealingLR's T_max follows --epochs, and the late-LR
+    # lift is where the last ~1pp comes from (0707 run: 0.442->0.451 over
+    # epochs 15-20). At --epochs 30 the anneal is too slow for --patience 5 --
+    # the 0715 run early-stopped at epoch 18 (0.433) before its tail arrived.
+    epochs: str = "20",
     # The CLI default batch (64) OOMs big backbones on the dev-box 3080
     # (10 GB). 8 fits B6@528 (proven by the promoted 0707 run on this box)
     # and leaves headroom alongside the showcase/control GPU usage. Lower
