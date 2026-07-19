@@ -414,6 +414,7 @@ def compute_attributes(
     color: str,
     t_start_wall: float,
     main_snaps: list[int] | None = None,
+    frame_w: int | None = None,
 ) -> TrackRecord | None:
     """Compute attributes for one finalized track; return ``None`` if filtered.
 
@@ -457,6 +458,15 @@ def compute_attributes(
         class_name(track.class_id) == "person"
         and median_bbox_aspect(track.points) >= _PERSON_ASPECT_SUSPECT
     )
+    # Entry/exit position as fractional [x, y]. Needs frame width to
+    # normalise x; when it's unknown (older callers) leave both None so
+    # door-origin analysis simply skips the track rather than trusting a
+    # half-scaled point.
+    entry_point_frac: list[float] | None = None
+    exit_point_frac: list[float] | None = None
+    if frame_w and frame_h:
+        entry_point_frac = [round(p0.cx / frame_w, 4), round(p0.cy / frame_h, 4)]
+        exit_point_frac = [round(pN.cx / frame_w, 4), round(pN.cy / frame_h, 4)]
     return TrackRecord(
         track_id=track.id,
         class_id=track.class_id,
@@ -503,4 +513,6 @@ def compute_attributes(
             else None
         ),
         class_suspect=suspect,
+        entry_point_frac=entry_point_frac,
+        exit_point_frac=exit_point_frac,
     )

@@ -22,6 +22,7 @@ from streettracker.analysis.people import (
     pair_companions,
     resolve_m_per_px,
 )
+from streettracker.analysis.walks import DoorZone
 from streettracker.common.schema import TrackRecord
 
 _L2R = "left to right"
@@ -39,6 +40,9 @@ def _rec(
     direction: str = _L2R,
     speed_px_s: float = 30.0,
     num_detections: int = 58,
+    color: str = "unknown",
+    entry: list[float] | None = None,
+    exit: list[float] | None = None,
 ) -> dict:
     return TrackRecord(
         track_id=tid,
@@ -53,13 +57,15 @@ def _rec(
         duration_visible=end - start,
         direction=direction,
         speed_px_s=speed_px_s,
-        color="unknown",
+        color=color,
         lane="middle",
         avg_confidence=0.8,
         displacement_px=500.0,
         net_displacement_px=480.0,
         num_detections=num_detections,
         asset_prefix="person" if cls == "person" else "vehicle",
+        entry_point_frac=entry,
+        exit_point_frac=exit,
     ).to_json_dict()
 
 
@@ -210,6 +216,10 @@ def test_build_people_kinds_flags_and_summary() -> None:
         "n_suspect_excluded": 0,
         "walks": 3,
         "n_split_merged": 0,
+        "round_trips": 0,
+        "round_trips_chance": None,  # session far too short for the control
+        "away_minutes_median": None,
+        "own_trips": None,  # no door zone configured
     }
 
 
@@ -282,6 +292,136 @@ def test_build_people_excludes_class_suspect_tracks() -> None:
     assert [p.track_id for p in people] == [2]
     assert summary["n_person_tracks"] == 1
     assert summary["n_suspect_excluded"] == 1
+
+
+# ----------------------------------------------------------------------
+# round trips (out-and-back pairing)
+# ----------------------------------------------------------------------
+
+
+def test_round_trip_pairs_opposite_directions() -> None:
+    out_ = _rec(1, start=0.0, end=20.0, direction=_L2R)
+    back = _rec(2, start=620.0, end=640.0, direction=_R2L)
+    people, summary = build_people([out_, back], m_per_px=0.05)
+    by_id = {p.track_id: p for p in people}
+    assert by_id[1].round_trip_id == 1
+    assert by_id[2].round_trip_id == 1
+    assert summary["round_trips"] == 1
+    assert summary["away_minutes_median"] == 10.0  # (620-20)/60
+
+
+def test_round_trip_gap_floor_and_ceiling() -> None:
+    out_ = _rec(1, start=0.0, end=20.0, direction=_L2R)
+    too_soon = _rec(2, start=80.0, end=100.0, direction=_R2L)  # gap 60 < 180
+    people, summary = build_people([out_, too_soon], m_per_px=0.05)
+    assert all(p.round_trip_id is None for p in people)
+    assert summary["round_trips"] == 0
+
+    too_late = _rec(2, start=20.0 + 7300.0, end=20.0 + 7320.0, direction=_R2L)
+    people, summary = build_people([out_, too_late], m_per_px=0.05)
+    assert all(p.round_trip_id is None for p in people)
+
+
+def test_round_trip_known_different_colours_block() -> None:
+    out_ = _rec(1, start=0.0, end=20.0, direction=_L2R, color="red")
+    back = _rec(2, start=620.0, end=640.0, direction=_R2L, color="blue")
+    people, summary = build_people([out_, back], m_per_px=0.05)
+    assert summary["round_trips"] == 0
+
+    # An unknown on either side is compatible (mirrors the walk-merge rule).
+    back_unknown = _rec(2, start=620.0, end=640.0, direction=_R2L)
+    _, summary = build_people([out_, back_unknown], m_per_px=0.05)
+    assert summary["round_trips"] == 1
+
+
+def test_round_trip_dog_flag_must_match() -> None:
+    out_ = _rec(1, start=0.0, end=20.0, direction=_L2R)
+    dog = _rec(50, "dog", start=2.0, end=18.0, direction=_L2R)
+    back = _rec(2, start=620.0, end=640.0, direction=_R2L)  # no dog
+    people, summary = build_people([out_, dog, back], m_per_px=0.05)
+    assert summary["dog_walkers"] == 1
+    assert summary["round_trips"] == 0
+
+    dog_back = _rec(51, "dog", start=622.0, end=638.0, direction=_R2L)
+    _, summary = build_people([out_, dog, back, dog_back], m_per_px=0.05)
+    assert summary["round_trips"] == 1
+
+
+def test_round_trip_kind_must_match() -> None:
+    # 0.1 m/px: 30 px/s -> 3.0 m/s jogger out; 15 px/s -> 1.5 m/s walker back.
+    out_ = _rec(1, start=0.0, end=20.0, direction=_L2R, speed_px_s=30.0)
+    back = _rec(2, start=620.0, end=640.0, direction=_R2L, speed_px_s=15.0)
+    _, summary = build_people([out_, back], m_per_px=0.1)
+    assert summary["round_trips"] == 0
+
+
+def test_round_trip_prefers_most_recent_outbound() -> None:
+    early = _rec(1, start=0.0, end=20.0, direction=_L2R)
+    late = _rec(2, start=300.0, end=320.0, direction=_L2R)
+    back = _rec(3, start=920.0, end=940.0, direction=_R2L)
+    people, summary = build_people([early, late, back], m_per_px=0.05)
+    by_id = {p.track_id: p for p in people}
+    assert by_id[3].round_trip_id == 2
+    assert by_id[2].round_trip_id == 2
+    assert by_id[1].round_trip_id is None
+    assert summary["round_trips"] == 1
+
+
+def test_round_trip_chance_control() -> None:
+    out_ = _rec(1, start=0.0, end=20.0, direction=_L2R)
+    back = _rec(2, start=620.0, end=640.0, direction=_R2L)
+    _, summary = build_people([out_, back], m_per_px=0.05)
+    # ~11 min of data: far too short for the time-shift control.
+    assert summary["round_trips_chance"] is None
+
+    # Stretch the session past 2x the shift window; the shifted return
+    # lands mid-gap with no partner in range, so chance = 0 while the
+    # real pairing still finds the trip.
+    filler = _rec(3, start=17000.0, end=17020.0, direction=_L2R)
+    _, summary = build_people([out_, back, filler], m_per_px=0.05)
+    assert summary["round_trips"] == 1
+    assert summary["round_trips_chance"] == 0
+
+
+def test_round_trip_spans_split_fragments() -> None:
+    a1 = _rec(1, start=0.0, end=10.0, direction=_L2R)
+    a2 = _rec(2, start=12.0, end=20.0, direction=_L2R)  # fragment of 1's walk
+    back = _rec(3, start=620.0, end=640.0, direction=_R2L)
+    people, summary = build_people([a1, a2, back], m_per_px=0.05)
+    by_id = {p.track_id: p for p in people}
+    assert by_id[1].round_trip_id == by_id[2].round_trip_id == by_id[3].round_trip_id == 1
+    assert summary["round_trips"] == 1
+
+
+# ----------------------------------------------------------------------
+# door-origin ("my walks")
+# ----------------------------------------------------------------------
+
+# Door zone in the bottom-left corner.
+_DOOR = DoorZone(polygon_frac=[[0.0, 0.7], [0.2, 0.7], [0.2, 1.0], [0.0, 1.0]])
+
+
+def test_door_origin_tags_rows_and_counts_own_trips() -> None:
+    records = [
+        _rec(1, entry=[0.1, 0.85], exit=[0.6, 0.2]),  # left the door
+        _rec(2, entry=[0.6, 0.2], exit=[0.1, 0.85]),  # back to the door
+        _rec(3, entry=[0.6, 0.2], exit=[0.4, 0.25]),  # passing
+        _rec(4),  # no entry/exit points -> unknown
+    ]
+    people, summary = build_people(records, m_per_px=0.05, door_zone=_DOOR)
+    by_id = {p.track_id: p for p in people}
+    assert by_id[1].door_origin == "originated"
+    assert by_id[2].door_origin == "returned"
+    assert by_id[3].door_origin == "passing"
+    assert by_id[4].door_origin == "unknown"
+    assert summary["own_trips"] == 2  # rows 1 and 2 touch the door
+
+
+def test_own_trips_none_without_door_zone() -> None:
+    _, summary = build_people([_rec(1, entry=[0.1, 0.85], exit=[0.6, 0.2])], m_per_px=0.05)
+    assert summary["own_trips"] is None
+    people, _ = build_people([_rec(1, entry=[0.1, 0.85])], m_per_px=0.05)
+    assert people[0].door_origin == ""  # unset when no zone configured
 
 
 # ----------------------------------------------------------------------

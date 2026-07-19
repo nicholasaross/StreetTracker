@@ -495,7 +495,136 @@ def test_people_kinds_zero_without_sidecars(tmp_path: Path) -> None:
     assert k["pct_walkers"] == 0  # no division by zero
 
 
+def _person_row(
+    tid: int,
+    date: str,
+    hhmm: str,
+    *,
+    kind: str = "walker",
+    dog: bool = False,
+    direction: str = "left to right",
+    rt: int | None = None,
+    start_unix: float = 0.0,
+) -> dict:
+    return {
+        "track_id": tid,
+        "walk_id": tid,
+        "time_start": f"{date}T{hhmm}:00+01:00",
+        "time_start_unix": start_unix,
+        "time_end_unix": start_unix + 20.0,
+        "direction": direction,
+        "num_detections": 50,
+        "kind": kind,
+        "dog_walker": dog,
+        "round_trip_id": rt,
+    }
+
+
+def _mk_people_session(
+    root: Path, name: str, rows: list[dict], *, chance: int | None = None
+) -> None:
+    d = _mk_session(root, name, [_track(1, cls="person")])
+    doc = _people_json(len(rows), 0, 0, 0)
+    doc["people"] = rows
+    if chance is not None:
+        doc["summary"]["round_trips_chance"] = chance
+    (d / f"{name}_people.json").write_text(json.dumps(doc))
+
+
+def test_round_trips_pool_with_away_median(tmp_path: Path) -> None:
+    """Paired rows (shared round_trip_id) count once, and the away time
+    is the gap between the outbound walk's end and the return's start."""
+    _mk_people_session(
+        tmp_path,
+        "session_rt",
+        [
+            _person_row(1, "2026-07-01", "08:00", rt=1, start_unix=1000.0),
+            _person_row(
+                2, "2026-07-01", "08:10", rt=1, direction="right to left", start_unix=1620.0
+            ),
+        ],
+    )
+    k = build_stats(tmp_path).people["kinds"]
+    assert k["round_trips"] == 1
+    assert k["away_min_median"] == 10.0  # (1620 - 1020) / 60
+    assert k["round_trips_est"] is None  # no chance control in the sidecar
+
+
+def test_round_trips_chance_corrected_estimate(tmp_path: Path) -> None:
+    """When sidecars carry the time-shift control, the likely-genuine
+    count is raw pairs minus the chance floor (clamped at zero)."""
+    _mk_people_session(
+        tmp_path,
+        "session_rt2",
+        [
+            _person_row(1, "2026-07-01", "08:00", rt=1, start_unix=1000.0),
+            _person_row(
+                2, "2026-07-01", "08:10", rt=1, direction="right to left", start_unix=1620.0
+            ),
+        ],
+        chance=1,
+    )
+    k = build_stats(tmp_path).people["kinds"]
+    assert k["round_trips"] == 1
+    assert k["round_trips_est"] == 0
+
+
+def test_habitual_dog_walk_slot(tmp_path: Path) -> None:
+    """Dog walks recurring near one time across >=3 dates form a slot;
+    a one-off at another time does not."""
+    _mk_people_session(
+        tmp_path,
+        "session_h",
+        [
+            _person_row(1, "2026-07-01", "07:50", dog=True, start_unix=1.0),
+            _person_row(2, "2026-07-02", "07:55", dog=True, start_unix=100.0),
+            _person_row(3, "2026-07-03", "08:00", dog=True, start_unix=200.0),
+            _person_row(4, "2026-07-03", "15:00", dog=True, start_unix=300.0),
+        ],
+    )
+    hab = build_stats(tmp_path).people["habitual"]
+    assert len(hab) == 1
+    s = hab[0]
+    assert s["kind"] == "dog walk" and s["dkey"] == "l2r"
+    assert s["time"] == "07:55"  # median of 07:50 / 07:55 / 08:00
+    assert s["days_seen"] == 3 and s["days_covered"] == 3
+    assert s["n_walks"] == 3
+
+
+def test_habitual_needs_min_days(tmp_path: Path) -> None:
+    _mk_people_session(
+        tmp_path,
+        "session_h2",
+        [
+            _person_row(1, "2026-07-01", "07:50", dog=True, start_unix=1.0),
+            _person_row(2, "2026-07-02", "07:55", dog=True, start_unix=100.0),
+        ],
+    )
+    assert build_stats(tmp_path).people["habitual"] == []
+
+
+def test_habitual_rejects_traffic_waves(tmp_path: Path) -> None:
+    """A window averaging >1.6 walks/day is a rush-hour wave, not an
+    individual habit -- consumed without producing a slot."""
+    rows = []
+    tid = 0
+    for day in ("2026-07-01", "2026-07-02", "2026-07-03"):
+        for hhmm in ("08:00", "08:10", "08:20"):  # 3 joggers/day, same window
+            tid += 1
+            rows.append(_person_row(tid, day, hhmm, kind="jogger", start_unix=float(tid * 1000)))
+    _mk_people_session(tmp_path, "session_h4", rows)
+    assert build_stats(tmp_path).people["habitual"] == []
+
+
+def test_habitual_skips_plain_walkers(tmp_path: Path) -> None:
+    """Walkers are too dense to mine -- same-time walks on many dates
+    still produce no slot (they aren't fed to the miner at all)."""
+    rows = [_person_row(i, f"2026-07-{i:02d}", "07:50", start_unix=float(i)) for i in range(1, 6)]
+    _mk_people_session(tmp_path, "session_h3", rows)
+    assert build_stats(tmp_path).people["habitual"] == []
+
+
 async def test_api_stats_includes_people(client: TestClient) -> None:
     data = await (await client.get("/api/stats")).json()
     assert "people" in data
-    assert {"total", "dow", "heatmap", "dwell"} <= data["people"].keys()
+    assert {"total", "dow", "heatmap", "dwell", "habitual"} <= data["people"].keys()

@@ -455,8 +455,10 @@ def _fire_snap(ctx: SessionContext, track: BufferedTrack, snap_index: int) -> No
     last_bbox = track.last_bbox
     if last_bbox is not None:
         track.snap_fire_bboxes[snap_index] = (
-            int(last_bbox[0]), int(last_bbox[1]),
-            int(last_bbox[2]), int(last_bbox[3]),
+            int(last_bbox[0]),
+            int(last_bbox[1]),
+            int(last_bbox[2]),
+            int(last_bbox[3]),
         )
     output_dir = ctx.output_dir
 
@@ -478,8 +480,10 @@ def _fire_snap(ctx: SessionContext, track: BufferedTrack, snap_index: int) -> No
             done_bbox = track.last_bbox
             if done_bbox is not None:
                 track.snap_done_bboxes[snap_index] = (
-                    int(done_bbox[0]), int(done_bbox[1]),
-                    int(done_bbox[2]), int(done_bbox[3]),
+                    int(done_bbox[0]),
+                    int(done_bbox[1]),
+                    int(done_bbox[2]),
+                    int(done_bbox[3]),
                 )
             # If finalize has already locked a different prefix (the
             # snap landed after the track expired), rename now. The
@@ -487,9 +491,7 @@ def _fire_snap(ctx: SessionContext, track: BufferedTrack, snap_index: int) -> No
             # because it wasn't in snap_saved_indexes yet.
             final_prefix = track.final_prefix
             if final_prefix is not None and final_prefix != fire_prefix:
-                _rename_snap_file(
-                    output_dir, track.id, snap_index, fire_prefix, final_prefix
-                )
+                _rename_snap_file(output_dir, track.id, snap_index, fire_prefix, final_prefix)
 
     task.add_done_callback(_on_done)
     track.snap_count = snap_index
@@ -543,9 +545,7 @@ def finalize_track(ctx: SessionContext, track: BufferedTrack) -> None:
     for snap_index in sorted(track.snap_saved_indexes):
         fire_prefix = track.snap_fire_prefixes.get(snap_index)
         if fire_prefix is not None and fire_prefix != final_prefix:
-            _rename_snap_file(
-                ctx.output_dir, track.id, snap_index, fire_prefix, final_prefix
-            )
+            _rename_snap_file(ctx.output_dir, track.id, snap_index, fire_prefix, final_prefix)
 
     # 2. Color vote.
     color = "unknown"
@@ -580,6 +580,7 @@ def finalize_track(ctx: SessionContext, track: BufferedTrack) -> None:
         color=color,
         t_start_wall=ctx.t_start_wall,
         main_snaps=sorted(track.snap_saved_indexes),
+        frame_w=ctx.frame_w or None,
     )
     if record is None:
         return

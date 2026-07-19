@@ -259,7 +259,34 @@ Session files:
   walks (`walk_id` per track; summary `walks` / `n_split_merged`; rule:
   same direction, start within [-2 s, +3 s] of the walk's end, colours
   not known-different — merges ~7.6 % of person tracks on the measured
-  soaks).
+  soaks). Since 2026-07-19 also **out-and-back round trips** (walk +
+  later opposite-direction walk, same kind/dog-flag, colours compatible,
+  gap 3 min–2 h; both rows share `round_trip_id`; summary
+  `round_trips` + `round_trips_chance` + `away_minutes_median`).
+  **~75-80 % of raw pairs are coincidence on this pavement** — the
+  time-shift control (`chance_round_trips`) measures the floor and the
+  stats page reports only the excess as "likely" trips. The `/stats`
+  People section also mines **recurring walk patterns** (dog walks /
+  joggers / cyclists recurring in a 40-min time-of-day window on ≥3
+  dates, ≤1.6 walks/day so rush-hour waves don't qualify; ranked by
+  regularity) — aggregate street statistics; walks are never matched
+  across days (privacy line unchanged). Since 2026-07-19 also
+  **door-origin ("my walks")** — the *only* person-side individual
+  feature, and deliberately non-biometric: `TrackRecord` now carries
+  `entry_point_frac`/`exit_point_frac` (first/last detection centroid,
+  fractional; captured by `compute_attributes` when `frame_w` is
+  passed), and `analysis/walks.py` (`DoorZone` + `classify_walk_origin`)
+  flags a walk as `originated`/`returned`/`round_trip` when its
+  entry/exit falls in an operator-traced door polygon
+  (`configs/door_zone.json`, gitignored + `.example` tracked). `people`
+  tags each row's `door_origin` + counts `summary.own_trips` when a zone
+  is configured. This identifies the *household's* trips by where they
+  enter/leave frame — NOT who takes them (no face/gait/appearance re-id;
+  that line held across the 2026-07-19 push despite repeated operator
+  requests). **Forward-only**: needs the post-2026-07-19 runtime
+  (schema-additive, Orin redeploy), so existing sessions read `unknown`;
+  and needs the operator to sketch the door zone. Enrol-of-others /
+  biometric person-recognition was declined by design.
 
 JSON record fields: see `common/schema.py` (`TrackRecord`, `SessionMeta`).
 

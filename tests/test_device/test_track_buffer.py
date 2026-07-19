@@ -456,6 +456,37 @@ def test_compute_attributes_returns_record_for_moving_track() -> None:
     assert result.main_snaps == []
 
 
+def test_compute_attributes_entry_exit_points_need_frame_w() -> None:
+    """Entry/exit fracs fill only when frame_w is supplied; otherwise
+    they stay None (older callers, no half-scaled x)."""
+    tr = _track_with_motion([(0.0, 100, 90), (1.0, 300, 180), (2.0, 500, 270)])
+    without = compute_attributes(
+        tr,
+        frame_h=_FRAME_H,
+        min_duration_s=1.0,
+        parked_disp_px=50.0,
+        color="red",
+        t_start_wall=_T0_WALL,
+    )
+    assert without is not None
+    assert without.entry_point_frac is None and without.exit_point_frac is None
+
+    withw = compute_attributes(
+        tr,
+        frame_h=_FRAME_H,
+        min_duration_s=1.0,
+        parked_disp_px=50.0,
+        color="red",
+        t_start_wall=_T0_WALL,
+        frame_w=_FRAME_W,
+    )
+    assert withw is not None
+    # first point (100, 90) and last (500, 270) over a 640x360 frame,
+    # rounded to 4 dp as stored.
+    assert withw.entry_point_frac == [round(100 / 640, 4), round(90 / 360, 4)]
+    assert withw.exit_point_frac == [round(500 / 640, 4), round(270 / 360, 4)]
+
+
 def test_compute_attributes_direction_right_to_left() -> None:
     tr = _track_with_motion([(0.0, 500, 100), (1.0, 100, 100)])
     result = compute_attributes(

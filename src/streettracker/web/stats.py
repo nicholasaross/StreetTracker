@@ -17,6 +17,14 @@ bicycle tracks (live since 2026-06-13) and dog pairing needs dog tracks
 (live since 2026-07-07); earlier sessions contribute zeros there, and
 their jogger counts include unfiltered riders.
 
+Sidecars carrying per-walk rows also feed two aggregate features:
+**round trips** (out-and-back pairs computed by ``analysis/people.py``,
+pooled here into a count + median time away) and **recurring walk
+patterns** (``_habitual_slots``: time-of-day windows where dog walks /
+joggers / cyclists recur across >= 3 distinct dates). Both are
+statistics about the street, not per-person records -- pairing is
+same-day only and patterns carry no identity.
+
 One car ``TrackRecord`` is treated as one "journey"/pass. BotSORT can split a
 single pass into two tracks, so counts are approximate -- surfaced as a caveat
 in the UI.
@@ -71,6 +79,23 @@ _FASTEST_MIN_DETECTIONS = 6
 _L2R = "left to right"
 _R2L = "right to left"
 
+# Recurring walk patterns: time-of-day clustering of walks per
+# (category, direction). Only the sparse, distinctive categories are
+# mined -- dog walks / joggers / cyclists; plain walkers are far too
+# dense for a time slot to mean anything. A slot is a
+# _HABITUAL_WINDOW_MIN-wide window hit on >= _HABITUAL_MIN_DAYS distinct
+# dates AND averaging <= _HABITUAL_MAX_WALKS_PER_DAY walks per day seen
+# -- the density guard separates "a single recurring walk" from a
+# rush-hour wave (first render without it: all 8 slots were jogger
+# waves of 150-300 walks hit ~50/55 days, drowning the dog walks).
+# These are aggregate statistics about the street ("dog walks recur
+# ~07:50"), NOT per-person records -- nothing links a walk on one day
+# to a walk on another.
+_HABITUAL_WINDOW_MIN = 40
+_HABITUAL_MIN_DAYS = 3
+_HABITUAL_MAX_SLOTS = 8
+_HABITUAL_MAX_WALKS_PER_DAY = 1.6
+
 
 @dataclass(slots=True)
 class Stats:
@@ -119,10 +144,11 @@ def _empty_people() -> dict[str, Any]:
         "heatmap": [[0] * 24 for _ in range(7)],
         "dwell": {"hist": [], "median_s": 0, "p90_s": 0},
         "kinds": _empty_kinds(),
+        "habitual": [],  # recurring time-of-day walk slots; see _habitual_slots
     }
 
 
-def _empty_kinds() -> dict[str, int]:
+def _empty_kinds() -> dict[str, Any]:
     return {
         "walkers": 0,
         "joggers": 0,
@@ -133,6 +159,9 @@ def _empty_kinds() -> dict[str, int]:
         "pct_walkers": 0,
         "pct_joggers": 0,
         "pct_cyclists": 0,
+        "round_trips": 0,  # raw out-and-back pairs (same-day candidates)
+        "round_trips_est": None,  # chance-corrected likely-genuine count
+        "away_min_median": None,  # median minutes away across those pairs
     }
 
 
@@ -155,6 +184,126 @@ def _dwell_stats(durations: list[float]) -> dict[str, Any]:
         for i, c in enumerate(counts)
     ]
     return {"hist": hist, "median_s": round(median, 1), "p90_s": round(p90, 1)}
+
+
+def _walks_from_people_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fold one session's ``people`` rows into per-walk dicts (walk_id
+    groups the BotSORT-split fragments). Category is dog walk > cyclist >
+    jogger > walker (dog wins: a jogging dog owner is a dog walk)."""
+    by_walk: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for r in rows:
+        try:
+            by_walk[int(r.get("walk_id") or r.get("track_id"))].append(r)
+        except (TypeError, ValueError):
+            continue
+    walks: list[dict[str, Any]] = []
+    for wid, frags in by_walk.items():
+        first = min(frags, key=lambda r: float(r.get("time_start_unix") or 0.0))
+        ts = first.get("time_start")
+        if not ts:
+            continue
+        try:
+            dt = datetime.fromisoformat(ts)
+        except ValueError:
+            continue
+        lead = max(frags, key=lambda r: int(r.get("num_detections") or 0))
+        kind = lead.get("kind")
+        if any(r.get("dog_walker") for r in frags):
+            cat = "dog walk"
+        elif kind in ("cyclist", "jogger"):
+            cat = kind
+        else:
+            cat = None  # plain walker: not mined for patterns
+        direction = first.get("direction")
+        rt = first.get("round_trip_id")
+        walks.append(
+            {
+                "walk_id": wid,
+                "date": dt.date().isoformat(),
+                "minute": dt.hour * 60 + dt.minute,
+                "cat": cat,
+                "dkey": "l2r" if direction == _L2R else "r2l" if direction == _R2L else None,
+                "start_unix": float(first.get("time_start_unix") or 0.0),
+                "end_unix": max(float(r.get("time_end_unix") or 0.0) for r in frags),
+                "round_trip_id": int(rt) if rt is not None else None,
+            }
+        )
+    return walks
+
+
+def _habitual_slots(
+    points: dict[tuple[str, str], list[tuple[str, int, float | None]]],
+    *,
+    window_min: int = _HABITUAL_WINDOW_MIN,
+    min_days: int = _HABITUAL_MIN_DAYS,
+    max_slots: int = _HABITUAL_MAX_SLOTS,
+) -> list[dict[str, Any]]:
+    """Mine recurring time-of-day walk slots.
+
+    ``points`` maps ``(category, dkey)`` to ``(date, minute-of-day,
+    away_minutes|None)`` tuples, one per walk. Greedy per key: slide a
+    ``window_min``-wide window over the minute-sorted points (O(n) with
+    a date counter), take the window covering the most distinct dates,
+    keep it as a slot if that's >= ``min_days`` AND it averages <=
+    ``_HABITUAL_MAX_WALKS_PER_DAY`` walks per day seen (denser windows
+    are traffic waves, not an individual's habit -- consumed but not
+    reported), remove its points and repeat. Slots report the median
+    minute, days seen vs the category's total distinct dates, and the
+    median away-time of any round trips that started in the slot.
+    """
+    cat_days: dict[str, set[str]] = defaultdict(set)
+    for (cat, _), pts in points.items():
+        cat_days[cat].update(d for d, _, _ in pts)
+
+    slots: list[dict[str, Any]] = []
+    for (cat, dkey), pts in points.items():
+        remaining = sorted(pts, key=lambda p: p[1])
+        while remaining:
+            cnt: Counter[str] = Counter()
+            j = 0
+            best_days, best_ij = 0, (0, 0)
+            for i in range(len(remaining)):
+                if i > 0:
+                    d0 = remaining[i - 1][0]
+                    cnt[d0] -= 1
+                    if not cnt[d0]:
+                        del cnt[d0]
+                while j < len(remaining) and remaining[j][1] < remaining[i][1] + window_min:
+                    cnt[remaining[j][0]] += 1
+                    j += 1
+                if (len(cnt), j - i) > (best_days, best_ij[1] - best_ij[0]):
+                    best_days, best_ij = len(cnt), (i, j)
+            if best_days < min_days:
+                break
+            window = remaining[best_ij[0] : best_ij[1]]
+            remaining = remaining[: best_ij[0]] + remaining[best_ij[1] :]
+            if len(window) / best_days > _HABITUAL_MAX_WALKS_PER_DAY:
+                continue  # a wave, not a habit -- consume and move on
+            minutes = sorted(m for _, m, _ in window)
+            med = minutes[len(minutes) // 2]
+            aways = sorted(a for _, _, a in window if a is not None)
+            slots.append(
+                {
+                    "kind": cat,
+                    "dkey": dkey,
+                    "time": f"{med // 60:02d}:{med % 60:02d}",
+                    "days_seen": best_days,
+                    "days_covered": len(cat_days[cat]),
+                    "n_walks": len(window),
+                    "away_min_median": round(aways[len(aways) // 2], 1) if aways else None,
+                }
+            )
+    # Rank by regularity (fraction of the category's covered days), not raw
+    # day count -- dog walks only have data since the dog class went live,
+    # so absolute days_seen would bury them under longer-covered categories.
+    slots.sort(
+        key=lambda s: (
+            -s["days_seen"] / max(1, s["days_covered"]),
+            -s["days_seen"],
+            s["time"],
+        )
+    )
+    return slots[:max_slots]
 
 
 def _empty_stats(unit: str) -> Stats:
@@ -223,6 +372,16 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
     p_dir = {"l2r": 0, "r2l": 0}
     p_durations: list[float] = []
     p_kinds = _empty_kinds()
+    # (category, dkey) -> (date, minute-of-day, away_minutes|None) per walk,
+    # for the recurring-pattern miner; away gaps pooled for the tile median.
+    p_habit: dict[tuple[str, str], list[tuple[str, int, float | None]]] = defaultdict(list)
+    p_away_gaps: list[float] = []
+    p_round_trips = 0
+    # Chance-match floor, summed over sessions whose sidecar carries the
+    # time-shift control (analysis/people.chance_round_trips); the
+    # likely-genuine trip count is raw minus this.
+    p_rt_chance = 0
+    p_rt_chance_known = False
 
     for d in sessions:
         name = d.name
@@ -326,9 +485,10 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
         pp = d / f"{name}_people.json"
         if pp.exists():
             try:
-                psum = json.loads(pp.read_text(encoding="utf-8")).get("summary", {})
+                pdoc = json.loads(pp.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
-                psum = {}
+                pdoc = {}
+            psum = pdoc.get("summary", {})
             p_kinds["walkers"] += int(psum.get("walkers") or 0)
             p_kinds["joggers"] += int(psum.get("joggers") or 0)
             p_kinds["cyclists"] += int(psum.get("cyclists") or 0)
@@ -337,6 +497,32 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
             # Sidecars written before walk dedup lack "walks" -- count
             # their tracks 1:1 so the walks total stays comparable.
             p_kinds["walks"] += int(psum.get("walks") or psum.get("n_person_tracks") or 0)
+            if psum.get("round_trips_chance") is not None:
+                p_rt_chance += int(psum["round_trips_chance"])
+                p_rt_chance_known = True
+
+            # Per-walk rows feed round-trip pooling + the pattern miner.
+            # Sidecars written before round trips lack these fields --
+            # they just contribute no pairs / no away times.
+            walks = _walks_from_people_rows(pdoc.get("people") or [])
+            away_by_walk: dict[int, float] = {}
+            rt_groups: dict[int, list[dict[str, Any]]] = defaultdict(list)
+            for w in walks:
+                if w["round_trip_id"] is not None:
+                    rt_groups[w["round_trip_id"]].append(w)
+            for pair in rt_groups.values():
+                if len(pair) != 2:
+                    continue
+                pair.sort(key=lambda w: w["start_unix"])
+                gap_min = (pair[1]["start_unix"] - pair[0]["end_unix"]) / 60.0
+                p_round_trips += 1
+                p_away_gaps.append(gap_min)
+                away_by_walk[pair[0]["walk_id"]] = gap_min  # outbound leg only
+            for w in walks:
+                if w["cat"] and w["dkey"]:
+                    p_habit[(w["cat"], w["dkey"])].append(
+                        (w["date"], w["minute"], away_by_walk.get(w["walk_id"]))
+                    )
 
     daily_list = [{"date": dt, **counts} for dt, counts in sorted(daily.items())]
     n_days = len(dates)
@@ -382,6 +568,12 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
     if p_kinds["classified"]:
         for k in ("walkers", "joggers", "cyclists"):
             p_kinds[f"pct_{k}"] = round(100 * p_kinds[k] / p_kinds["classified"])
+    p_kinds["round_trips"] = p_round_trips
+    p_kinds["round_trips_est"] = max(0, p_round_trips - p_rt_chance) if p_rt_chance_known else None
+    p_away_gaps.sort()
+    p_kinds["away_min_median"] = (
+        round(p_away_gaps[len(p_away_gaps) // 2], 1) if p_away_gaps else None
+    )
     people = {
         "total": p_total,
         "n_days": len(p_dates),
@@ -393,6 +585,7 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
         "heatmap": p_heatmap,
         "dwell": _dwell_stats(p_durations),
         "kinds": p_kinds,
+        "habitual": _habitual_slots(p_habit),
     }
 
     return Stats(
