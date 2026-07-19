@@ -158,6 +158,10 @@ Three browsable UIs, all dependency-free SVG/CSS:
 |---|---|---|
 | [<img src="docs/assets/screenshot_showcase.png" alt="Showcase gallery"/>](docs/assets/screenshot_showcase.png) | [<img src="docs/assets/screenshot_control.png" alt="Control panel dashboard"/>](docs/assets/screenshot_control.png) | [<img src="docs/assets/screenshot_training.png" alt="Training page with live loss/accuracy curve"/>](docs/assets/screenshot_training.png) |
 
+| Showcase — `/stats` traffic analytics |
+|---|
+| [<img src="docs/assets/stats.png" alt="Stats page: daily journeys by direction, weekday/hour heatmaps, speed distribution, top makes, vehicle colours and body types, plus people analytics" width="480"/>](docs/assets/stats.png) |
+
 *Number plates and owner tags in the gallery are pixelated for publication.*
 
 ## Output

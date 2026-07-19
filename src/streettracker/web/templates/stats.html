@@ -57,6 +57,16 @@
   .mwrap svg { width: 22px; height: 22px; display: block; }
   .mmono { width: 22px; height: 22px; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; font-size: 12px; line-height: 1; }
   .caveat { color: var(--muted); font-size: 12px; margin-top: 26px; border-top: 1px solid var(--line); padding-top: 12px; }
+  /* about / explainer */
+  .about { margin: 16px 0 6px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+  .about summary { cursor: pointer; padding: 12px 16px; font-size: 13.5px; font-weight: 600; }
+  .about summary:hover { color: var(--accent); }
+  .about .aboutbody { padding: 0 18px 12px; font-size: 13px; color: var(--muted); max-width: 880px; }
+  .about .aboutbody h4 { color: var(--text); font-size: 13.5px; margin: 16px 0 2px; }
+  .about .aboutbody p { line-height: 1.55; margin: 8px 0; }
+  .about .aboutbody ul { line-height: 1.55; margin: 8px 0; padding-left: 20px; }
+  .about .aboutbody li { margin: 5px 0; }
+  .about .aboutbody b { color: var(--text); }
 </style>
 
 {% if not stats.overall.total_journeys %}
@@ -72,6 +82,78 @@
   {% if o.peak_quarter %}<div class="tile"><div class="big">{{ o.peak_quarter.start }}</div><div class="lbl">peak 15-min ({{ o.peak_quarter.total }})</div></div>{% endif %}
 </div>
 <p class="hint" style="color:var(--muted);font-size:12.5px">Coverage: {{ o.date_from }} → {{ o.date_to }}</p>
+
+<details class="about">
+  <summary>What am I looking at? — what a "journey" is, and how to read these numbers</summary>
+  <div class="aboutbody">
+    <p>This site browses everything a single fixed street camera has recorded,
+    organised two ways: a <a href="/">gallery of identified cars</a> and this
+    statistics page for overall traffic and foot traffic.</p>
+
+    <h4>What is a "journey"?</h4>
+    <p>One journey = <b>one car passing through the camera's view once, in one
+    direction</b>. It is not a trip from A to B, and it is not one car per day.
+    If the same car drives past five times, that's five journeys. If it goes
+    down the street and comes back ten minutes later, that's two journeys (one
+    in each direction). Journeys are counted from the tracker's point of view —
+    a single continuous appearance of a vehicle in frame.</p>
+    <p>One honest caveat: the tracker occasionally loses a car mid-pass (e.g.
+    it's briefly hidden behind something) and picks it up again as a "new" car,
+    so a single real pass can very occasionally count as two journeys. Counts
+    are close, not exact.</p>
+
+    <h4>This page vs the gallery</h4>
+    <p>The stats here cast a much wider net than the gallery: they count
+    <b>every car the tracker followed</b>, whether or not a number plate was
+    ever read. That's why these numbers are far larger than the number of
+    gallery cards. The gallery shows only the identifiable minority — cars
+    whose plate was read at least once and matched against the DVSA's public
+    MOT records (that's where make, model, year, colour and fuel type come
+    from). Plates read successfully on very roughly half of passing cars
+    overall: cars travelling one way show the camera their rear plate and read
+    well, cars travelling the other way rarely read at all (camera angle, not
+    plate condition) — so the gallery skews heavily toward one direction of
+    travel. In the gallery, <b>★ Regular</b> marks a car seen on at least two
+    different calendar dates, and clicking a card opens the car's own page:
+    best photos, DVSA details, a sighting timeline, and an editable notes box
+    ("this is my car", "Nick's car") that persists locally.</p>
+
+    <h4>Reading the charts</h4>
+    <ul>
+      <li><b>Daily journeys by direction</b> — each day's traffic split into
+      left-to-right vs right-to-left. Click a day to see its 15-minute
+      profile.</li>
+      <li><b>Day-of-week and hour-of-day charts</b> — when the street is busy.
+      All times are the camera's local clock.</li>
+      <li><b>Speed</b> — estimated from how fast a car crosses the frame{% if stats.speed_unit == 'mph' %},
+      converted to mph using a single measured road length{% endif %}. Treat it
+      as indicative: it's one global conversion and ignores perspective, so
+      it's good for "faster/slower than typical", not for evidence.</li>
+      <li><b>Top makes</b> — counts <i>distinct cars</i>, and only plated ones
+      (it needs the DVSA match), so it inherits the gallery's direction skew.
+      <b>Colours</b> and <b>body types</b> count <i>journeys</i>; colour comes
+      from the tracker's own pixels, body type from DVSA where the plate is
+      known and from a shape classifier otherwise.</li>
+      <li><b>People</b> — the same treatment for pedestrians: one "walk" ≈ one
+      person passing through view once, plus a breakdown into walkers,
+      joggers, cyclists and dog-walkers. (Joggers are split from walkers by
+      speed; cyclist and dog detection were switched on partway through, so
+      older data lumps riders in with joggers and shows zero dog walks.)</li>
+    </ul>
+
+    <h4>General caveats</h4>
+    <ul>
+      <li>The camera watches <b>one fixed stretch of one street</b>. Everything
+      here is "as seen from this window", not area-wide traffic data.</li>
+      <li>Coverage isn't continuous — data exists only for the sessions that
+      were recorded and pulled, so quiet periods may mean "not recording"
+      rather than "no traffic". The stats reach further back in time than the
+      photos do, because old images are pruned while the records are kept.</li>
+      <li>No identity tracking of people is done, ever — person analytics are
+      counts and categories only, never re-identification across days.</li>
+    </ul>
+  </div>
+</details>
 
 <div class="panel stat">
   <h3>Daily journeys by direction</h3>
