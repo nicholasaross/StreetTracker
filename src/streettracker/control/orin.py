@@ -28,7 +28,7 @@ from __future__ import annotations
 import shlex
 import subprocess
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -64,6 +64,52 @@ __all__ = [
 DEFAULT_TRANSFER_MBPS = 25.0
 
 
+# The device prunes 4K snaps after roughly a week; a session's imagery is
+# gone after that, JSON aside. Sessions inside this window that aren't on the
+# dev box yet are the ones worth shouting about.
+SNAP_PRUNE_DAYS = 7.0
+
+# How many of the newest session dirs the probe inspects. Comfortably wider
+# than the prune window (a busy day can roll several sessions), while
+# keeping the per-poll cost bounded on a device holding ~60 dirs.
+RECENT_SESSIONS = 15
+
+
+@dataclass(slots=True)
+class RemoteSession:
+    """A session directory on the device, seen from the panel.
+
+    Deliberately cheap to collect: name, closed-ness and snap count come from
+    one `ls`/`find` round-trip. Byte size does NOT -- `du` on a 14 GB session
+    takes seconds -- so the size/ETA stays on the existing on-demand
+    ``pull_preview`` path.
+    """
+
+    name: str
+    is_live: bool = False
+    closed: bool = False  # a _meta.json exists, so the runtime finalised it
+    main_snaps: int | None = None
+    start_unix: float | None = None
+
+    @property
+    def age_days(self) -> float | None:
+        if self.start_unix is None:
+            return None
+        return max(0.0, (time.time() - self.start_unix) / 86400.0)
+
+    @property
+    def prune_days_left(self) -> float | None:
+        """Days until the device starts dropping this session's 4K snaps."""
+        age = self.age_days
+        return None if age is None else SNAP_PRUNE_DAYS - age
+
+    def to_json_dict(self) -> dict[str, Any]:
+        d = asdict(self)
+        d["age_days"] = self.age_days
+        d["prune_days_left"] = self.prune_days_left
+        return d
+
+
 @dataclass(slots=True)
 class OrinStatus:
     """A point-in-time read of the device, safe to serialise to the API.
@@ -81,10 +127,17 @@ class OrinStatus:
     session_runtime_s: float | None = None  # now - session_start (only while active)
     vehicle_snaps: int | None = None  # vehicle 4K snaps banked this session so far
     person_snaps: int | None = None  # person 4K snaps banked this session so far
+    # Every session_* dir on the device, newest first. The panel used to see
+    # only `live_session`, so CLOSED sessions that were never pulled were
+    # invisible -- two of them sat unpulled for days while everything visible
+    # got enriched, one of them inside the prune window (2026-07-20).
+    sessions: list[RemoteSession] = field(default_factory=list)
     error: str | None = None  # short diagnostic when unreachable
 
     def to_json_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        d["sessions"] = [s.to_json_dict() for s in self.sessions]
+        return d
 
 
 def _ssh(
@@ -151,7 +204,21 @@ _PROBE = (
     'echo "VEH $(find {parent}/"$S" -maxdepth 1 -name \'vehicle_*_main_*.jpg\''
     ' 2>/dev/null | wc -l)"; '
     'echo "PPL $(find {parent}/"$S" -maxdepth 1 -name \'person_*_main_*.jpg\''
-    ' 2>/dev/null | wc -l)"'
+    ' 2>/dev/null | wc -l)"; '
+    # One line per session dir: name, closed-ness (a _meta.json means the
+    # runtime finalised it), and its main-snap count. `find | wc -l` again
+    # rather than a glob, so a 40k-snap dir can't blow the argv limit.
+    #
+    # Capped at the newest RECENT_SESSIONS dirs. This runs on the background
+    # poller every ~45 s and each dir costs a `find`; the device holds ~60
+    # session dirs, and everything past the prune window has no snaps left to
+    # pull anyway, so walking all of them would be pure I/O on the device for
+    # rows the panel would discard.
+    "for d in $(ls -1 {parent} 2>/dev/null | grep '^session_' | sort -r | head -{recent}); do "
+    'c=$([ -f {parent}/"$d"/"$d"_meta.json ] && echo closed || echo open); '
+    "n=$(find {parent}/\"$d\" -maxdepth 1 -name '*_main_*.jpg' 2>/dev/null | wc -l); "
+    'echo "SESS $d $c $n"; '
+    "done"
 )
 
 
@@ -170,7 +237,8 @@ def orin_live_snapshot(
     reached — the poller treats that as a transient, not a crash.
     """
     now = time.time()
-    code, out, err = _ssh(host, user, key, _PROBE.format(parent=remote_parent), timeout=timeout)
+    probe = _PROBE.format(parent=remote_parent, recent=RECENT_SESSIONS)
+    code, out, err = _ssh(host, user, key, probe, timeout=timeout)
     if code != 0:
         return OrinStatus(reachable=False, checked_at=now, error=err or f"ssh exit {code}")
 
@@ -178,11 +246,28 @@ def orin_live_snapshot(
     session: str | None = None
     veh: int | None = None
     ppl: int | None = None
+    sessions: list[RemoteSession] = []
     for line in out.splitlines():
         parts = line.split(maxsplit=1)
         if len(parts) != 2:
             continue
         tag, val = parts[0], parts[1].strip()
+        if tag == "SESS":
+            bits = val.split()
+            if len(bits) >= 3:
+                try:
+                    n_snaps: int | None = int(bits[2])
+                except ValueError:
+                    n_snaps = None
+                sessions.append(
+                    RemoteSession(
+                        name=bits[0],
+                        closed=bits[1] == "closed",
+                        main_snaps=n_snaps,
+                        start_unix=parse_session_start(bits[0]),
+                    )
+                )
+            continue
         if tag == "ACTIVE":
             active = val or None
         elif tag == "SESSION":
@@ -197,6 +282,11 @@ def orin_live_snapshot(
             else:
                 ppl = count
 
+    # Only the newest dir counts as live, and only while the service is up:
+    # a stale dir from a crashed service is closed-in-practice, not recording.
+    for s in sessions:
+        s.is_live = s.name == session and active == "active"
+
     start = parse_session_start(session)
     # Runtime is only meaningful while the service is actually recording; a
     # stale dir from a crashed service would otherwise show a growing "runtime".
@@ -210,6 +300,7 @@ def orin_live_snapshot(
         session_runtime_s=runtime,
         vehicle_snaps=veh,
         person_snaps=ppl,
+        sessions=sessions,
     )
 
 
