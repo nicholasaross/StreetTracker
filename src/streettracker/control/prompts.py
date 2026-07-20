@@ -28,6 +28,30 @@ __all__ = ["JobReport", "build_prompt", "summarize_issue"]
 # scan; a nonzero count ("3 api errors") is left intact so it still trips.
 _ZERO_ERROR_COUNT_RE = re.compile(r"\b0 (?:\w+ )?errors?\b")
 
+# Third-party noise that contains the word "error" but reports a *successful
+# fallback*, not a failure. onnxruntime asks for the TensorRT execution
+# provider first, can't load it on the dev box (TensorRT is a Jetson
+# component, never installed here), prints a banner, and quietly falls back
+# to CUDA -- which is what every alpr-run / makemodel / bodytype job has
+# always used. Left unfiltered, the bare "error" catch-all below flags EVERY
+# such job as needing attention; a warning that always fires is one the
+# operator learns to ignore, which is exactly what this scanner must not
+# become. Measured 2026-07-20: a clean 442-image alpr-run (exit 0, 4.5
+# img/s, zero per-image errors) was reported as "error reported in output"
+# on the strength of these lines alone.
+#
+# Scoped deliberately to the TensorRT-provider banner. A genuine CUDA
+# failure says "cuda out of memory" or similar and is matched earlier in
+# _ISSUE_PATTERNS, so nothing real is masked by this.
+_BENIGN_LINE_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\*+\s*ep error\s*\*+", re.I),
+    re.compile(r"ep error.*tensorrt", re.I),
+    re.compile(r"please install tensorrt libraries", re.I),
+    re.compile(r"onnxruntime_providers_tensorrt\.dll", re.I),
+    re.compile(r"trygetproviderinfo_tensorrt", re.I),
+    re.compile(r"falling back to \[.*\] and retrying", re.I),
+)
+
 # Lines of captured output to embed. Enough to carry a full Python traceback
 # without burying the ask.
 DEFAULT_TAIL = 40
@@ -120,10 +144,15 @@ def summarize_issue(returncode: int | None, log_lines: list[str]) -> str | None:
     A non-zero exit always qualifies; otherwise the captured output is scanned
     for known trouble markers (traceback, OOM, config error, …) so a command
     that "succeeds" but logged an exception still surfaces.
+
+    Lines matching :data:`_BENIGN_LINE_RES` are dropped first: they carry the
+    word "error" while describing a successful fallback, and would otherwise
+    flag every GPU job on the dev box.
     """
     if returncode is not None and returncode != 0:
         return f"process exited with code {returncode}"
-    haystack = _ZERO_ERROR_COUNT_RE.sub("", "\n".join(log_lines).lower())
+    kept = [line for line in log_lines if not any(r.search(line) for r in _BENIGN_LINE_RES)]
+    haystack = _ZERO_ERROR_COUNT_RE.sub("", "\n".join(kept).lower())
     for needle, label in _ISSUE_PATTERNS:
         if needle in haystack:
             return label

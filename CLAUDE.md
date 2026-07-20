@@ -508,7 +508,9 @@ Tests at HEAD: **606 passing on Python 3.10, ruff clean.**
 All subcommands wired: `run`/`batch` go through the asyncio runtime,
 `pull`/`export-engine` ship sessions and build engines,
 `alpr-run`/`alpr-score`/`alpr-label`/`alpr-report` available under the
-`alpr` extra (`uv sync --extra alpr`), `vehicles` runs the
+`alpr` extra (**`uv sync --extra alpr --extra dev`** — extras are not
+additive, so syncing with only `alpr` *uninstalls* pytest/ruff/mypy),
+`vehicles` runs the
 plate-anchored aggregator. Place the bespoke detector at
 `src/streettracker/analysis/alpr/models/license_plate_detector.pt`
 (gitignored).

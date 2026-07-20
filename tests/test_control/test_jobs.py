@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import sys
 
-from streettracker.control.jobs import JobRunner, JobSpec, _lane_for
+from streettracker.control.jobs import DEFAULT_BASE_ARGV, JobRunner, JobSpec, _lane_for
 
 PY = sys.executable
 
@@ -207,3 +207,16 @@ async def test_pull_byte_watcher_tracks_local_dir(tmp_path: object) -> None:
     prog = job.snapshot()["progress"]
     assert prog["frac"] == 1.0
     assert prog["bytes_human"]  # "1000.0 B / 1000.0 B"
+
+
+def test_default_base_argv_skips_the_env_sync() -> None:
+    """The panel is itself a `uv run streettracker control` process, so it
+    holds .venv/Scripts/streettracker.exe open. A plain `uv run` job would
+    try to re-sync, fail to replace that file, and exit 2 in ~0s -- the
+    panel breaking every one of its own jobs. Hit for real 2026-07-20
+    after a deploy changed the source.
+    """
+    assert DEFAULT_BASE_ARGV == ["uv", "run", "--no-sync", "streettracker"]
+    assert "--no-sync" in DEFAULT_BASE_ARGV
+    # Order matters: uv's own flags must precede the command name.
+    assert DEFAULT_BASE_ARGV.index("--no-sync") < DEFAULT_BASE_ARGV.index("streettracker")
