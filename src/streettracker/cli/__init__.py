@@ -110,6 +110,14 @@ def main(argv: list[str] | None = None) -> int:
         from streettracker.analysis.identity import enrol_main
 
         return enrol_main(rest)
+    if head == "identity-review":
+        from streettracker.analysis.identity_queue import review_main
+
+        return review_main(rest)
+    if head == "identity-forget":
+        from streettracker.analysis.identity_queue import forget_main
+
+        return forget_main(rest)
     if head == "pull":
         from streettracker.cli.pull import main as pull_main
 

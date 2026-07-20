@@ -334,6 +334,8 @@ def identify_session(
     margin: float = DEFAULT_MARGIN,
     min_face_px: int = MIN_FACE_PX,
     door_only: bool = True,
+    queue: Any | None = None,
+    declined: Any | None = None,
 ) -> dict[str, Any]:
     """Identify every person track in one session that has 4K imagery.
 
@@ -363,6 +365,7 @@ def identify_session(
     zone = DoorZone.load() if door_only else None
     matches: list[FaceMatch] = []
     n_considered = 0
+    n_queued = 0
     for rec in records:
         if rec.get("class_name") != "person" or rec.get("class_suspect"):
             continue
@@ -386,9 +389,31 @@ def identify_session(
             faces.extend(
                 faces_in_image(app, image, min_face_px=min_face_px, snap_index=snap_index)
             )
-        matches.append(
-            identify_track(faces, gallery, track_id, threshold=threshold, margin=margin)
-        )
+        match = identify_track(faces, gallery, track_id, threshold=threshold, margin=margin)
+        matches.append(match)
+
+        # Unrecognised faces go to the review queue for consent-gated
+        # enrolment -- unless they belong to a cluster already declined,
+        # which is matched ONLY to suppress the prompt. A declined face
+        # is never named: `match` stays unknown either way, because
+        # nothing here consults declined.json to resolve a label.
+        if queue is not None and match.label == UNKNOWN and faces:
+            best_face = max(faces, key=lambda f: f.width_px)
+            if declined is None or not declined.matches(best_face.embedding):
+                crop = None
+                if best_face.snap_index is not None:
+                    crop = str(session_dir / f"{prefix}_{track_id}_main_{best_face.snap_index}.jpg")
+                queue.add_sighting(
+                    best_face.embedding,
+                    {
+                        "track_id": track_id,
+                        "session": name,
+                        "time_start": rec.get("time_start", ""),
+                        "face_px": best_face.width_px,
+                    },
+                    crop_path=crop,
+                )
+                n_queued += 1
 
     by_label: dict[str, int] = {}
     for m in matches:
@@ -400,6 +425,7 @@ def identify_session(
         "margin": margin,
         "door_only": door_only,
         "n_tracks_considered": n_considered,
+        "n_queued_for_review": n_queued,
         "summary": by_label,
         "tracks": [m.to_json_dict() for m in matches],
     }
@@ -430,7 +456,15 @@ def _cmd_identify(args: argparse.Namespace) -> int:
         print("  uv run streettracker identity-enrol <name> <crop.jpg> ...")
         return 1
 
+    from streettracker.analysis.identity_queue import (
+        DECLINED_FILE,
+        PENDING_FILE,
+        ClusterStore,
+    )
+
     session_dir = Path(args.session_dir)
+    queue = None if args.no_queue else ClusterStore.load(PENDING_FILE, args.gallery)
+    declined = ClusterStore.load(DECLINED_FILE, args.gallery)
     doc = identify_session(
         session_dir,
         gallery,
@@ -438,7 +472,11 @@ def _cmd_identify(args: argparse.Namespace) -> int:
         margin=args.margin,
         min_face_px=args.min_face_px,
         door_only=not args.all_people,
+        queue=queue,
+        declined=declined,
     )
+    if queue is not None:
+        queue.save(args.gallery)
     out_path = session_dir / f"{session_dir.name}_identity.json"
     out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
 
@@ -446,6 +484,11 @@ def _cmd_identify(args: argparse.Namespace) -> int:
     print(f"  gallery: {', '.join(doc['gallery_labels'])}")
     scope = "all person tracks" if args.all_people else "door-zone tracks only"
     print(f"  scope: {scope}   considered: {doc['n_tracks_considered']}")
+    if doc.get("n_queued_for_review"):
+        print(
+            f"  {doc['n_queued_for_review']} unrecognised face(s) queued for review -> "
+            "streettracker identity-review"
+        )
     for label, n in sorted(doc["summary"].items(), key=lambda kv: -kv[1]):
         print(f"    {label:<20s} {n}")
     if doc["n_tracks_considered"] and not any(
@@ -468,6 +511,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--threshold", type=float, default=DEFAULT_MATCH_THRESHOLD)
     ap.add_argument("--margin", type=float, default=DEFAULT_MARGIN)
     ap.add_argument("--min-face-px", type=int, default=MIN_FACE_PX)
+    ap.add_argument(
+        "--no-queue",
+        action="store_true",
+        help="don't add unrecognised faces to the consent review queue",
+    )
     ap.add_argument(
         "--all-people",
         action="store_true",
