@@ -1319,3 +1319,105 @@ def test_door_snap_index_does_not_collide_with_other_paths() -> None:
         assert dec.snap_index not in seen
         seen.add(dec.snap_index)
     assert seen == {1, 2, 3}
+
+
+# ----------------------------------------------------------------------
+# Approach-band snaps.
+#
+# Measured on the 2026-07-20 door trips: in-zone snaps land ~0.05-0.10
+# LATE for an arrival (subject has stopped, facing the door) and 0.08-
+# 0.35 EARLY for a departure (walking away from the lens). 13 in-zone
+# snaps produced no usable faces. Firing before the door, only while
+# closing on it, is what puts a shot where the subject still faces the
+# camera.
+
+# Approaching x positions in an 896-wide frame: 0.55 and 0.60.
+def _approach_bbox(x_frac: float) -> tuple[float, float, float, float]:
+    cx = x_frac * 896
+    return (cx - 16, 200.0, cx + 16, 300.0)
+
+
+def test_approach_fires_when_closing_on_the_door() -> None:
+    planner = _door_planner()
+    # First frame establishes direction; the second is the approach.
+    planner.consider_door(1, _approach_bbox(0.55), wall_ms=0.0, is_person=True)
+    dec = planner.consider_door(1, _approach_bbox(0.60), wall_ms=500.0, is_person=True)
+    assert dec.should_fire
+    assert dec.reason == "door_approach"
+
+
+def test_approach_does_not_fire_when_walking_away() -> None:
+    """A departure is unrecoverable -- the subject walks away from the
+    lens -- so firing at one only spends the shared HTTP budget."""
+    planner = _door_planner()
+    planner.consider_door(1, _approach_bbox(0.70), wall_ms=0.0, is_person=True)
+    dec = planner.consider_door(1, _approach_bbox(0.62), wall_ms=500.0, is_person=True)
+    assert not dec.should_fire
+
+
+def test_approach_needs_two_frames_to_know_direction() -> None:
+    planner = _door_planner()
+    dec = planner.consider_door(1, _approach_bbox(0.60), wall_ms=0.0, is_person=True)
+    assert not dec.should_fire
+
+
+def test_approach_band_is_derived_from_the_zone() -> None:
+    planner = _door_planner()
+    lo, hi = planner.door_approach_band()
+    assert hi == pytest.approx(0.76)
+    assert lo == pytest.approx(0.50)
+    assert planner.door_is_right()
+
+
+def test_approach_band_flips_for_a_left_hand_door() -> None:
+    """Derived from the zone, so an install with the door at the left
+    edge gets a band on its right and the opposite motion test."""
+    left = DoorZone(polygon_frac=[[0.0, 0.0], [0.2, 0.0], [0.2, 1.0], [0.0, 1.0]])
+    planner = SnapPlanner(frame_width=896, frame_height=512, door_zone=left)
+    lo, hi = planner.door_approach_band()
+    assert not planner.door_is_right()
+    assert lo == pytest.approx(0.2)
+    assert hi == pytest.approx(0.46)
+    planner.consider_door(1, _approach_bbox(0.40), wall_ms=0.0, is_person=True)
+    dec = planner.consider_door(1, _approach_bbox(0.30), wall_ms=500.0, is_person=True)
+    assert dec.should_fire and dec.reason == "door_approach"
+
+
+def test_approach_and_zone_budgets_are_separate() -> None:
+    """A subject lingering at the door must not starve the face shots."""
+    planner = _door_planner(door_approach_max_per_track=2, door_max_per_track=2)
+    wall = 0.0
+    planner.consider_door(1, _approach_bbox(0.52), wall_ms=wall, is_person=True)
+    for x in (0.56, 0.60):
+        wall += 500.0
+        assert planner.consider_door(1, _approach_bbox(x), wall_ms=wall, is_person=True).should_fire
+    wall += 500.0
+    spent = planner.consider_door(1, _approach_bbox(0.65), wall_ms=wall, is_person=True)
+    assert spent.reason == "door_budget_exhausted"
+    # The in-zone budget is untouched by the approach spend.
+    wall += 500.0
+    assert planner.consider_door(1, _IN_DOOR_BBOX, wall_ms=wall, is_person=True).should_fire
+
+
+def test_snap_indexes_never_collide_across_approach_and_zone() -> None:
+    planner = _door_planner()
+    seen, wall = [], 0.0
+    planner.consider_door(9, _approach_bbox(0.52), wall_ms=wall, is_person=True)
+    for x in (0.56, 0.62):
+        wall += 500.0
+        d = planner.consider_door(9, _approach_bbox(x), wall_ms=wall, is_person=True)
+        if d.should_fire:
+            seen.append(d.snap_index)
+    for _ in range(2):
+        wall += 800.0
+        d = planner.consider_door(9, _IN_DOOR_BBOX, wall_ms=wall, is_person=True)
+        if d.should_fire:
+            seen.append(d.snap_index)
+    assert len(seen) == len(set(seen))
+
+
+def test_approach_ignores_non_persons() -> None:
+    planner = _door_planner()
+    planner.consider_door(1, _approach_bbox(0.55), wall_ms=0.0, is_person=False)
+    dec = planner.consider_door(1, _approach_bbox(0.60), wall_ms=500.0, is_person=False)
+    assert not dec.should_fire
