@@ -115,3 +115,48 @@ def test_build_prompt_unknown_kind_has_no_hint_but_still_valid() -> None:
     text = build_prompt(_report(kind="recolor", command="uv run streettracker recolor x"))
     assert "uv run streettracker recolor x" in text
     assert "CLAUDE.md" in text
+
+
+# ----------------------------------------------------------------------
+# Benign third-party banners must not be reported as issues.
+#
+# onnxruntime asks for the TensorRT execution provider, fails to load it on
+# the dev box (TensorRT is a Jetson component), prints a banner containing
+# "EP Error", and falls back to CUDA. Measured 2026-07-20: a clean
+# 442-image alpr-run (exit 0, zero per-image errors) was flagged as "error
+# reported in output" purely on these lines.
+
+_TENSORRT_BANNER = [
+    "2026-07-20 21:37:27 [E:onnxruntime:Default, provider_bridge_ort.cc:1978 "
+    "onnxruntime::TryGetProviderInfo_TensorRT] LoadLibrary failed with error 126 "
+    'when trying to load "onnxruntime_providers_tensorrt.dll"',
+    "*************** EP Error ***************",
+    "EP Error ... RegisterTensorRTPluginsAsCustomOps Please install TensorRT libraries",
+    "when using ['TensorrtExecutionProvider', 'CUDAExecutionProvider']",
+    "Falling back to ['CUDAExecutionProvider', 'CPUExecutionProvider'] and retrying.",
+    "  [preferred] 442/442 done",
+    "[alpr] wrote output/session_x/session_x_alpr.json",
+]
+
+
+def test_tensorrt_fallback_banner_is_not_an_issue() -> None:
+    assert summarize_issue(0, _TENSORRT_BANNER) is None
+
+
+def test_real_trouble_still_surfaces_alongside_the_banner() -> None:
+    """Filtering the banner must not deafen the scanner to a real fault
+    in the same run."""
+    lines = [*_TENSORRT_BANNER, "RuntimeError: CUDA out of memory. Tried to allocate 2.00 GiB"]
+    assert summarize_issue(0, lines) == "CUDA out of memory"
+
+    lines = [*_TENSORRT_BANNER, "Traceback (most recent call last):"]
+    assert summarize_issue(0, lines) == "Python traceback in output"
+
+
+def test_nonzero_exit_still_wins_over_the_filter() -> None:
+    assert summarize_issue(2, _TENSORRT_BANNER) == "process exited with code 2"
+
+
+def test_an_unrelated_error_line_is_still_reported() -> None:
+    lines = [*_TENSORRT_BANNER, "error: could not open ghost mask"]
+    assert summarize_issue(0, lines) == "error reported in output"
