@@ -114,7 +114,75 @@
         <div class="metric"><div class="k">people snaps <span class="info" title="Person 4K snaps captured this session so far.">i</span></div><div class="v">${fmtInt(o.person_snaps)}</div></div>
       </div>`;
     h += pullEstLine(o.live_session, now);
+    h += remoteSessionsHtml(o);
     return h;
+  }
+
+  // Sessions on the device, with what's already local. Before this existed the
+  // panel showed only the LIVE session, so a closed session that was never
+  // pulled was invisible -- two sat unpulled for days while everything the
+  // panel did show got enriched, one of them inside the prune window.
+  function remoteSessionsHtml(o){
+    const all = o.sessions || [];
+    // Nothing to pull once the device has pruned a session's 4K snaps.
+    const rows = all.filter(s => (s.main_snaps || 0) > 0);
+    if (!rows.length) return "";
+    // "Local" means the SNAPS are here, not merely that a directory exists:
+    // a session dir holding only its JSON looks pulled and isn't. That exact
+    // trap hid an unpulled session behind a 1-file directory.
+    const localSnaps = new Map(((__last && __last.local && __last.local.sessions) || [])
+      .map(s => [s.label, (s.n_vehicle_snaps || 0) + (s.n_person_snaps || 0)]));
+
+    let h = `<div class="kv" style="margin-top:16px"><span class="k">on the device</span>
+      <span class="muted">${rows.length} session(s) with 4K snaps</span></div>
+      <table class="tbl" style="margin-top:6px"><thead><tr>
+        <th>session</th><th class="num">snaps</th><th>pruned in</th><th>local</th><th></th>
+      </tr></thead><tbody>`;
+
+    for (const s of rows){
+      const nLocal = localSnaps.get(s.name) || 0;
+      const remote = s.main_snaps || 0;
+      // A live session keeps growing, so "complete" can only ever be
+      // approximate; treat >=95% as done to avoid nagging about a few frames.
+      const here = nLocal > 0 && nLocal >= remote * 0.95;
+      const partial = nLocal > 0 && !here;
+      const left = s.prune_days_left;
+      // Urgency is about losing imagery you haven't copied yet; an already
+      // pulled session expiring on the device costs nothing.
+      let cls = "muted", txt = "—";
+      if (left !== null && left !== undefined){
+        txt = left <= 0 ? "expired" : (left < 1 ? Math.round(left*24) + "h" : left.toFixed(1) + "d");
+        if (!here && left <= 1) cls = "bad";
+        else if (!here && left <= 3) cls = "warn";
+      }
+      const state = here ? '<span class="ok">pulled</span>'
+                  : (partial ? `<span class="warn">partial ${fmtInt(nLocal)}/${fmtInt(remote)}</span>`
+                             : '<span class="warn">not pulled</span>');
+      const btn = here
+        ? `<button class="btn sm" onclick="pullSession('${esc(s.name)}')" title="Re-pull: fetches only files missing locally">re-pull</button>`
+        : `<button class="btn sm primary" onclick="pullSession('${esc(s.name)}')">${partial ? "resume" : "pull"}</button>`;
+      h += `<tr>
+        <td class="mono" style="white-space:nowrap">${esc(s.name)}${s.is_live ? ' <span class="pill"><span class="dot live"></span>live</span>' : (s.closed ? "" : ' <span class="muted">(open)</span>')}</td>
+        <td class="num">${fmtInt(s.main_snaps)}</td>
+        <td class="${cls}">${txt}</td>
+        <td>${state}</td>
+        <td>${btn}</td>
+      </tr>`;
+    }
+    return h + "</tbody></table>";
+  }
+
+  // --only-main --skip-existing matches how every pull in this project is run:
+  // main snaps are the analysis inputs, and snaps are write-once so an
+  // incremental re-pull is cheap and safe on a still-growing session.
+  async function pullSession(name){
+    try {
+      await fetchJSON("/api/jobs", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({kind:"pull",
+          args:["--session", name, "--only-main", "--skip-existing"],
+          label:"pull " + name})});
+      pollNow();
+    } catch(e){ alert("pull failed to start: " + e.message); }
   }
 
   // ---------- Model & corpus panel ----------
