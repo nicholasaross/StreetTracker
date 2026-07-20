@@ -182,6 +182,10 @@ class SessionContext:
     pipeline_fires_total: int = 0
     pipeline_throttled: int = 0
     pipeline_budget_exhausted: int = 0
+    # Door-zone 4K fires (see SnapPlanner.consider_door). Counted apart
+    # from the pipeline so the operator can see door coverage arriving
+    # without it being masked by road traffic volume.
+    door_fires_total: int = 0
     # Per-track pipeline stats captured at finalize-time (so each entry
     # corresponds to a single track's complete visible history). At
     # session end we render p50/p90/max distributions into snap_stats.
@@ -370,12 +374,14 @@ def _maybe_lazy_init_planner(ctx: SessionContext) -> None:
             post_fire_cooldown_frames=cfg.post_fire_cooldown_frames,
             road_gate=road_gate,
         ),
+        door_zone=ctx.door_zone,
     )
     logger.info(
-        "[runtime] SnapPlanner initialized (%dx%d, mode=%s)",
+        "[runtime] SnapPlanner initialized (%dx%d, mode=%s, door_snaps=%s)",
         ctx.frame_w,
         ctx.frame_h,
         "road_gate" if road_gate is not None else "right_half",
+        "on" if ctx.door_zone is not None else "off",
     )
 
 
@@ -784,6 +790,27 @@ async def process_frame(
                 pipe_dec.snap_index,
             )
             _fire_snap(ctx, tr, pipe_dec.snap_index)
+
+    # Door-zone snapping. Third pass, and deliberately outside the
+    # `snap_gate`/pipeline enable checks above: the door sits outside the
+    # road polygon, so those paths never fire there and door users banked
+    # no 4K imagery at all. Only runs when a door zone is configured.
+    if ctx.planner is not None and ctx.door_zone is not None and ctx.snapshotter is not None:
+        for tr in ctx.buffer.active():
+            if not tr.points:
+                continue
+            p = tr.points[-1]
+            door_dec = ctx.planner.consider_door(
+                track_id=tr.id,
+                bbox=(p.x1, p.y1, p.x2, p.y2),
+                wall_ms=wall_ms,
+                is_person=class_name(tr.class_id) == "person",
+            )
+            if not door_dec.should_fire or door_dec.snap_index is None:
+                continue
+            ctx.door_fires_total += 1
+            logger.info("[snap] track %d door fire %d", tr.id, door_dec.snap_index)
+            _fire_snap(ctx, tr, door_dec.snap_index)
 
     # Idle HTML regen.
     now = time.monotonic()

@@ -62,6 +62,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from streettracker.common.door_zone import DoorZone
+
 # ----------------------------------------------------------------------
 # Trigger reason strings -- one Literal alias for type narrowing on the
 # decision record.
@@ -88,7 +90,20 @@ SnapReason = Literal[
     "pipeline",
     "pipeline_throttled",
     "pipeline_budget_exhausted",
+    # Door-zone firing path (see SnapPlanner.consider_door). Separate
+    # from both paths above because the door sits outside the road
+    # polygon, where neither of them ever fires.
+    "door",
+    "door_throttled",
+    "door_budget_exhausted",
 ]
+
+# Door-zone snap defaults. A doorway subject is near-stationary and
+# close to the lens, so a slower cadence than the road pipeline's 400 ms
+# still yields several distinct views (different head pose / occlusion)
+# without burning the shared HTTP semaphore the road ANPR needs.
+DOOR_SNAP_INTERVAL_MS = 700.0
+DOOR_SNAP_MAX_PER_TRACK = 6
 
 
 # Per-trigger direction filter for road-gate mode.
@@ -265,6 +280,11 @@ class _TrackState:
     # managed by the trigger-crossing path and advanced to the trigger
     # position after a fire (not to the actual previous frame's t').
     prev_pipeline_tp: float | None = None
+    # Door-zone state. Door snaps are a separate budget from both the
+    # trigger and pipeline paths: the door sits OUTSIDE the road polygon,
+    # so neither of those ever fires there.
+    door_fires: int = 0
+    last_door_submit_wall_ms: float = 0.0
 
 
 # ----------------------------------------------------------------------
@@ -649,6 +669,12 @@ class SnapPlanner:
     frame_width: int
     frame_height: int
     config: SnapPlannerConfig = field(default_factory=SnapPlannerConfig)
+    # Door-zone snapping (see ``consider_door``). Supplied by the runtime
+    # from configs/door_zone.json rather than camera.json, so enabling it
+    # needs no schema-additive config change.
+    door_zone: DoorZone | None = None
+    door_interval_ms: float = DOOR_SNAP_INTERVAL_MS
+    door_max_per_track: int = DOOR_SNAP_MAX_PER_TRACK
     _state: dict[int, _TrackState] = field(default_factory=dict, init=False, repr=False)
     _road_gate: RoadGate | None = field(default=None, init=False, repr=False)
 
@@ -870,6 +896,59 @@ class SnapPlanner:
         # detected on subsequent frames.
         st.prev_t_prime = gate.triggers_t_prime[trig_idx]
         return SnapDecision(True, "trigger_crossing", score, st.fires_committed + st.pipeline_fires)
+
+    def consider_door(
+        self,
+        track_id: int,
+        bbox: tuple[float, float, float, float],
+        wall_ms: float,
+        is_person: bool,
+    ) -> SnapDecision:
+        """Fire 4K snaps for a person standing in the door zone.
+
+        A third, independent path, because the door sits **outside** the
+        road polygon: both the trigger and pipeline gates reject it
+        (``outside_road_polygon``), so door users were getting no 4K
+        imagery at all -- measured on session_20260717_144655, the track
+        of someone answering the door banked zero snaps while a visitor
+        walking up the pavement banked six. The sub-stream tile/hq crops
+        that remain carry a ~40-60 px oblique face, which is below what
+        identity work needs; the 4K snap at this range gives ~130-200 px.
+
+        Person-only and deliberately cheap: a fire every
+        ``door_interval_ms`` up to ``door_max_per_track``, no sharpness
+        gate (a doorway subject is near-stationary, so motion blur isn't
+        the failure mode) and no area threshold. Returns reason
+        ``"door"`` on a fire, ``"door_throttled"`` /
+        ``"door_budget_exhausted"`` when gated, and ``"out_of_gate"``
+        when there is no door zone or the subject isn't a person in it.
+        """
+        if self.door_zone is None or not is_person:
+            return SnapDecision(False, "out_of_gate", 0.0)
+        if self.door_interval_ms <= 0 or self.door_max_per_track <= 0:
+            return SnapDecision(False, "out_of_gate", 0.0)
+
+        cx = (bbox[0] + bbox[2]) * 0.5
+        cy = (bbox[1] + bbox[3]) * 0.5
+        point = [cx / self.frame_width, cy / self.frame_height]
+        if not self.door_zone.contains(point):
+            return SnapDecision(False, "out_of_gate", 0.0)
+
+        st = self._state.get(track_id)
+        if st is None:
+            st = _TrackState()
+            self._state[track_id] = st
+
+        if st.door_fires >= self.door_max_per_track:
+            return SnapDecision(False, "door_budget_exhausted", 0.0)
+        elapsed = wall_ms - st.last_door_submit_wall_ms
+        if st.last_door_submit_wall_ms > 0.0 and elapsed < self.door_interval_ms:
+            return SnapDecision(False, "door_throttled", 0.0)
+
+        st.door_fires += 1
+        st.last_door_submit_wall_ms = wall_ms
+        index = st.fires_committed + st.pipeline_fires + st.door_fires
+        return SnapDecision(True, "door", 1.0, index)
 
     def consider_pipeline(
         self,

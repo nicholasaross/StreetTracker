@@ -11,6 +11,7 @@ from collections.abc import Iterator
 
 import pytest
 
+from streettracker.common.door_zone import DoorZone
 from streettracker.device.snap_planner import (
     RoadGate,
     RoadGateConfig,
@@ -1233,3 +1234,88 @@ def test_pipeline_base_band_unchanged_without_overrides() -> None:
             wall_ms=1000.0 * (f + 1),
         )
         assert d.should_fire is expect, f"t={t}: {d.reason}"
+
+
+# ----------------------------------------------------------------------
+# Door-zone snapping (consider_door).
+#
+# The door sits OUTSIDE the road polygon, so the trigger and pipeline
+# paths both reject it -- measured on session_20260717_144655, someone
+# answering the door banked zero 4K snaps. Identity work needs the 4K
+# view (a sub-stream crop carries a ~40-60 px oblique face; the 4K snap
+# at door range gives ~130-200 px), so this is its own firing path.
+
+_DOOR_ZONE = DoorZone(polygon_frac=[[0.76, 0.0], [1.0, 0.0], [1.0, 1.0], [0.76, 1.0]])
+
+# Planner frame is 896x512 (the live sub-stream). A bbox centred at
+# x=0.9 of the width sits inside the zone; x=0.4 is mid-road.
+_IN_DOOR_BBOX = (790.0, 200.0, 822.0, 300.0)
+_MID_ROAD_BBOX = (340.0, 200.0, 372.0, 300.0)
+
+
+def _door_planner(**kw: object) -> SnapPlanner:
+    return SnapPlanner(frame_width=896, frame_height=512, door_zone=_DOOR_ZONE, **kw)  # type: ignore[arg-type]
+
+
+def test_door_fires_for_a_person_in_the_zone() -> None:
+    planner = _door_planner()
+    dec = planner.consider_door(1, _IN_DOOR_BBOX, wall_ms=1000.0, is_person=True)
+    assert dec.should_fire
+    assert dec.reason == "door"
+    assert dec.snap_index == 1
+
+
+def test_door_ignores_non_persons() -> None:
+    """A car at the frame edge must not burn door snaps."""
+    planner = _door_planner()
+    dec = planner.consider_door(1, _IN_DOOR_BBOX, wall_ms=1000.0, is_person=False)
+    assert not dec.should_fire
+    assert dec.reason == "out_of_gate"
+
+
+def test_door_ignores_people_outside_the_zone() -> None:
+    planner = _door_planner()
+    dec = planner.consider_door(1, _MID_ROAD_BBOX, wall_ms=1000.0, is_person=True)
+    assert not dec.should_fire
+    assert dec.reason == "out_of_gate"
+
+
+def test_door_is_off_without_a_zone() -> None:
+    planner = SnapPlanner(frame_width=896, frame_height=512)
+    dec = planner.consider_door(1, _IN_DOOR_BBOX, wall_ms=1000.0, is_person=True)
+    assert not dec.should_fire
+
+
+def test_door_throttles_within_the_interval() -> None:
+    planner = _door_planner(door_interval_ms=700.0)
+    assert planner.consider_door(1, _IN_DOOR_BBOX, wall_ms=1000.0, is_person=True).should_fire
+    gated = planner.consider_door(1, _IN_DOOR_BBOX, wall_ms=1300.0, is_person=True)
+    assert not gated.should_fire
+    assert gated.reason == "door_throttled"
+    assert planner.consider_door(1, _IN_DOOR_BBOX, wall_ms=1800.0, is_person=True).should_fire
+
+
+def test_door_respects_the_per_track_budget() -> None:
+    planner = _door_planner(door_interval_ms=100.0, door_max_per_track=2)
+    wall = 0.0
+    for _ in range(2):
+        wall += 500.0
+        assert planner.consider_door(1, _IN_DOOR_BBOX, wall_ms=wall, is_person=True).should_fire
+    wall += 500.0
+    spent = planner.consider_door(1, _IN_DOOR_BBOX, wall_ms=wall, is_person=True)
+    assert not spent.should_fire
+    assert spent.reason == "door_budget_exhausted"
+
+
+def test_door_snap_index_does_not_collide_with_other_paths() -> None:
+    """Door fires share the per-track filename ordinal with trigger and
+    pipeline fires, so an index must never be reused."""
+    planner = _door_planner(door_interval_ms=100.0)
+    seen = set()
+    wall = 0.0
+    for _ in range(3):
+        wall += 500.0
+        dec = planner.consider_door(7, _IN_DOOR_BBOX, wall_ms=wall, is_person=True)
+        assert dec.snap_index not in seen
+        seen.add(dec.snap_index)
+    assert seen == {1, 2, 3}
