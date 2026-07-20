@@ -911,9 +911,11 @@ class SnapPlanner:
         (``outside_road_polygon``), so door users were getting no 4K
         imagery at all -- measured on session_20260717_144655, the track
         of someone answering the door banked zero snaps while a visitor
-        walking up the pavement banked six. The sub-stream tile/hq crops
-        that remain carry a ~40-60 px oblique face, which is below what
-        identity work needs; the 4K snap at this range gives ~130-200 px.
+        walking up the pavement banked six -- so door-origin trips, the
+        household's own, were the one population with no 4K record at
+        all. The sub-stream tile/hq crop that remains is small and
+        oblique; the 4K snap at this range is an order of magnitude
+        richer.
 
         Person-only and deliberately cheap: a fire every
         ``door_interval_ms`` up to ``door_max_per_track``, no sharpness

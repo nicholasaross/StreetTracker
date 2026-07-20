@@ -84,3 +84,8 @@ configs/door_zone.json
 !.claude/road_polygon.json
 !.claude/reolink_isp_current.json
 !.claude/sketch_me_done.png
+
+# Untracked, dev-box-only work (see private/README.md). Deliberately a
+# single broad rule placed AFTER the .claude negations above, so nothing
+# inside can be re-included by an earlier pattern.
+private/
