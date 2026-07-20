@@ -49,7 +49,24 @@ logger = logging.getLogger(__name__)
 
 # How the runner invokes the project CLI. Overridable so tests can drive a
 # trivial python child instead of the real `uv run streettracker`.
-DEFAULT_BASE_ARGV = ["uv", "run", "streettracker"]
+#
+# ``--no-sync`` is load-bearing, not a nicety. Plain ``uv run`` re-syncs the
+# environment first, and when the project itself needs reinstalling that
+# means replacing ``.venv/Scripts/streettracker.exe`` -- a file the running
+# panel is itself holding open, because the panel *is* a `uv run
+# streettracker control` process. So the panel would break every one of its
+# own jobs with
+#
+#     error: failed to remove file `...\Scripts\streettracker.exe`:
+#     The process cannot access the file because it is being used by
+#     another process. (os error 32)
+#
+# Hit for real on 2026-07-20: every panel job failed with exit code 2 and
+# ~0s runtime after a deploy changed the source. The dependency install is
+# an operator step (`uv sync --extra alpr`), deliberately not something a
+# job does implicitly -- the same reason the Orin's systemd unit passes
+# ``--no-sync``.
+DEFAULT_BASE_ARGV = ["uv", "run", "--no-sync", "streettracker"]
 
 _LOG_MAXLEN = 500  # ring-buffer of recent output lines kept per job
 _TAIL = 40  # lines embedded in the help prompt / surfaced in the snapshot
