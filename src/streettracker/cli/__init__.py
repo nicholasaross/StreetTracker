@@ -102,6 +102,14 @@ def main(argv: list[str] | None = None) -> int:
         from streettracker.analysis.people import main as people_main
 
         return people_main(rest)
+    if head == "identify":
+        from streettracker.analysis.identity import main as identify_main
+
+        return identify_main(rest)
+    if head == "identity-enrol":
+        from streettracker.analysis.identity import enrol_main
+
+        return enrol_main(rest)
     if head == "pull":
         from streettracker.cli.pull import main as pull_main
 

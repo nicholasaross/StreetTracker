@@ -55,6 +55,18 @@ alpr = [
     # cp310 wheels; later versions are cp311+ only.
     "onnxruntime-gpu>=1.18,<1.20",
 ]
+# Face-based per-person identity for door users. DEV-BOX ONLY -- never
+# install this on the Orin: the device stays free of biometric
+# processing, and everything this extra produces (gallery, embeddings,
+# per-person output) is gitignored and must never reach the public repo
+# or a GitHub release. See docs/identity.md.
+identity = [
+    # SCRFD detector + ArcFace (buffalo_l) embeddings; few-shot, so a
+    # handful of enrolled reference crops per person is enough and there
+    # is no model to train.
+    "insightface>=0.7,<0.8",
+    "onnxruntime-gpu>=1.18,<1.20",
+]
 dev = [
     "pytest>=8",
     "pytest-cov>=5",

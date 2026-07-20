@@ -84,3 +84,20 @@ configs/door_zone.json
 !.claude/road_polygon.json
 !.claude/reolink_isp_current.json
 !.claude/sketch_me_done.png
+
+# ----------------------------------------------------------------------
+# BIOMETRIC DATA -- NEVER COMMIT, NEVER RELEASE.
+#
+# Per-person identity (analysis/identity.py) produces face embeddings and
+# named-person verdicts for the household and enrolled regulars. This
+# repo is PUBLIC and the disaster-recovery flow deliberately pushes small
+# models, geometry JSON and scripts to it -- none of the below may ever
+# ride along, including into a GitHub release. Under UK GDPR this is
+# special-category data and it covers visitors, not just the operator.
+#
+# Deliberately broad and placed AFTER the .claude negations above so a
+# stray identity artefact can't be re-included by an earlier rule.
+configs/identities/
+*_identity.json
+*.embeddings.json
+faces/
