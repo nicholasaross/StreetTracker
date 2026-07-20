@@ -94,6 +94,7 @@ SnapReason = Literal[
     # from both paths above because the door sits outside the road
     # polygon, where neither of them ever fires.
     "door",
+    "door_approach",
     "door_throttled",
     "door_budget_exhausted",
 ]
@@ -103,7 +104,26 @@ SnapReason = Literal[
 # still yields several distinct views (different head pose / occlusion)
 # without burning the shared HTTP semaphore the road ANPR needs.
 DOOR_SNAP_INTERVAL_MS = 700.0
-DOOR_SNAP_MAX_PER_TRACK = 6
+DOOR_SNAP_MAX_PER_TRACK = 3
+
+# Approach-band snaps. Measured on the 2026-07-20 door trips: a snap
+# fired inside the zone lands ~0.05-0.10 t_norm LATER for an arrival and
+# 0.08-0.35 EARLIER for a departure, because of the ~700 ms HTTP
+# latency. By the time it lands the subject has either stopped at the
+# door facing it, or walked away -- 13 in-zone snaps yielded one usable
+# view of a person and no usable faces.
+#
+# So fire *before* the door instead, while an arriving subject is still
+# walking toward the camera. The one measured readable face on this
+# install sat at x~0.59-0.62, and the drift is ~+0.05-0.10 per snap, so
+# firing across [0.50, zone) lands shots in that window.
+#
+# Only fires for motion TOWARD the door: departures are unrecoverable
+# (the subject walks away from the lens) and firing at them just spends
+# the shared HTTP budget.
+DOOR_APPROACH_WIDTH_FRAC = 0.26
+DOOR_APPROACH_INTERVAL_MS = 400.0
+DOOR_APPROACH_MAX_PER_TRACK = 3
 
 
 # Per-trigger direction filter for road-gate mode.
@@ -285,6 +305,13 @@ class _TrackState:
     # so neither of those ever fires there.
     door_fires: int = 0
     last_door_submit_wall_ms: float = 0.0
+    # Approach-band state. ``prev_door_x`` is the previous frame's
+    # fractional x, needed to tell motion toward the door from motion
+    # away; the approach budget is counted apart from the in-zone one so
+    # a subject who lingers at the door can't starve the face shots.
+    door_approach_fires: int = 0
+    last_door_approach_wall_ms: float = 0.0
+    prev_door_x: float | None = None
 
 
 # ----------------------------------------------------------------------
@@ -675,6 +702,11 @@ class SnapPlanner:
     door_zone: DoorZone | None = None
     door_interval_ms: float = DOOR_SNAP_INTERVAL_MS
     door_max_per_track: int = DOOR_SNAP_MAX_PER_TRACK
+    # Approach band, in fractional x. ``None`` derives it from the zone:
+    # the DOOR_APPROACH_WIDTH_FRAC strip immediately before the door.
+    door_approach_frac: tuple[float, float] | None = None
+    door_approach_interval_ms: float = DOOR_APPROACH_INTERVAL_MS
+    door_approach_max_per_track: int = DOOR_APPROACH_MAX_PER_TRACK
     _state: dict[int, _TrackState] = field(default_factory=dict, init=False, repr=False)
     _road_gate: RoadGate | None = field(default=None, init=False, repr=False)
 
@@ -917,40 +949,107 @@ class SnapPlanner:
         oblique; the 4K snap at this range is an order of magnitude
         richer.
 
-        Person-only and deliberately cheap: a fire every
-        ``door_interval_ms`` up to ``door_max_per_track``, no sharpness
-        gate (a doorway subject is near-stationary, so motion blur isn't
-        the failure mode) and no area threshold. Returns reason
-        ``"door"`` on a fire, ``"door_throttled"`` /
-        ``"door_budget_exhausted"`` when gated, and ``"out_of_gate"``
-        when there is no door zone or the subject isn't a person in it.
+        Two firing paths, both person-only, no sharpness gate (a doorway
+        subject is near-stationary, so motion blur isn't the failure
+        mode) and no area threshold:
+
+        * ``"door_approach"`` -- in the strip before the door and closing
+          on it. This is the one that yields faces: measured 2026-07-20,
+          a snap fired inside the zone lands ~0.05-0.10 t_norm later,
+          by which point an arriving subject has stopped at the door
+          facing it, and a departing one has walked away from the lens.
+          Firing early lands the shot while they are still walking
+          toward the camera.
+        * ``"door"`` -- inside the zone itself, which documents the trip
+          even though it rarely shows a face.
+
+        Approach fires only on motion TOWARD the door; a departure is
+        unrecoverable, so firing at one just spends the shared HTTP
+        budget. The two paths hold separate budgets so a subject who
+        lingers at the door can't starve the face shots, and share one
+        filename ordinal so snaps never collide.
+
+        Gated fires return ``"door_throttled"`` /
+        ``"door_budget_exhausted"``; ``"out_of_gate"`` when there is no
+        door zone, or the subject isn't a person in either region.
         """
         if self.door_zone is None or not is_person:
-            return SnapDecision(False, "out_of_gate", 0.0)
-        if self.door_interval_ms <= 0 or self.door_max_per_track <= 0:
             return SnapDecision(False, "out_of_gate", 0.0)
 
         cx = (bbox[0] + bbox[2]) * 0.5
         cy = (bbox[1] + bbox[3]) * 0.5
-        point = [cx / self.frame_width, cy / self.frame_height]
-        if not self.door_zone.contains(point):
-            return SnapDecision(False, "out_of_gate", 0.0)
+        cx_frac = cx / self.frame_width
+        point = [cx_frac, cy / self.frame_height]
 
         st = self._state.get(track_id)
         if st is None:
             st = _TrackState()
             self._state[track_id] = st
+        prev_x = st.prev_door_x
+        st.prev_door_x = cx_frac
 
-        if st.door_fires >= self.door_max_per_track:
-            return SnapDecision(False, "door_budget_exhausted", 0.0)
-        elapsed = wall_ms - st.last_door_submit_wall_ms
-        if st.last_door_submit_wall_ms > 0.0 and elapsed < self.door_interval_ms:
-            return SnapDecision(False, "door_throttled", 0.0)
+        in_zone = self.door_zone.contains(point)
 
-        st.door_fires += 1
-        st.last_door_submit_wall_ms = wall_ms
-        index = st.fires_committed + st.pipeline_fires + st.door_fires
-        return SnapDecision(True, "door", 1.0, index)
+        # Approach: in the band before the door AND closing on it. The
+        # door's side of frame comes from the zone itself, so this holds
+        # for an install with the door at either edge.
+        lo, hi = self.door_approach_band()
+        toward_door = False
+        if prev_x is not None:
+            toward_door = (cx_frac > prev_x) if self.door_is_right() else (cx_frac < prev_x)
+        in_approach = lo <= cx_frac < hi and toward_door
+
+        if in_approach and self.door_approach_max_per_track > 0:
+            if st.door_approach_fires >= self.door_approach_max_per_track:
+                return SnapDecision(False, "door_budget_exhausted", 0.0)
+            elapsed = wall_ms - st.last_door_approach_wall_ms
+            if (
+                st.last_door_approach_wall_ms > 0.0
+                and elapsed < self.door_approach_interval_ms
+            ):
+                return SnapDecision(False, "door_throttled", 0.0)
+            st.door_approach_fires += 1
+            st.last_door_approach_wall_ms = wall_ms
+            return SnapDecision(True, "door_approach", 1.0, self._door_index(st))
+
+        if in_zone and self.door_interval_ms > 0 and self.door_max_per_track > 0:
+            if st.door_fires >= self.door_max_per_track:
+                return SnapDecision(False, "door_budget_exhausted", 0.0)
+            elapsed = wall_ms - st.last_door_submit_wall_ms
+            if st.last_door_submit_wall_ms > 0.0 and elapsed < self.door_interval_ms:
+                return SnapDecision(False, "door_throttled", 0.0)
+            st.door_fires += 1
+            st.last_door_submit_wall_ms = wall_ms
+            return SnapDecision(True, "door", 1.0, self._door_index(st))
+
+        return SnapDecision(False, "out_of_gate", 0.0)
+
+    def _door_index(self, st: _TrackState) -> int:
+        """Per-track filename ordinal, shared across every firing path so
+        two snaps can never claim the same ``_main_<N>.jpg``."""
+        return st.fires_committed + st.pipeline_fires + st.door_fires + st.door_approach_fires
+
+    def door_is_right(self) -> bool:
+        """Whether the door sits on the right of frame (most installs)."""
+        if self.door_zone is None:
+            return True
+        xs = [v[0] for v in self.door_zone.polygon_frac]
+        return (sum(xs) / len(xs)) >= 0.5
+
+    def door_approach_band(self) -> tuple[float, float]:
+        """The ``[lo, hi)`` fractional-x strip that approach snaps fire
+        in -- the configured band, or the width immediately outside the
+        door zone on the side people approach from."""
+        if self.door_approach_frac is not None:
+            return self.door_approach_frac
+        if self.door_zone is None:
+            return (0.0, 0.0)
+        xs = [v[0] for v in self.door_zone.polygon_frac]
+        if self.door_is_right():
+            edge = min(xs)
+            return (max(0.0, edge - DOOR_APPROACH_WIDTH_FRAC), edge)
+        edge = max(xs)
+        return (edge, min(1.0, edge + DOOR_APPROACH_WIDTH_FRAC))
 
     def consider_pipeline(
         self,
