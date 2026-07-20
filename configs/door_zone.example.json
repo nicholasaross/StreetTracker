@@ -1,0 +1,9 @@
+{
+  "_comment": "Door-origin ('my walks') detection. Trace a closed polygon around your front door / gate as it appears in the camera frame, in FRACTIONAL [x, y] coords (0..1 of frame width/height, resolution-independent -- same scheme as the road polygon). A walk whose entry OR exit point falls inside this zone is counted as one of the household's own trips. Copy to configs/door_zone.json (gitignored) and replace the vertices. Needs sessions recorded by the post-2026-07-19 runtime that captures per-track entry/exit points; older sessions read as 'unknown'. This example is a bottom-left corner placeholder -- it is NOT your real door.",
+  "polygon_frac": [
+    [0.0, 0.72],
+    [0.22, 0.72],
+    [0.22, 1.0],
+    [0.0, 1.0]
+  ]
+}

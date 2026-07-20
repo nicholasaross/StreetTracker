@@ -57,6 +57,10 @@
   .mwrap svg { width: 22px; height: 22px; display: block; }
   .mmono { width: 22px; height: 22px; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; font-size: 12px; line-height: 1; }
   .caveat { color: var(--muted); font-size: 12px; margin-top: 26px; border-top: 1px solid var(--line); padding-top: 12px; }
+  /* recurring walk patterns */
+  .habits { border-collapse: collapse; font-size: 13px; width: 100%; }
+  .habits th { text-align: left; color: var(--muted); font-weight: 600; font-size: 12px; padding: 4px 14px 4px 0; }
+  .habits td { padding: 6px 14px 6px 0; border-top: 1px solid var(--line); white-space: nowrap; }
   /* about / explainer */
   .about { margin: 16px 0 6px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
   .about summary { cursor: pointer; padding: 12px 16px; font-size: 13.5px; font-weight: 600; }
@@ -139,6 +143,20 @@
       joggers, cyclists and dog-walkers. (Joggers are split from walkers by
       speed; cyclist and dog detection were switched on partway through, so
       older data lumps riders in with joggers and shows zero dog walks.)</li>
+      <li><b>Out-and-back trips</b> — an estimate: a walk is matched with a
+      later walk in the opposite direction of the same kind (dog walk with
+      dog walk, jog with jog) within a couple of hours, when clothing
+      colours don't disagree. On a busy pavement two different people
+      satisfy that rule constantly, so the headline subtracts a control:
+      the same matching run on time-shuffled data tells us how many pairs
+      pure coincidence produces (roughly three quarters of candidates
+      here), and only the excess is reported as "likely" trips. Matching
+      only ever happens within a single day.</li>
+      <li><b>Recurring walk patterns</b> — times of day when dog walks, jogs
+      or rides keep happening across many days (e.g. "a dog walk goes
+      left-to-right around 07:50 most mornings"). These are computed purely
+      from timing: nothing links a walk on one day to a walk on another, so
+      a pattern describes the street's rhythm, not a tracked person.</li>
     </ul>
 
     <h4>General caveats</h4>
@@ -150,7 +168,10 @@
       rather than "no traffic". The stats reach further back in time than the
       photos do, because old images are pruned while the records are kept.</li>
       <li>No identity tracking of people is done, ever — person analytics are
-      counts and categories only, never re-identification across days.</li>
+      counts, categories and time-of-day patterns. Walks are only ever
+      matched within a single day (to spot out-and-back trips), never across
+      days: a "recurring pattern" is a statistic about the street, not a
+      tracked individual.</li>
     </ul>
   </div>
 </details>
@@ -231,6 +252,13 @@
   <div class="tile"><div class="big">{{ p.kinds.pct_joggers }}%</div><div class="lbl">joggers ({{ "{:,}".format(p.kinds.joggers) }})</div></div>
   <div class="tile"><div class="big">{{ "{:,}".format(p.kinds.cyclists) }}</div><div class="lbl">cyclists (since 13 Jun)</div></div>
   <div class="tile"><div class="big">{{ "{:,}".format(p.kinds.dog_walks) }}</div><div class="lbl">dog walks (since 7 Jul)</div></div>
+  {% if p.kinds.round_trips %}
+  {% if p.kinds.round_trips_est is not none %}
+  <div class="tile"><div class="big">~{{ "{:,}".format(p.kinds.round_trips_est) }}</div><div class="lbl">likely out-and-back trips (of {{ "{:,}".format(p.kinds.round_trips) }} candidates{% if p.kinds.away_min_median %}, typ. {{ p.kinds.away_min_median }} min away{% endif %})</div></div>
+  {% else %}
+  <div class="tile"><div class="big">{{ "{:,}".format(p.kinds.round_trips) }}</div><div class="lbl">out-and-back candidates{% if p.kinds.away_min_median %} (typ. {{ p.kinds.away_min_median }} min away){% endif %}</div></div>
+  {% endif %}
+  {% endif %}
   {% endif %}
 </div>
 
@@ -254,6 +282,35 @@
   {% endif %}
 </div>
 
+{% if p.habitual %}
+{% set khex = {"dog walk": "#8a6240", "jogger": "#e08a3d", "cyclist": "#5b9dff"} %}
+<div class="panel stat">
+  <h3>Recurring walk patterns</h3>
+  <p class="hint">Times of day when a dog walk, jog or ride recurs across many days — only
+  slots that look like a single recurring walk qualify (rush-hour waves are filtered out).
+  These are statistics about the street, not tracked individuals: no walk is ever linked to
+  a walk on another day. "Typical time away" comes from same-day out-and-back estimates
+  starting in the slot.</p>
+  <div class="scrollx">
+  <table class="habits">
+    <thead><tr><th>kind</th><th>around</th><th>direction</th><th>seen on</th><th>walks</th><th>typical time away</th></tr></thead>
+    <tbody>
+    {% for s in p.habitual %}
+      <tr>
+        <td><span class="sw" style="background:{{ khex.get(s.kind, '#9aa3b2') }}"></span>{{ s.kind }}</td>
+        <td>~{{ s.time }}</td>
+        <td>{{ "left → right" if s.dkey == "l2r" else "right → left" }}</td>
+        <td>{{ s.days_seen }} of {{ s.days_covered }} days</td>
+        <td>{{ s.n_walks }}</td>
+        <td>{{ (s.away_min_median|string + " min") if s.away_min_median else "—" }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endif %}
+
 <div class="panel stat">
   <h3>When people walk</h3>
   <p class="hint">Walks by weekday (rows) × hour of day (columns). Brighter = busier; hours with no foot traffic are hidden.</p>
@@ -268,7 +325,9 @@
   People figures share the same caveats. Riders detect as people: sessions since
   2026-06-13 classify them as cyclists via bicycle-track pairing, but earlier
   jogger counts include unfiltered riders (roughly +4pp). Dog-walk pairing
-  counts from 2026-07-07, when the dog class went live.
+  counts from 2026-07-07, when the dog class went live. Out-and-back trips and
+  recurring patterns are timing/kind/colour-agreement estimates, not
+  identification; nothing is matched across days.
   {% if stats.speed_unit == 'px/s' %}Speeds are pixels/second (relative, uncalibrated) — set a calibration to show mph.{% else %}Speeds in mph are approximate (single-point calibration; ignores perspective).{% endif %}
 </p>
 {% endif %}

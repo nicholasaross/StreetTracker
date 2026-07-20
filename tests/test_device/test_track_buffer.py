@@ -13,6 +13,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from streettracker.common.door_zone import DoorZone
 from streettracker.common.schema import TrackRecord
 from streettracker.common.types import Detection
 from streettracker.device.track_buffer import (
@@ -456,6 +457,37 @@ def test_compute_attributes_returns_record_for_moving_track() -> None:
     assert result.main_snaps == []
 
 
+def test_compute_attributes_entry_exit_points_need_frame_w() -> None:
+    """Entry/exit fracs fill only when frame_w is supplied; otherwise
+    they stay None (older callers, no half-scaled x)."""
+    tr = _track_with_motion([(0.0, 100, 90), (1.0, 300, 180), (2.0, 500, 270)])
+    without = compute_attributes(
+        tr,
+        frame_h=_FRAME_H,
+        min_duration_s=1.0,
+        parked_disp_px=50.0,
+        color="red",
+        t_start_wall=_T0_WALL,
+    )
+    assert without is not None
+    assert without.entry_point_frac is None and without.exit_point_frac is None
+
+    withw = compute_attributes(
+        tr,
+        frame_h=_FRAME_H,
+        min_duration_s=1.0,
+        parked_disp_px=50.0,
+        color="red",
+        t_start_wall=_T0_WALL,
+        frame_w=_FRAME_W,
+    )
+    assert withw is not None
+    # first point (100, 90) and last (500, 270) over a 640x360 frame,
+    # rounded to 4 dp as stored.
+    assert withw.entry_point_frac == [round(100 / 640, 4), round(90 / 360, 4)]
+    assert withw.exit_point_frac == [round(500 / 640, 4), round(270 / 360, 4)]
+
+
 def test_compute_attributes_direction_right_to_left() -> None:
     tr = _track_with_motion([(0.0, 500, 100), (1.0, 100, 100)])
     result = compute_attributes(
@@ -667,3 +699,118 @@ def test_wide_car_is_not_suspect() -> None:
     rec = _finalize(_track_with_box_shape(2, w=160, h=100))
     assert rec.class_name == "car"
     assert rec.class_suspect is False
+
+
+# ----------------------------------------------------------------------
+# Door-zone exemption from the parked / short-track filters.
+#
+# A household trip that steps out of the door and comes straight back has
+# almost no NET displacement, which is exactly what the parked filter
+# deletes -- and it is the case door-origin analysis exists to count. The
+# measured cost of not having this: 36-45 % of person appearances saved
+# assets but never produced a record (2026-07-20).
+
+# Door at the right frame edge, matching the live install's geometry.
+_DOOR = DoorZone(polygon_frac=[[0.76, 0.0], [1.0, 0.0], [1.0, 1.0], [0.76, 1.0]])
+
+# cx for a point inside / outside the zone at _FRAME_W = 640.
+_AT_DOOR_CX = 0.9 * _FRAME_W
+_MID_ROAD_CX = 0.4 * _FRAME_W
+
+
+def _door_track(points: list[tuple[float, float, float]], class_id: int = 0) -> BufferedTrack:
+    tr = _track_with_motion(points)
+    tr.class_id = class_id
+    return tr
+
+
+def _finalize_with_door(
+    tr: BufferedTrack, zone: DoorZone | None = _DOOR
+) -> TrackRecord | None:
+    return compute_attributes(
+        tr,
+        frame_h=_FRAME_H,
+        min_duration_s=1.0,
+        parked_disp_px=50.0,
+        color="red",
+        t_start_wall=_T0_WALL,
+        frame_w=_FRAME_W,
+        door_zone=zone,
+    )
+
+
+def test_door_out_and_back_survives_the_parked_filter() -> None:
+    """Out of the door, down the path, back to the door: net displacement
+    ~0 but total displacement large. Must be kept."""
+    tr = _door_track(
+        [
+            (0.0, _AT_DOOR_CX, 300),
+            (1.0, _MID_ROAD_CX, 300),
+            (2.0, _AT_DOOR_CX, 300),
+        ]
+    )
+    rec = _finalize_with_door(tr)
+    assert rec is not None
+    assert rec.entry_point_frac is not None
+    assert rec.entry_point_frac[0] > 0.76
+
+
+def test_door_answer_survives_the_duration_floor() -> None:
+    """Answering the door is a seconds-long appearance -- shorter than
+    min_duration_s. The son's real track (24647) was 1.7 s / 13 dets."""
+    tr = _door_track([(0.0, _AT_DOOR_CX, 300), (0.4, _AT_DOOR_CX - 60, 300)])
+    assert _finalize_with_door(tr) is not None
+
+
+def test_static_blob_in_the_door_zone_is_still_filtered() -> None:
+    """The exemption swaps net for TOTAL displacement, so a bin or a
+    shadow on the porch -- no travel either way -- is still dropped."""
+    tr = _door_track(
+        [(0.0, _AT_DOOR_CX, 300), (2.0, _AT_DOOR_CX + 3, 300), (4.0, _AT_DOOR_CX, 300)]
+    )
+    assert _finalize_with_door(tr) is None
+
+
+def test_non_person_in_the_door_zone_is_not_exempt() -> None:
+    """A parked car at the edge of frame must stay filtered -- relaxing
+    this for vehicles would resurrect the parked-plate beacon problem."""
+    tr = _door_track(
+        [(0.0, _AT_DOOR_CX, 300), (1.0, _MID_ROAD_CX, 300), (2.0, _AT_DOOR_CX, 300)],
+        class_id=2,
+    )
+    assert _finalize_with_door(tr) is None
+
+
+def test_person_away_from_the_door_is_not_exempt() -> None:
+    """Someone loitering mid-road is still parked -- the exemption is
+    geometric, not a blanket relaxation for people."""
+    tr = _door_track(
+        [(0.0, _MID_ROAD_CX, 300), (1.0, _MID_ROAD_CX + 200, 300), (2.0, _MID_ROAD_CX, 300)]
+    )
+    assert _finalize_with_door(tr) is None
+
+
+def test_no_door_zone_keeps_the_old_behaviour() -> None:
+    """Installs without a door zone must finalize exactly as before."""
+    tr = _door_track(
+        [(0.0, _AT_DOOR_CX, 300), (1.0, _MID_ROAD_CX, 300), (2.0, _AT_DOOR_CX, 300)]
+    )
+    assert _finalize_with_door(tr, zone=None) is None
+
+
+def test_door_exemption_needs_frame_w_for_entry_points() -> None:
+    """Without frame_w there are no fractional entry/exit points, so the
+    zone can't be tested and the track falls back to the old filters."""
+    tr = _door_track(
+        [(0.0, _AT_DOOR_CX, 300), (1.0, _MID_ROAD_CX, 300), (2.0, _AT_DOOR_CX, 300)]
+    )
+    result = compute_attributes(
+        tr,
+        frame_h=_FRAME_H,
+        min_duration_s=1.0,
+        parked_disp_px=50.0,
+        color="red",
+        t_start_wall=_T0_WALL,
+        door_zone=_DOOR,
+    )
+    assert result is None

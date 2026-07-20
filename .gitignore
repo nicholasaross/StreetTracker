@@ -52,6 +52,10 @@ configs/dvsa.json
 # Showcase speed calibration (px/s -> mph), per-install camera geometry.
 # configs/showcase.example.json IS tracked as the schema reference.
 configs/showcase.json
+# Door zone for door-origin ("my walks") detection -- an operator-traced
+# polygon locating the front door in frame (per-install, points at the
+# operator's home). configs/door_zone.example.json IS tracked as the schema.
+configs/door_zone.json
 *.mp4
 *.mkv
 

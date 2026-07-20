@@ -94,6 +94,16 @@ class TrackRecord:
     # people analytics (web/stats.py, analysis/people.py). False on
     # sessions written before the field existed.
     class_suspect: bool = False
+    # Track entry/exit position: the first and last detection centroid as
+    # fractional ``[x, y]`` in ``[0, 1]`` of the inference frame (see
+    # ``SessionMeta.frame_size``). Unlike ``main_snap_bboxes`` (mid-band,
+    # snap-fire only, ~67 % of person tracks) these mark where the track
+    # actually entered and left the view, for every track. Enables
+    # door-origin walk detection (a walk that starts/ends in an
+    # operator-marked door zone). ``None`` on sessions written before the
+    # field existed -- door-origin analysis skips those.
+    entry_point_frac: list[float] | None = None
+    exit_point_frac: list[float] | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
         return asdict(self)

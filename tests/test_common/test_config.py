@@ -24,6 +24,7 @@ from streettracker.common.config import (
     ConfigError,
     StreamConfig,
     StreetTrackerConfig,
+    TrackingConfig,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -561,3 +562,61 @@ def test_snap_gate_per_direction_band_defaults_to_none() -> None:
     spec = cfg.snapshot.snap_gate
     assert spec is not None
     assert spec.pipeline_t_usable_by_direction is None
+
+
+# ----------------------------------------------------------------------
+# Per-class finalize minima (TrackingConfig.by_class).
+#
+# The key was accepted by the loader but silently ignored by the runtime
+# until 2026-07-20, so operator-configured person thresholds never took
+# effect and person tracks were judged at the car-scale defaults.
+
+
+def _tracking(**kw: object) -> TrackingConfig:
+    return TrackingConfig(**kw)  # type: ignore[arg-type]
+
+
+def test_minima_for_falls_back_to_top_level_without_override() -> None:
+    cfg = _tracking(min_track_duration_s=1.0, parked_displacement_px=50.0)
+    assert cfg.minima_for(2, "car") == (1.0, 50.0)
+
+
+def test_minima_for_applies_class_id_override() -> None:
+    """The live camera.json keys by COCO id string ("0" = person)."""
+    cfg = _tracking(
+        min_track_duration_s=1.0,
+        parked_displacement_px=50.0,
+        by_class={"0": {"min_track_duration_s": 0.5, "parked_displacement_px": 30}},
+    )
+    assert cfg.minima_for(0, "person") == (0.5, 30.0)
+    assert cfg.minima_for(2, "car") == (1.0, 50.0)
+
+
+def test_minima_for_applies_class_name_override() -> None:
+    cfg = _tracking(
+        min_track_duration_s=1.0,
+        parked_displacement_px=50.0,
+        by_class={"person": {"parked_displacement_px": 20}},
+    )
+    # Name matches; the unspecified key keeps the top-level value.
+    assert cfg.minima_for(0, "person") == (1.0, 20.0)
+
+
+def test_minima_for_prefers_class_id_over_name() -> None:
+    cfg = _tracking(
+        by_class={
+            "0": {"parked_displacement_px": 30},
+            "person": {"parked_displacement_px": 99},
+        },
+    )
+    assert cfg.minima_for(0, "person")[1] == 30.0
+
+
+def test_minima_for_survives_a_malformed_override() -> None:
+    """A bad value must not take the runtime down mid-session."""
+    cfg = _tracking(
+        min_track_duration_s=1.0,
+        parked_displacement_px=50.0,
+        by_class={"0": {"parked_displacement_px": "thirty"}},
+    )
+    assert cfg.minima_for(0, "person") == (1.0, 50.0)

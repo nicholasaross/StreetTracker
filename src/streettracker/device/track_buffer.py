@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from streettracker.common.coco import class_name
+from streettracker.common.door_zone import DoorZone
 from streettracker.common.output import format_wall
 from streettracker.common.schema import TrackRecord, asset_prefix_for_class
 from streettracker.common.types import Detection
@@ -414,6 +415,8 @@ def compute_attributes(
     color: str,
     t_start_wall: float,
     main_snaps: list[int] | None = None,
+    frame_w: int | None = None,
+    door_zone: DoorZone | None = None,
 ) -> TrackRecord | None:
     """Compute attributes for one finalized track; return ``None`` if filtered.
 
@@ -422,6 +425,20 @@ def compute_attributes(
     * total duration below ``min_duration_s`` -- too brief to be reliable;
     * net displacement below ``parked_disp_px`` -- track was parked
       (or BotSORT held it across a stop), not relevant for road traffic.
+
+    ``min_duration_s`` / ``parked_disp_px`` are per-class: the caller
+    resolves them via :meth:`TrackingConfig.minima_for`, since the
+    car-scale defaults discard a large share of the shorter, less
+    travelled person tracks.
+
+    **Door-zone exemption.** When ``door_zone`` is given and a *person*
+    track starts or ends inside it, the parked test switches from net to
+    **total** displacement. A household trip that steps out of the door
+    and comes straight back has near-zero net displacement by definition
+    -- the very case door-origin analysis exists to count -- while a
+    static false detection (a bin, a shadow on the porch) has neither net
+    nor total travel, so it is still filtered. The duration floor is
+    waived with it: answering the door is a seconds-long appearance.
 
     ``main_snaps`` is the list of N values whose ``_main_N.jpg`` actually
     landed on disk. Passed in (rather than read off the track) because
@@ -434,17 +451,39 @@ def compute_attributes(
     """
     if len(track.points) < 2:
         return None
-    duration = track.points[-1].t - track.points[0].t
-    if duration < min_duration_s:
-        return None
 
     p0 = track.points[0]
     pN = track.points[-1]
+    duration = pN.t - p0.t
     net_disp = ((pN.cx - p0.cx) ** 2 + (pN.cy - p0.cy) ** 2) ** 0.5
-    if net_disp < parked_disp_px:
-        return None
-
     disp = total_displacement(track.points)
+
+    # Entry/exit position as fractional [x, y]. Computed BEFORE the
+    # filters because the door-zone exemption below depends on them (and
+    # they're needed by door-origin analysis either way). Needs frame
+    # width to normalise x; when it's unknown (older callers) leave both
+    # None so door-origin analysis skips the track rather than trusting a
+    # half-scaled point.
+    entry_point_frac: list[float] | None = None
+    exit_point_frac: list[float] | None = None
+    if frame_w and frame_h:
+        entry_point_frac = [round(p0.cx / frame_w, 4), round(p0.cy / frame_h, 4)]
+        exit_point_frac = [round(pN.cx / frame_w, 4), round(pN.cy / frame_h, 4)]
+
+    at_door = (
+        door_zone is not None
+        and class_name(track.class_id) == "person"
+        and (door_zone.contains(entry_point_frac) or door_zone.contains(exit_point_frac))
+    )
+    if at_door:
+        if disp < parked_disp_px:
+            return None
+    else:
+        if duration < min_duration_s:
+            return None
+        if net_disp < parked_disp_px:
+            return None
+
     speed_px_s = net_disp / duration if duration > 0 else 0.0
     direction = "left to right" if pN.cx > p0.cx else "right to left"
 
@@ -503,4 +542,6 @@ def compute_attributes(
             else None
         ),
         class_suspect=suspect,
+        entry_point_frac=entry_point_frac,
+        exit_point_frac=exit_point_frac,
     )
