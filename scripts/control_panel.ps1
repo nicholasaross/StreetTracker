@@ -30,8 +30,19 @@ $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot   # scripts/.. = repo root
 Set-Location $repo
 
+# --no-sync is load-bearing. Plain `uv run` re-syncs the environment first,
+# and when the project needs reinstalling that means replacing
+# .venv/Scripts/streettracker.exe -- a file any already-running streettracker
+# process (the showcase, or a previous panel) holds open. The launch then dies
+# with "failed to remove file ... (os error 32)" before the panel ever starts.
+# Hit for real on 2026-07-20. The job runner passes the same flag, for the same
+# reason, as does the Orin's systemd unit.
+#
+# Dependency installs stay an explicit operator step:
+#   uv sync --extra alpr --extra dev      (extras are NOT additive)
+# run with nothing else holding the venv.
 $panelArgs = @(
-    "run", "streettracker", "control",
+    "run", "--no-sync", "streettracker", "control",
     "--output-root", $OutputRoot,
     "--host", $BindHost,
     "--port", $Port
