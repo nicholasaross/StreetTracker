@@ -128,15 +128,42 @@ class TrackingConfig:
     are kept for parity with NanoTracker's hand-rolled tracker config
     but BotSORT (via Ultralytics) reads its own parameters from a yaml;
     these values are exposed so the operator can still hand-tune from
-    one place. ``by_class`` is an optional dict of class-name overrides
-    -- left untyped here because the runtime has not yet decided how to
-    apply per-class minima."""
+    one place.
+
+    ``by_class`` overrides the finalize minima per detection class, keyed
+    by COCO class id as a string (``"0"`` = person) or by class name
+    (``"person"``); the id is tried first. Only
+    ``min_track_duration_s`` and ``parked_displacement_px`` are read --
+    a class with no entry, or an entry missing one of those keys, falls
+    back to the top-level value. It exists because one threshold can't
+    fit both traffic and pedestrians: the car-scale defaults (1.0 s /
+    50 px) discard a large share of person tracks, which are shorter and
+    move less across the frame. **This was accepted by the loader but
+    silently ignored by the runtime until 2026-07-20** -- measured cost
+    was 36-45 % of person appearances saving assets but never producing
+    a record."""
 
     iou_match_threshold: float = 0.30
     max_misses: int = 15
     min_track_duration_s: float = 1.0
     parked_displacement_px: float = 50.0
     by_class: dict[str, dict[str, Any]] = dataclasses.field(default_factory=dict)
+
+    def minima_for(self, class_id: int, class_name: str = "") -> tuple[float, float]:
+        """Resolve ``(min_track_duration_s, parked_displacement_px)`` for
+        one detection class, applying any ``by_class`` override."""
+        override: dict[str, Any] = {}
+        for key in (str(class_id), class_name):
+            if key and isinstance(self.by_class.get(key), dict):
+                override = self.by_class[key]
+                break
+        duration = override.get("min_track_duration_s", self.min_track_duration_s)
+        parked = override.get("parked_displacement_px", self.parked_displacement_px)
+        try:
+            return float(duration), float(parked)
+        except (TypeError, ValueError):
+            # A malformed override must never take the runtime down mid-session.
+            return self.min_track_duration_s, self.parked_displacement_px
 
 
 # ----------------------------------------------------------------------

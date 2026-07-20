@@ -192,8 +192,11 @@ def _walks_from_people_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     jogger > walker (dog wins: a jogging dog owner is a dog walk)."""
     by_walk: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for r in rows:
+        wid_raw = r.get("walk_id") or r.get("track_id")
+        if wid_raw is None:
+            continue
         try:
-            by_walk[int(r.get("walk_id") or r.get("track_id"))].append(r)
+            by_walk[int(wid_raw)].append(r)
         except (TypeError, ValueError):
             continue
     walks: list[dict[str, Any]] = []

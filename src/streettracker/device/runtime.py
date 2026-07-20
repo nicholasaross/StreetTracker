@@ -52,8 +52,10 @@ from typing import TYPE_CHECKING, Any, cast
 
 import aiohttp
 
+from streettracker.common.coco import class_name
 from streettracker.common.color import vote_color
 from streettracker.common.config import StreetTrackerConfig
+from streettracker.common.door_zone import DoorZone
 from streettracker.common.hourly import build_hourly_rollup
 from streettracker.common.output import EventLog, IREventLog, format_wall, save_json
 from streettracker.common.schema import IRPeriod, SessionMeta, TrackRecord
@@ -140,6 +142,14 @@ class SessionContext:
     # that build a SessionContext directly can leave it ``None``; the
     # process_frame code path guards on it.
     ir_events_log: IREventLog | None = None
+
+    # Operator-traced door zone (configs/door_zone.json), loaded once at
+    # session start. ``None`` when the install has no door zone -- then
+    # finalize behaves exactly as it did before the zone existed. Read by
+    # convention rather than through camera.json deliberately: it keeps
+    # the strict-loader schema unchanged, so deploying this needs no
+    # config edit and can't crash-loop the service.
+    door_zone: DoorZone | None = None
 
     # Output accumulators -- written to disk at session end.
     records: list[TrackRecord] = field(default_factory=list)
@@ -571,16 +581,23 @@ def finalize_track(ctx: SessionContext, track: BufferedTrack) -> None:
                 quality=95,
             )
 
-    # 4. Compute attributes (filters short / parked tracks).
+    # 4. Compute attributes (filters short / parked tracks). The minima
+    # are per-class -- the car-scale defaults discard a large share of
+    # person tracks -- and door-touching walks are exempted from the
+    # parked test, since stepping out and back has no net displacement.
+    min_duration_s, parked_disp_px = ctx.config.tracking.minima_for(
+        track.class_id, class_name(track.class_id)
+    )
     record = compute_attributes(
         track,
         frame_h=ctx.frame_h or 1080,
-        min_duration_s=ctx.config.tracking.min_track_duration_s,
-        parked_disp_px=ctx.config.tracking.parked_displacement_px,
+        min_duration_s=min_duration_s,
+        parked_disp_px=parked_disp_px,
         color=color,
         t_start_wall=ctx.t_start_wall,
         main_snaps=sorted(track.snap_saved_indexes),
         frame_w=ctx.frame_w or None,
+        door_zone=ctx.door_zone,
     )
     if record is None:
         return
@@ -946,6 +963,10 @@ async def run_session(
     if ir_detector is None:
         ir_detector = IRDetector()
 
+    door_zone = DoorZone.load()
+    if door_zone is not None:
+        logger.info("door zone loaded: %d vertices", len(door_zone.polygon_frac))
+
     ctx = SessionContext(
         config=config,
         output_dir=paths["dir"],
@@ -958,6 +979,7 @@ async def run_session(
         event_log=EventLog(paths["events_jsonl"]),
         is_file_source=bool(getattr(source, "is_file", False)),
         ir_events_log=IREventLog(paths["ir_events_jsonl"]),
+        door_zone=door_zone,
     )
 
     loop = asyncio.get_running_loop()
