@@ -42,6 +42,7 @@ runs/
 # Release-hosted make model). Control-panel runtime state stays ignored.
 control_jobs.json
 control_playbooks.json
+control_introspect_cache.json
 camera_config.json
 # StreetTracker convention: configs/camera.json carries the live Reolink
 # password and is per-install. configs/camera.example.json IS tracked.

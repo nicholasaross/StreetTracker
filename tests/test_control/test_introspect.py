@@ -4,7 +4,11 @@ training-run summaries, and the retrain / promote recommendations."""
 from __future__ import annotations
 
 import json
+import os
+import time
 from pathlib import Path
+
+import pytest
 
 from streettracker.control import introspect
 from streettracker.control.introspect import (
@@ -253,3 +257,117 @@ def test_local_snapshot_composes(tmp_path: Path) -> None:
     assert snap["model"] is None
     assert snap["recommendations"]["retrain"]["kind"] == "retrain"
     assert snap["recommendations"]["promote"]["kind"] == "promote"
+
+
+# ----------------------------------------------------------------------
+# On-disk read cache.
+#
+# The cache was per-process, so every panel restart re-globbed every session
+# directory and re-parsed every data.json -- O(files under output/), which by
+# 2026-07-20 was 400k files across 30 sessions, and paid exactly when the
+# panel is restarted after a big pull.
+
+
+@pytest.fixture(autouse=True)
+def _isolate_cache():
+    """Each test starts from a clean, non-persisting cache."""
+    introspect._CACHE.clear()
+    introspect._CACHE_PATH = None
+    introspect._CACHE_DIRTY = False
+    yield
+    introspect._CACHE.clear()
+    introspect._CACHE_PATH = None
+    introspect._CACHE_DIRTY = False
+
+
+def test_cache_survives_a_restart(tmp_path):
+    """The whole point: a second process must not redo the first's work."""
+    f = tmp_path / "data.json"
+    f.write_text('{"x": 1}', encoding="utf-8")
+
+    calls = []
+
+    def loader():
+        calls.append(1)
+        return {"parsed": True}
+
+    introspect.load_cache(tmp_path)
+    assert introspect._by_mtime(f, "t", loader) == {"parsed": True}
+    assert introspect.save_cache() == 1
+
+    # Simulate a restart: fresh in-process cache, same output root.
+    introspect._CACHE.clear()
+    assert introspect.load_cache(tmp_path) == 1
+    assert introspect._by_mtime(f, "t", loader) == {"parsed": True}
+    assert len(calls) == 1  # loader NOT called again
+
+
+def test_a_changed_file_misses_the_persisted_cache(tmp_path):
+    """Staleness must be impossible: mtime is part of the key."""
+    f = tmp_path / "data.json"
+    f.write_text("1", encoding="utf-8")
+    introspect.load_cache(tmp_path)
+    introspect._by_mtime(f, "t", lambda: "first")
+    introspect.save_cache()
+
+    introspect._CACHE.clear()
+    introspect.load_cache(tmp_path)
+    os.utime(f, (time.time() + 10, time.time() + 10))
+    assert introspect._by_mtime(f, "t", lambda: "second") == "second"
+
+
+def test_save_drops_entries_whose_file_moved_on(tmp_path):
+    """Otherwise a re-pulled or deleted session accretes dead keys forever."""
+    keep = tmp_path / "keep.json"
+    gone = tmp_path / "gone.json"
+    keep.write_text("1", encoding="utf-8")
+    gone.write_text("1", encoding="utf-8")
+
+    introspect.load_cache(tmp_path)
+    introspect._by_mtime(keep, "t", lambda: 1)
+    introspect._by_mtime(gone, "t", lambda: 2)
+    gone.unlink()
+
+    introspect._CACHE_DIRTY = True
+    assert introspect.save_cache() == 1
+
+
+def test_unserialisable_values_are_skipped_not_fatal(tmp_path):
+    """A few loaders return dataclasses; they stay in-process rather than
+    breaking the save for everything else."""
+
+    class NotJson:
+        pass
+
+    a = tmp_path / "a.json"
+    b = tmp_path / "b.json"
+    a.write_text("1", encoding="utf-8")
+    b.write_text("1", encoding="utf-8")
+
+    introspect.load_cache(tmp_path)
+    introspect._by_mtime(a, "t", lambda: {"fine": 1})
+    introspect._by_mtime(b, "t", NotJson)
+    assert introspect.save_cache() == 1  # only the JSON-able one
+
+
+def test_cache_is_in_process_only_until_a_root_is_set(tmp_path):
+    """Library callers and tests get no file written."""
+    f = tmp_path / "x.json"
+    f.write_text("1", encoding="utf-8")
+    introspect._by_mtime(f, "t", lambda: 1)
+    assert introspect.save_cache() == 0
+    assert not (tmp_path / introspect._CACHE_FILE).exists()
+
+
+def test_corrupt_cache_file_is_ignored(tmp_path):
+    (tmp_path / introspect._CACHE_FILE).write_text("{not json", encoding="utf-8")
+    assert introspect.load_cache(tmp_path) == 0
+
+
+def test_save_is_a_noop_when_nothing_changed(tmp_path):
+    f = tmp_path / "x.json"
+    f.write_text("1", encoding="utf-8")
+    introspect.load_cache(tmp_path)
+    introspect._by_mtime(f, "t", lambda: 1)
+    assert introspect.save_cache() == 1
+    assert introspect.save_cache() == 0  # dirty flag cleared

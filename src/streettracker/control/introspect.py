@@ -26,6 +26,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import json
+import threading
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
@@ -41,6 +42,14 @@ from streettracker.control.orin import parse_session_start
 _CACHE: dict[tuple[str, str, int], Any] = {}
 _CACHE_CAP = 4096
 
+# Where the cache is persisted, once the server tells us the output root.
+# ``None`` keeps the cache purely in-process, which is what the tests and any
+# library caller get by default.
+_CACHE_FILE = "control_introspect_cache.json"
+_CACHE_PATH: Path | None = None
+_CACHE_DIRTY = False
+_CACHE_LOCK = threading.Lock()
+
 
 def _by_mtime(path: Path, tag: str, loader: Callable[[], Any]) -> Any:
     """Memoise ``loader()`` against ``path``'s mtime under ``tag``.
@@ -49,18 +58,120 @@ def _by_mtime(path: Path, tag: str, loader: Callable[[], Any]) -> Any:
     into a one-time cost; a live/being-pulled session re-reads only when its
     mtime advances. Returns ``None`` if the path has vanished.
     """
+    global _CACHE_DIRTY
     try:
         mt = path.stat().st_mtime_ns
     except OSError:
         return None
     key = (str(path), tag, mt)
-    hit = _CACHE.get(key)
-    if hit is None and key not in _CACHE:
-        if len(_CACHE) > _CACHE_CAP:
-            _CACHE.clear()
+    with _CACHE_LOCK:
+        hit = _CACHE.get(key)
+        known = key in _CACHE
+    if not known:
         hit = loader()
-        _CACHE[key] = hit
+        with _CACHE_LOCK:
+            if len(_CACHE) > _CACHE_CAP:
+                _CACHE.clear()
+            _CACHE[key] = hit
+            _CACHE_DIRTY = True
     return hit
+
+
+# ----------------------------------------------------------------------
+# On-disk persistence
+#
+# The cache above is per-process, so every panel restart re-globbed every
+# session directory and re-parsed every data.json from scratch. That is
+# O(files under output/) -- 400k files across 30 sessions by 2026-07-20 --
+# and it is paid at the worst possible moment, because you restart the panel
+# right after pulling a large session, when the OS file cache is cold and a
+# pull or enrich is still hammering the same disk.
+#
+# Staleness is impossible by construction: the mtime is part of the key, so a
+# changed file simply misses and re-loads. Entries whose file has vanished or
+# moved on are dropped when saving, which bounds growth without a TTL.
+
+
+def _is_jsonable(value: Any) -> bool:
+    """Whether a cached value survives a JSON round trip.
+
+    Most loaders return ints and plain dicts. A few (corpus, model checkpoint,
+    training runs) return dataclasses, which don't -- and don't need to: there
+    are a handful of them and they're cheap to rebuild, unlike the per-session
+    globs and parses this exists for. Rather than maintain a list of which tags
+    are safe, just try.
+    """
+    try:
+        json.dumps(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def load_cache(output_root: Path) -> int:
+    """Point the cache at ``output_root`` and load any previous contents.
+
+    Returns the number of entries restored. Never raises: a corrupt or absent
+    cache file simply starts empty -- it is an optimisation, not state.
+    """
+    global _CACHE_PATH, _CACHE_DIRTY
+    _CACHE_PATH = output_root / _CACHE_FILE
+    try:
+        raw = json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    if not isinstance(raw, list):
+        return 0
+
+    restored = 0
+    with _CACHE_LOCK:
+        for row in raw:
+            if not isinstance(row, dict):
+                continue
+            try:
+                key = (str(row["path"]), str(row["tag"]), int(row["mtime_ns"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            _CACHE[key] = row.get("value")
+            restored += 1
+        _CACHE_DIRTY = False
+    return restored
+
+
+def save_cache() -> int:
+    """Persist the cache if it changed. Returns the number of entries written.
+
+    Drops entries whose file no longer has the cached mtime, so a session that
+    was deleted or re-pulled doesn't accumulate dead keys forever.
+    """
+    global _CACHE_DIRTY
+    if _CACHE_PATH is None or not _CACHE_DIRTY:
+        return 0
+
+    with _CACHE_LOCK:
+        items = list(_CACHE.items())
+
+    rows = []
+    for (path_s, tag, mt), value in items:
+        if not _is_jsonable(value):
+            continue
+        try:
+            if Path(path_s).stat().st_mtime_ns != mt:
+                continue  # superseded; the live key will be written instead
+        except OSError:
+            continue  # gone
+        rows.append({"path": path_s, "tag": tag, "mtime_ns": mt, "value": value})
+
+    try:
+        _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _CACHE_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(rows), encoding="utf-8")
+        tmp.replace(_CACHE_PATH)
+    except OSError:
+        return 0  # a cache we can't write is not worth failing a poll over
+
+    _CACHE_DIRTY = False
+    return len(rows)
 
 
 def _read_json(path: Path) -> Any:
