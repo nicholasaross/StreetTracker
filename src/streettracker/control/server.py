@@ -82,6 +82,10 @@ class _State:
             self.output_root, self.runs_dir, self.model_path, allow_torch=allow_torch
         )
         self.local_refreshed_at = time.time()
+        # Persist whatever this scan newly learned. A no-op when nothing
+        # changed, so the steady-state poll costs nothing extra; the point is
+        # that the NEXT panel start doesn't re-glob 400k files.
+        introspect.save_cache()
 
     def refresh_orin(self) -> None:
         self.orin = orin.orin_live_snapshot(
@@ -496,6 +500,12 @@ def build_app(
         remote_parent=remote_parent,
         transfer_mbps=transfer_mbps,
     )
+    # Restore the previous run's read cache BEFORE the eager scan, or startup
+    # re-globs every session directory and re-parses every data.json. That cost
+    # is O(files under output/) and lands exactly when you restart the panel
+    # after a big pull -- cold OS cache, disk still busy with the enrich.
+    introspect.load_cache(output_root)
+
     # allow_torch=False keeps startup off the torch import path; the background
     # rescan fills model metadata in moments.
     state.refresh_local(allow_torch=not background)
