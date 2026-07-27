@@ -46,7 +46,10 @@ from streettracker.analysis.snap_assets import (
 # untracked.
 DEFAULT_BESPOKE_MODEL = (
     Path(__file__).resolve().parent.parent
-    / "analysis" / "alpr" / "models" / "license_plate_detector.pt"
+    / "analysis"
+    / "alpr"
+    / "models"
+    / "license_plate_detector.pt"
 )
 
 
@@ -84,7 +87,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="fast-plate-ocr model alias for the preferred pipeline OCR.",
     )
     ap.add_argument(
-        "--gpu", action="store_true", help="Pass gpu=True to EasyOCR.",
+        "--gpu",
+        action="store_true",
+        help="Pass gpu=True to EasyOCR.",
     )
     ap.add_argument(
         "--limit",
@@ -145,12 +150,29 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     ap.add_argument(
+        "--no-static-filter",
+        action="store_true",
+        help=(
+            "Disable the automatic static-plate filter. By default, "
+            "detections that recur at a fixed 4K position (while the "
+            "tracked car moves, or across many distinct tracks with "
+            "near-identical box size) are marked static_suspect in "
+            "<session>_alpr.json, excluded from the per-track rollup, "
+            "and summarised in <session>_static_plates.json. This is "
+            "the dynamic successor to --ghost-mask: parked cars move "
+            "between sessions, so a hand-traced rect can't keep up -- "
+            "e.g. FD61PVX re-parked outside its masked spot and "
+            "contributed 49 canonical 'reads' to passing R->L tracks "
+            "across the 2026-06/07 soaks."
+        ),
+    )
+    ap.add_argument(
         "--ghost-mask",
         type=Path,
         default=None,
         help=(
             "Path to a JSON file with parked-car/no-go rects in 4K snap "
-            "coords. Schema: {\"source_size\": [w, h], \"rects_4k\": "
+            'coords. Schema: {"source_size": [w, h], "rects_4k": '
             "[[x1, y1, x2, y2], ...]}. Each rect is zero-filled on the "
             "image before detection so the plate detector cannot see "
             "stationary plates that aren't from passing traffic. "
@@ -207,10 +229,7 @@ def main(argv: list[str] | None = None) -> int:
 
     ghost_rects, ghost_src = _load_ghost_mask(args.ghost_mask)
     if ghost_rects:
-        print(
-            f"[alpr] ghost mask: {len(ghost_rects)} rect(s) loaded "
-            f"(source_size={ghost_src})"
-        )
+        print(f"[alpr] ghost mask: {len(ghost_rects)} rect(s) loaded (source_size={ghost_src})")
 
     all_records: list[dict] = []
     crops_root = session_dir / "alpr_crops"
@@ -220,14 +239,22 @@ def main(argv: list[str] | None = None) -> int:
         for i, (image_path, tid, snap_index, cls) in enumerate(snaps, 1):
             if args.hint_lookahead > 0:
                 hint = _resolve_bbox_hint_window(
-                    image_path, tid, snap_index, bbox_index, sub_size,
+                    image_path,
+                    tid,
+                    snap_index,
+                    bbox_index,
+                    sub_size,
                     lookahead=args.hint_lookahead,
                     done_index=done_index,
                 )
             else:
                 hint = _resolve_bbox_hint(image_path, tid, snap_index, bbox_index, sub_size)
             result = runner.run(
-                image_path, tid, snap_index, cls, crop_dir,
+                image_path,
+                tid,
+                snap_index,
+                cls,
+                crop_dir,
                 bbox_hint=hint,
                 ghost_rects=ghost_rects,
                 ghost_source_size=ghost_src,
@@ -239,6 +266,31 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  [{runner.name}] {image_path.name}: ERROR {result.error}")
 
     session_label = session_dir.name
+
+    if not args.no_static_filter:
+        from streettracker.analysis.alpr.staticfilter import (
+            find_static_spots,
+            mark_static_suspects,
+        )
+
+        # Completion-time bboxes are the car's true position; fall back
+        # to fire-time bboxes for older sessions so the affine-
+        # consistency check still has something to work with.
+        car_index = {**bbox_index, **done_index}
+        img_size = _first_snap_size(snaps)
+        spots, consistent = find_static_spots(all_records, car_index, sub_size, img_size)
+        n_suspect = mark_static_suspects(all_records, spots, consistent)
+        spots_path = session_dir / f"{session_label}_static_plates.json"
+        atomic_write_text(
+            spots_path,
+            json.dumps({"spots": spots, "n_suspect_reads": n_suspect}, indent=2),
+        )
+        print(
+            f"[alpr] static-plate filter: {len(spots)} static spot(s), "
+            f"{n_suspect} detection(s) marked static_suspect "
+            f"(excluded from the by-track rollup); map -> {spots_path.name}"
+        )
+
     out_path = session_dir / f"{session_label}_alpr.json"
     atomic_write_text(out_path, json.dumps(all_records, indent=2))
     print(f"[alpr] wrote {out_path}")
@@ -248,6 +300,28 @@ def main(argv: list[str] | None = None) -> int:
     atomic_write_text(rollup_path, json.dumps(rollup, indent=2))
     print(f"[alpr] wrote {rollup_path}")
     return 0
+
+
+def _first_snap_size(
+    snaps: list[tuple[Path, int, int, str]],
+) -> tuple[int, int] | None:
+    """Pixel size of the first readable snap (header-only read).
+
+    The static filter needs it to scale sub-stream car bboxes into
+    snap coords. All snaps in a session share one main-stream
+    resolution, so the first is representative.
+    """
+    for image_path, _tid, _snap, _cls in snaps:
+        try:
+            from PIL import Image
+        except ImportError:
+            return None
+        try:
+            with Image.open(image_path) as im:
+                return (int(im.size[0]), int(im.size[1]))
+        except (OSError, ValueError):
+            continue
+    return None
 
 
 def _load_ghost_mask(
@@ -327,12 +401,14 @@ def _build_pipelines(args: argparse.Namespace) -> list[PipelineRunner]:
 
         bespoke_det = BespokeDetector(bespoke_model)
         if args.pipeline in ("both", "bespoke"):
-            pipelines.append(PipelineRunner(
-                name="bespoke",
-                detector=_wrap(bespoke_det, "bespoke"),
-                recognizer=EasyOcrRecognizer(use_gpu=args.gpu),
-                plate_pad_frac=args.plate_pad_frac,
-            ))
+            pipelines.append(
+                PipelineRunner(
+                    name="bespoke",
+                    detector=_wrap(bespoke_det, "bespoke"),
+                    recognizer=EasyOcrRecognizer(use_gpu=args.gpu),
+                    plate_pad_frac=args.plate_pad_frac,
+                )
+            )
 
     if args.pipeline in ("both", "preferred") or args.ablation:
         from streettracker.analysis.alpr.preferred import (
@@ -342,22 +418,26 @@ def _build_pipelines(args: argparse.Namespace) -> list[PipelineRunner]:
 
         oim_det = OpenImageModelsDetector(args.detector_model)
         if args.pipeline in ("both", "preferred"):
-            pipelines.append(PipelineRunner(
-                name="preferred",
-                detector=_wrap(oim_det, "preferred"),
-                recognizer=FastPlateOcrRecognizer(args.ocr_model),
-                plate_pad_frac=args.plate_pad_frac,
-            ))
+            pipelines.append(
+                PipelineRunner(
+                    name="preferred",
+                    detector=_wrap(oim_det, "preferred"),
+                    recognizer=FastPlateOcrRecognizer(args.ocr_model),
+                    plate_pad_frac=args.plate_pad_frac,
+                )
+            )
 
     if args.ablation and bespoke_det is not None:
         from streettracker.analysis.alpr.preferred import FastPlateOcrRecognizer
 
-        pipelines.append(PipelineRunner(
-            name="ablation_bespokedet_fastocr",
-            detector=_wrap(bespoke_det, "ablation_bespokedet_fastocr"),
-            recognizer=FastPlateOcrRecognizer(args.ocr_model),
-            plate_pad_frac=args.plate_pad_frac,
-        ))
+        pipelines.append(
+            PipelineRunner(
+                name="ablation_bespokedet_fastocr",
+                detector=_wrap(bespoke_det, "ablation_bespokedet_fastocr"),
+                recognizer=FastPlateOcrRecognizer(args.ocr_model),
+                plate_pad_frac=args.plate_pad_frac,
+            )
+        )
 
     return pipelines
 
@@ -380,13 +460,17 @@ def _rollup_by_track(records: list[dict]) -> dict:
     from streettracker.analysis.alpr.consensus import consensus_plate
 
     by_pipe_track: dict[str, dict[int, dict]] = defaultdict(dict)
-    by_pipe_track_all: dict[str, dict[int, list[dict]]] = defaultdict(
-        lambda: defaultdict(list)
-    )
+    by_pipe_track_all: dict[str, dict[int, list[dict]]] = defaultdict(lambda: defaultdict(list))
     for r in records:
         p = r["pipeline"]
         tid = r["track_id"]
         if not r.get("ocr_text"):
+            continue
+        if r.get("static_suspect"):
+            # Static-plate reads (parked cars / fixed scene objects
+            # swept into the crop window) must not become a track's
+            # best read or vote in its consensus -- that's exactly the
+            # mis-attribution the filter exists to stop.
             continue
         cur_best = by_pipe_track[p].get(tid)
         if cur_best is None or (r.get("ocr_conf") or 0) > (cur_best.get("ocr_conf") or 0):
