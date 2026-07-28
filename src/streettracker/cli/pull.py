@@ -226,6 +226,30 @@ def _remote_basenames(host: str, user: str, key: str, remote_path: str, pattern:
     return {line.strip() for line in out.splitlines() if line.strip()}
 
 
+def _is_intact_jpeg(path: Path) -> bool:
+    """Cheap validity gate for a locally-present snap.
+
+    A complete JPEG starts with SOI (``FF D8``) and ends with EOI
+    (``FF D9``). An interrupted ``sftp get`` writes directly to the
+    final name, so a killed transfer (the dev box idle-sleeps and the
+    app helper can recycle mid-pull -- both reap the sftp process)
+    leaves a full-size zero-filled or tail-truncated file at the right
+    basename. Without this check the name-only diff below would treat
+    that corpse as "already have it" and never re-fetch it. Surfaced
+    2026-07-28: one session carried 634 zero-filled snaps (195 cars
+    lost every snap) that had survived every subsequent
+    ``--skip-existing`` pull.
+    """
+    try:
+        with path.open("rb") as f:
+            if f.read(2) != b"\xff\xd8":
+                return False
+            f.seek(-2, 2)
+            return f.read(2) == b"\xff\xd9"
+    except OSError:
+        return False
+
+
 def sftp_get_missing(
     host: str,
     user: str,
@@ -247,9 +271,24 @@ def sftp_get_missing(
     handshake, no command-line-length limit).
     """
     remote = _remote_basenames(host, user, key, remote_path, pattern)
-    local = {p.name for p in local_session.glob(pattern)}
-    missing = sorted(remote - local)
-    print(f"[pull] {pattern}: {len(remote)} remote / {len(local)} local / {len(missing)} new")
+    # Immutability lets us diff by basename -- but only for files that
+    # actually arrived intact. A corrupt local snap (interrupted prior
+    # transfer) whose name is still on the Orin is re-fetched, which
+    # overwrites the corpse; one the Orin has since pruned can't be
+    # recovered and is left as-is.
+    local_intact: set[str] = set()
+    n_corrupt = 0
+    for p in local_session.glob(pattern):
+        if _is_intact_jpeg(p):
+            local_intact.add(p.name)
+        else:
+            n_corrupt += 1
+    missing = sorted(remote - local_intact)
+    corrupt_note = f" ({n_corrupt} corrupt, re-fetching)" if n_corrupt else ""
+    print(
+        f"[pull] {pattern}: {len(remote)} remote / {len(local_intact)} local intact"
+        f"{corrupt_note} / {len(missing)} to fetch"
+    )
     if not missing:
         return 0
     if dry_run:
