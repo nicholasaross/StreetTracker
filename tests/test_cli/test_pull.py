@@ -17,6 +17,10 @@ import pytest
 
 from streettracker.cli import pull
 
+# A minimal well-formed JPEG: SOI ... EOI. The integrity gate in
+# sftp_get_missing only checks the first/last two bytes.
+_JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01payload\xff\xd9"
+
 
 def test_human_bytes_scales_through_units() -> None:
     assert pull.human_bytes(0) == "0.0 B"
@@ -250,7 +254,7 @@ def test_sftp_get_missing_fetches_only_new(tmp_path: Path) -> None:
     already-present snap is skipped (immutable -> no re-transfer)."""
     local_session = tmp_path / "session_x"
     local_session.mkdir()
-    (local_session / "vehicle_1_main_1.jpg").write_bytes(b"have")
+    (local_session / "vehicle_1_main_1.jpg").write_bytes(_JPEG)
     remote = {"vehicle_1_main_1.jpg", "vehicle_2_main_1.jpg", "vehicle_3_main_1.jpg"}
     captured: dict[str, Any] = {}
 
@@ -281,10 +285,62 @@ def test_sftp_get_missing_fetches_only_new(tmp_path: Path) -> None:
     assert "vehicle_1_main_1.jpg" not in body  # already local -> not re-fetched
 
 
+def test_is_intact_jpeg_rejects_corruption(tmp_path: Path) -> None:
+    ok = tmp_path / "ok.jpg"
+    ok.write_bytes(_JPEG)
+    assert pull._is_intact_jpeg(ok) is True
+    # Full-size zero-filled corpse from an interrupted transfer.
+    zeroed = tmp_path / "zeroed.jpg"
+    zeroed.write_bytes(b"\x00" * 4096)
+    assert pull._is_intact_jpeg(zeroed) is False
+    # Header present, EOI missing (tail-truncated mid-write).
+    truncated = tmp_path / "truncated.jpg"
+    truncated.write_bytes(b"\xff\xd8\xff\xe0" + b"\x11" * 4096)
+    assert pull._is_intact_jpeg(truncated) is False
+    # Absent file.
+    assert pull._is_intact_jpeg(tmp_path / "nope.jpg") is False
+
+
+def test_sftp_get_missing_refetches_corrupt_local(tmp_path: Path) -> None:
+    """A locally-present but corrupt snap (zero-filled / truncated) is
+    re-fetched, overwriting the corpse -- name presence alone is not
+    trusted. Regression guard for the 2026-07-28 zero-filled-snap bug."""
+    local_session = tmp_path / "session_x"
+    local_session.mkdir()
+    (local_session / "vehicle_1_main_1.jpg").write_bytes(_JPEG)  # intact -> skip
+    (local_session / "vehicle_2_main_1.jpg").write_bytes(b"\x00" * 2048)  # zeroed -> refetch
+    (local_session / "vehicle_3_main_1.jpg").write_bytes(b"\xff\xd8bad")  # no EOI -> refetch
+    remote = {"vehicle_1_main_1.jpg", "vehicle_2_main_1.jpg", "vehicle_3_main_1.jpg"}
+    captured: dict[str, Any] = {}
+
+    def _capture(args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        captured["input"] = kwargs.get("input", "")
+        return _fake_completed(returncode=0)
+
+    with (
+        patch("streettracker.cli.pull._remote_basenames", return_value=remote),
+        patch("streettracker.cli.pull.subprocess.run", side_effect=_capture),
+    ):
+        n = pull.sftp_get_missing(
+            "orin",
+            "u",
+            "/k",
+            "/srv/output/session_x",
+            local_session,
+            "*_main_*.jpg",
+            dry_run=False,
+        )
+    assert n == 2
+    body = captured["input"]
+    assert 'get -p "vehicle_2_main_1.jpg"' in body  # zeroed re-fetched
+    assert 'get -p "vehicle_3_main_1.jpg"' in body  # truncated re-fetched
+    assert "vehicle_1_main_1.jpg" not in body  # intact -> not re-fetched
+
+
 def test_sftp_get_missing_nothing_new_skips_sftp(tmp_path: Path) -> None:
     local_session = tmp_path / "session_x"
     local_session.mkdir()
-    (local_session / "vehicle_1_main_1.jpg").write_bytes(b"x")
+    (local_session / "vehicle_1_main_1.jpg").write_bytes(_JPEG)
     with (
         patch("streettracker.cli.pull._remote_basenames", return_value={"vehicle_1_main_1.jpg"}),
         patch("streettracker.cli.pull.subprocess.run") as mock_run,

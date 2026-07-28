@@ -342,6 +342,22 @@ def main(argv: list[str] | None = None) -> int:
     rollup_path = session_dir / f"{session_label}_alpr_by_track.json"
     atomic_write_text(rollup_path, json.dumps(rollup, indent=2))
     print(f"[alpr] wrote {rollup_path}")
+
+    # Corrupt-input summary. imread failures are unreadable snaps, not a
+    # processing fault -- almost always a full-size zero-filled / tail-
+    # truncated file left by an interrupted pull. Surface it as one clear
+    # line so the operator (and the panel's issue detector) sees the
+    # cause and the fix, instead of digging through per-record errors.
+    n_unreadable = sum(1 for r in all_records if r.get("error") == "imread_failed")
+    if n_unreadable:
+        pct = 100.0 * n_unreadable / len(all_records) if all_records else 0.0
+        print(
+            f"[alpr] WARNING: {n_unreadable}/{len(all_records)} snaps unreadable "
+            f"({pct:.1f}%) -- corrupt/zero-filled inputs, most likely an "
+            f"interrupted pull. Re-run `streettracker pull --skip-existing` "
+            f"for this session to re-fetch them (fixed to overwrite corrupt "
+            f"local files), then re-run alpr-run."
+        )
     return 0
 
 
