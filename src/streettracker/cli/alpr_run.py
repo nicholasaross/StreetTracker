@@ -310,9 +310,23 @@ def main(argv: list[str] | None = None) -> int:
         spots, consistent = find_static_spots(all_records, car_index, sub_size, img_size)
         n_suspect = mark_static_suspects(all_records, spots, consistent)
         spots_path = session_dir / f"{session_label}_static_plates.json"
+        from datetime import datetime, timezone
+
         atomic_write_text(
             spots_path,
-            json.dumps({"spots": spots, "n_suspect_reads": n_suspect}, indent=2),
+            json.dumps(
+                {
+                    # Provenance stamp: which crop path produced this
+                    # session's ALPR results. The control panel reads it
+                    # to badge sessions as re-enriched (fullframe) vs
+                    # needing a re-run -- see introspect.session_info.
+                    "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "crop_mode": args.crop_mode,
+                    "spots": spots,
+                    "n_suspect_reads": n_suspect,
+                },
+                indent=2,
+            ),
         )
         print(
             f"[alpr] static-plate filter: {len(spots)} static spot(s), "

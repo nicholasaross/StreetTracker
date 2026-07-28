@@ -56,10 +56,36 @@ def test_session_info_counts_and_span(tmp_path: Path) -> None:
     assert info.duration_s == 30.0
     # No enrichment files written yet.
     assert info.has_alpr is False
+    assert info.alpr_crop_mode is None
     assert info.n_dvsa_labels == 0
     assert info.has_vehicles is False
     assert info.has_makemodel is False
     assert info.has_people is False
+
+
+def test_session_info_alpr_crop_mode_stamp(tmp_path: Path) -> None:
+    d = _make_session(tmp_path)
+    (d / f"{SESSION}_alpr_by_track.json").write_text("{}")
+    # Sidecar without a stamp (pre-2026-07-28 static-filter run):
+    # provenance unknown -> treated as needing a fullframe re-run.
+    sidecar = d / f"{SESSION}_static_plates.json"
+    sidecar.write_text(json.dumps({"spots": [], "n_suspect_reads": 0}))
+    assert introspect.session_info(d).alpr_crop_mode is None
+    # Stamped sidecar (current alpr-run) -> mode surfaces. Bump the
+    # mtime explicitly so the by-mtime cache can't serve the first read.
+    sidecar.write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-07-28T09:00:00+00:00",
+                "crop_mode": "fullframe",
+                "spots": [],
+                "n_suspect_reads": 0,
+            }
+        )
+    )
+    stat = sidecar.stat()
+    os.utime(sidecar, (stat.st_atime + 10, stat.st_mtime + 10))
+    assert introspect.session_info(d).alpr_crop_mode == "fullframe"
 
 
 def test_session_info_enrichment_badges(tmp_path: Path) -> None:
