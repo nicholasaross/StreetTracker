@@ -257,6 +257,17 @@
   function estep(on, label, tip, extra){
     return `<span class="tag ${on?'on':''}" title="${esc(tip)}">${esc(label)}${(on&&extra)?(" "+esc(extra)):""}</span>`;
   }
+  // Plates gets a three-state badge: green "Plates v2" = re-enriched with the
+  // full-frame crop path (2026-07-28, recovers R->L reads), amber "Plates v1" =
+  // ALPR ran with the superseded hint-crop pipeline (re-run to recover R->L),
+  // grey = never run.
+  function platesTag(x){
+    if (!x.has_alpr)
+      return estep(false, "Plates", "ALPR plate-OCR has not run on this session yet.");
+    if (x.alpr_crop_mode === "fullframe")
+      return `<span class="tag on" title="ALPR ran with the full-frame trajectory-matched crop path (2026-07-28) — R→L reads recovered. Up to date.">Plates v2</span>`;
+    return `<span class="tag stale" title="ALPR ran with the superseded hint-crop pipeline — R→L reads are mostly missing and parked-plate contamination is unfiltered. Re-run the enrich playbook (or alpr-run) to upgrade.">Plates v1</span>`;
+  }
   function sessionsHtml(local){
     const s = local.sessions || [], t = local.totals || {};
     document.getElementById("sessTotals").textContent =
@@ -273,7 +284,7 @@
         <td>${fmtInt(x.n_tracks)} <span class="muted">(${fmtInt(x.n_cars)} cars · ${fmtInt(x.n_persons)} people)</span></td>
         <td>${fmtInt(x.n_vehicle_snaps)} <span class="muted">veh</span> · ${fmtInt(x.n_person_snaps)} <span class="muted">ppl</span></td>
         <td class="enr">
-          ${estep(x.has_alpr,"Plates","ALPR plate-OCR has run — reads number plates from the snaps.")}
+          ${platesTag(x)}
           ${estep(x.n_dvsa_labels>0,"DVSA","DVSA MOT make/model/colour lookups by plate. The number is how many plates resolved.", x.n_dvsa_labels||"")}
           ${estep(x.has_vehicles,"Vehicles","Per-vehicle aggregation (streettracker vehicles → _vehicles.json). Optional — the showcase rebuilds this view live, so it is only saved where the command was run explicitly.")}
           ${estep(x.has_makemodel,"Make/model","Make/model CNN inference has run on this session's snaps.")}
@@ -287,6 +298,7 @@
       <div class="legend">
         <span><b>Enrichment pipeline:</b> Plates → DVSA → Vehicles → Make/model → People</span>
         <span><span class="tag on">done</span> step has run</span>
+        <span><span class="tag stale">Plates v1</span> old crop path — re-run to recover R→L reads</span>
         <span><span class="tag">pending</span> not run yet</span>
         <span class="muted">Pending (grey) steps are the to-do — Phase 2 runs them from here.</span>
       </div>`;

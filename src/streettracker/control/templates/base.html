@@ -92,6 +92,9 @@
   .tag { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 5px;
     border: 1px solid var(--line); color: var(--idle); white-space: nowrap; cursor: help; }
   .tag.on { color: #0e1116; background: var(--ok); border-color: transparent; }
+  /* Enrichment step that HAS run but with a superseded pipeline (e.g.
+     pre-fullframe ALPR) — amber: usable data, re-run recommended. */
+  .tag.stale { color: #0e1116; background: var(--warn); border-color: transparent; }
   .legend { color: var(--muted); font-size: 12px; margin-top: 12px; display: flex; gap: 16px;
     flex-wrap: wrap; align-items: center; }
   .legend .tag { cursor: default; }
