@@ -125,11 +125,40 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     ap.add_argument(
         "--vehicle-model",
-        default="yolov8n.pt",
+        default=None,
         help=(
-            "Ultralytics YOLO model used for the pre-crop vehicle stage. "
-            "Defaults to yolov8n (auto-downloads on first use). Ignored "
-            "without --pre-crop."
+            "Ultralytics YOLO model used for the vehicle stage. Defaults "
+            "to yolov8m for --crop-mode fullframe (full-frame detection "
+            "needs the accuracy) and yolov8n for the legacy hint path. "
+            "Auto-downloads on first use."
+        ),
+    )
+    ap.add_argument(
+        "--crop-mode",
+        choices=("fullframe", "hint"),
+        default="fullframe",
+        help=(
+            "How the plate detector's crop is targeted. 'fullframe' "
+            "(default since 2026-07-28): detect vehicles on the whole "
+            "snap, keep on-road candidates, rank by distance to the "
+            "bbox hint and take the best plate detection -- the "
+            "offline E1 re-score showed the recorded bboxes sit a "
+            "median ~510 px from the car in the image, and this path "
+            "lifted the R->L per-car canonical rate from 7-10%% to "
+            "75-93%% on the same images. 'hint' restores the legacy "
+            "hint-window crop behaviour (with --pre-crop as before)."
+        ),
+    )
+    ap.add_argument(
+        "--road-polygon",
+        type=Path,
+        default=Path(".claude/triggers_proposal.json"),
+        help=(
+            "JSON with the operator-traced road outline as fractional "
+            "vertices (triggers_proposal.json schema: vertices_frac). "
+            "Used by --crop-mode fullframe to reject off-road vehicles "
+            "(driveways, parked forecourts). Missing file = no on-road "
+            "filter, with a notice."
         ),
     )
     ap.add_argument(
@@ -368,22 +397,60 @@ def _load_ghost_mask(
     return out, src_size
 
 
+def _load_road_polygon(path: Path | None) -> list[tuple[float, float]] | None:
+    """Fractional road-outline vertices for the fullframe crop path.
+
+    Reads the ``vertices_frac`` field of a triggers_proposal-schema
+    JSON. Missing/unreadable file returns ``None`` (no on-road filter)
+    with a notice rather than an error -- the fullframe path still
+    works, it just can't reject driveway/forecourt vehicles.
+    """
+    if path is None or not path.exists():
+        if path is not None:
+            print(
+                f"[alpr] --road-polygon {path}: not found; fullframe crop "
+                f"runs without the on-road filter",
+                file=sys.stderr,
+            )
+        return None
+    try:
+        spec = json.loads(path.read_text())
+        verts = spec.get("vertices_frac") or []
+        out = [(float(x), float(y)) for x, y in verts]
+        return out if len(out) >= 3 else None
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as e:
+        print(f"[alpr] --road-polygon {path}: parse error ({e}), ignoring", file=sys.stderr)
+        return None
+
+
 def _build_pipelines(args: argparse.Namespace) -> list[PipelineRunner]:
     pipelines: list[PipelineRunner] = []
     bespoke_model = args.bespoke_model
     if not bespoke_model.is_absolute():
         bespoke_model = Path.cwd() / bespoke_model
 
-    # Optional vehicle pre-crop wrapper. Shared across pipelines so the
-    # ultralytics YOLO weights load once.
+    poly_frac = _load_road_polygon(args.road_polygon) if args.crop_mode == "fullframe" else None
+
+    # Crop-targeting wrapper. Shared across pipelines so the ultralytics
+    # YOLO weights load once per wrapper class.
     def _wrap(detector, suffix: str):
+        if args.crop_mode == "fullframe":
+            from streettracker.analysis.alpr.fullframe import TrajectoryCropDetector
+
+            ff_wrapped = TrajectoryCropDetector(
+                plate_detector=detector,
+                vehicle_model=args.vehicle_model or "yolov8m.pt",
+                road_polygon_frac=poly_frac,
+            )
+            ff_wrapped.name = f"fullframe-{suffix}"
+            return ff_wrapped
         if not args.pre_crop:
             return detector
         from streettracker.analysis.alpr.precrop import PreCropDetector
 
         wrapped = PreCropDetector(
             plate_detector=detector,
-            vehicle_model=args.vehicle_model,
+            vehicle_model=args.vehicle_model or "yolov8n.pt",
             # Motion-window hints are wide; restore tight-crop resolution
             # by vehicle-detecting INSIDE the window before plate-detection.
             vehicle_stage_in_hint=args.hint_lookahead > 0,
