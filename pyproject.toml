@@ -37,7 +37,17 @@ dependencies = [
     "onnxslim>=0.1",
     # Upper-bound at <1.24: onnxruntime 1.24+ dropped cp310 wheels (cp311+ only),
     # and the Jetson aarch64 venv is locked to cp310 for the torch wheel.
-    "onnxruntime>=1.18,<1.24",
+    #
+    # aarch64-only: `onnxruntime` (CPU) and the alpr extra's
+    # `onnxruntime-gpu` are the SAME import module and install to the
+    # same `onnxruntime/` dir, so on the x86 dev box (which installs the
+    # alpr extra) co-installing both lets whichever landed last win --
+    # a resync can silently flip inference to CPU-only. The Orin
+    # (aarch64) needs the CPU build for `export-engine`'s onnx
+    # validation and never runs ALPR, so gate the CPU build to aarch64
+    # and let onnxruntime-gpu be the sole provider on x86. CI installs
+    # neither (explicit minimal `uv pip install`), so it's unaffected.
+    "onnxruntime>=1.18,<1.24; platform_machine == 'aarch64'",
     # Required at runtime by the community Jetson aarch64 torch wheel (cp310,
     # sm_87). Not needed on x86_64 where the PyPI cu126 wheel doesn't link
     # against cuDSS.

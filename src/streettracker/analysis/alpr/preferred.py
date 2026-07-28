@@ -21,6 +21,26 @@ if TYPE_CHECKING:
     import numpy as np
 
 
+def _gpu_first_providers() -> list[str]:
+    """ONNX execution providers, CUDA-first, with TensorRT excluded.
+
+    onnxruntime-gpu advertises ``TensorrtExecutionProvider``, so a
+    session created with the default provider list tries TensorRT first,
+    fails (the dev box has no TensorRT plugin libs), and onnxruntime
+    prints a multi-line ``*** EP Error ***`` banner before falling back
+    to CUDA on *every* alpr-run. It's harmless -- the run still lands on
+    the GPU -- but it reads like a crash and tripped the control panel's
+    issue detector. Requesting only ``[CUDA, CPU]`` (filtered to what's
+    actually compiled in) keeps GPU acceleration, drops the banner, and
+    still degrades cleanly to CPU on a CPU-only host (e.g. the Orin,
+    which has no GPU onnxruntime and never runs ALPR anyway).
+    """
+    import onnxruntime as ort  # type: ignore[import-untyped]
+
+    available = set(ort.get_available_providers())
+    return [p for p in ("CUDAExecutionProvider", "CPUExecutionProvider") if p in available]
+
+
 class OpenImageModelsDetector:
     name = "oim"
 
@@ -31,7 +51,9 @@ class OpenImageModelsDetector:
     ) -> None:
         from open_image_models import LicensePlateDetector
 
-        self._detector = LicensePlateDetector(detection_model=detector_model)
+        self._detector = LicensePlateDetector(
+            detection_model=detector_model, providers=_gpu_first_providers()
+        )
         self._det_conf = det_conf
 
     def detect(
@@ -73,7 +95,11 @@ class FastPlateOcrRecognizer:
             from fast_plate_ocr import (
                 ONNXPlateRecognizer as _Recognizer,  # type: ignore[attr-defined,no-redef]
             )
-        self._recognizer = _Recognizer(ocr_model)
+        # Pin providers (CUDA-first, no TensorRT) as for the detector.
+        # fast-plate-ocr is pinned >=0.3, whose LicensePlateRecognizer
+        # takes ``providers``; the legacy ONNXPlateRecognizer branch
+        # above only trips on much older builds the pin excludes.
+        self._recognizer = _Recognizer(ocr_model, providers=_gpu_first_providers())
 
     def recognize(self, crop_bgr: np.ndarray) -> PlateRead | None:
         import cv2
@@ -84,11 +110,7 @@ class FastPlateOcrRecognizer:
         # docstring, in-memory ndarrays "are assumed to already use the
         # expected color mode", so a 3-channel BGR crop raises an
         # ONNXRuntime shape error.
-        gray = (
-            cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
-            if crop_bgr.ndim == 3
-            else crop_bgr
-        )
+        gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY) if crop_bgr.ndim == 3 else crop_bgr
         out = self._recognizer.run(gray, return_confidence=True)
         raw, conf = _unpack_ocr_output(out)
         if not raw:
