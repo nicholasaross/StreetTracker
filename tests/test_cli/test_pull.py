@@ -8,7 +8,9 @@ network-touching paths.
 
 from __future__ import annotations
 
+import re
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -20,6 +22,37 @@ from streettracker.cli import pull
 # A minimal well-formed JPEG: SOI ... EOI. The integrity gate in
 # sftp_get_missing only checks the first/last two bytes.
 _JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01payload\xff\xd9"
+
+_GET_RE = re.compile(r'get -p "([^"]+)"')
+
+
+def _sftp_stub(
+    local_session: Path,
+    captured: dict[str, Any],
+    *,
+    land: set[str] | None = None,
+    returncode: int = 0,
+) -> Any:
+    """Fake ``sftp -b -``: record each batch body and write an intact JPEG
+    for every file it asked for, so the caller's landed-count check sees
+    them arrive. ``land`` restricts which names actually materialise --
+    used to simulate a snap pruned on the device mid-pull."""
+    lock = threading.Lock()
+
+    def _run(args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        body = kwargs.get("input", "")
+        names = _GET_RE.findall(body)
+        with lock:
+            captured["args"] = args
+            captured.setdefault("bodies", []).append(body)
+            captured["input"] = captured.get("input", "") + body
+            captured.setdefault("names", []).extend(names)
+        for name in names:
+            if land is None or name in land:
+                (local_session / name).write_bytes(_JPEG)
+        return _fake_completed(returncode=returncode)
+
+    return _run
 
 
 def test_human_bytes_scales_through_units() -> None:
@@ -234,19 +267,45 @@ def test_immutable_image_patterns_by_mode() -> None:
     assert pull._immutable_image_patterns(only_main=False) == ("*.jpg",)
 
 
-def test_remote_basenames_uses_find_not_glob() -> None:
+def test_remote_entries_uses_find_not_glob_and_parses_mtimes() -> None:
     """Regression: a busy session holds 40k+ snaps, so the enumeration
     must NOT shell-expand ``ls -1 *.jpg`` (overflows ARG_MAX -> silent
     empty -> skip-existing fetches nothing). It must use a server-side
-    ``find ... -printf`` that matches the pattern as a single argument."""
+    ``find ... -printf`` that matches the pattern as a single argument --
+    and emit the mtime alongside the name so the fetch can be age-ordered."""
     with patch("streettracker.cli.pull.subprocess.run") as mock_run:
-        mock_run.return_value = _fake_completed("vehicle_1_main_1.jpg\nvehicle_2_main_1.jpg\n")
-        names = pull._remote_basenames("orin", "u", "/k", "/srv/output/session_x", "*.jpg")
-    assert names == {"vehicle_1_main_1.jpg", "vehicle_2_main_1.jpg"}
+        mock_run.return_value = _fake_completed(
+            "1784631599.5287271520 vehicle_1_main_1.jpg\n1785179818.7 vehicle_2_main_1.jpg\n"
+        )
+        entries = pull._remote_entries("orin", "u", "/k", "/srv/output/session_x", "*.jpg")
+    assert entries == {
+        "vehicle_1_main_1.jpg": pytest.approx(1784631599.528727),
+        "vehicle_2_main_1.jpg": pytest.approx(1785179818.7),
+    }
     remote_cmd = mock_run.call_args.args[0][-1]  # ssh's trailing command string
     assert "find . -maxdepth 1 -name" in remote_cmd
     assert "-printf" in remote_cmd
+    assert "%T@" in remote_cmd  # mtime is what makes oldest-first possible
     assert "ls -1 *.jpg" not in remote_cmd  # the overflow-prone form is gone
+
+
+def test_remote_entries_skips_malformed_lines() -> None:
+    """A line without a stamp/name split, or a non-numeric stamp, is dropped
+    rather than crashing the whole enumeration."""
+    with patch("streettracker.cli.pull.subprocess.run") as mock_run:
+        mock_run.return_value = _fake_completed(
+            "\nnostamp\nnotanumber vehicle_9_main_1.jpg\n123.5 vehicle_1_main_1.jpg\n"
+        )
+        entries = pull._remote_entries("orin", "u", "/k", "/p", "*.jpg")
+    assert entries == {"vehicle_1_main_1.jpg": pytest.approx(123.5)}
+
+
+def test_stripe_deals_round_robin_preserving_order() -> None:
+    """Striping (not contiguous slicing) is what keeps a parallel fetch
+    age-ordered overall: each worker walks oldest->newest in step."""
+    assert pull._stripe(["a", "b", "c", "d", "e"], 2) == [["a", "c", "e"], ["b", "d"]]
+    assert pull._stripe(["a", "b"], 3) == [["a"], ["b"], []]
+    assert pull._stripe(["a", "b", "c"], 1) == [["a", "b", "c"]]
 
 
 def test_sftp_get_missing_fetches_only_new(tmp_path: Path) -> None:
@@ -255,17 +314,19 @@ def test_sftp_get_missing_fetches_only_new(tmp_path: Path) -> None:
     local_session = tmp_path / "session_x"
     local_session.mkdir()
     (local_session / "vehicle_1_main_1.jpg").write_bytes(_JPEG)
-    remote = {"vehicle_1_main_1.jpg", "vehicle_2_main_1.jpg", "vehicle_3_main_1.jpg"}
+    remote = {
+        "vehicle_1_main_1.jpg": 100.0,
+        "vehicle_2_main_1.jpg": 200.0,
+        "vehicle_3_main_1.jpg": 300.0,
+    }
     captured: dict[str, Any] = {}
 
-    def _capture(args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        captured["args"] = args
-        captured["input"] = kwargs.get("input", "")
-        return _fake_completed(returncode=0)
-
     with (
-        patch("streettracker.cli.pull._remote_basenames", return_value=remote),
-        patch("streettracker.cli.pull.subprocess.run", side_effect=_capture),
+        patch("streettracker.cli.pull._remote_entries", return_value=remote),
+        patch(
+            "streettracker.cli.pull.subprocess.run",
+            side_effect=_sftp_stub(local_session, captured),
+        ),
     ):
         n = pull.sftp_get_missing(
             "orin",
@@ -275,6 +336,7 @@ def test_sftp_get_missing_fetches_only_new(tmp_path: Path) -> None:
             local_session,
             "*_main_*.jpg",
             dry_run=False,
+            jobs=1,
         )
     assert n == 2
     assert captured["args"][0] == "sftp"
@@ -283,6 +345,107 @@ def test_sftp_get_missing_fetches_only_new(tmp_path: Path) -> None:
     assert 'get -p "vehicle_2_main_1.jpg"' in body
     assert 'get -p "vehicle_3_main_1.jpg"' in body
     assert "vehicle_1_main_1.jpg" not in body  # already local -> not re-fetched
+
+
+def test_sftp_get_missing_fetches_oldest_first(tmp_path: Path) -> None:
+    """The device prunes snaps by mtime, so the fetch order must be age
+    ascending -- an interrupted pull then loses only the newest tail, which
+    a re-run can still recover. Remote name order must not leak through."""
+    local_session = tmp_path / "session_x"
+    local_session.mkdir()
+    # Newest snap sorts FIRST alphabetically, so a name sort would invert age.
+    remote = {
+        "vehicle_1_main_1.jpg": 900.0,  # newest
+        "vehicle_2_main_1.jpg": 100.0,  # oldest
+        "vehicle_3_main_1.jpg": 500.0,
+    }
+    captured: dict[str, Any] = {}
+
+    with (
+        patch("streettracker.cli.pull._remote_entries", return_value=remote),
+        patch(
+            "streettracker.cli.pull.subprocess.run",
+            side_effect=_sftp_stub(local_session, captured),
+        ),
+    ):
+        pull.sftp_get_missing(
+            "orin", "u", "/k", "/p", local_session, "*_main_*.jpg", dry_run=False, jobs=1
+        )
+    assert captured["names"] == [
+        "vehicle_2_main_1.jpg",
+        "vehicle_3_main_1.jpg",
+        "vehicle_1_main_1.jpg",
+    ]
+
+
+def test_sftp_get_missing_ignores_per_file_errors(tmp_path: Path) -> None:
+    """Each get is ``-`` prefixed so a snap pruned between the enumeration
+    and its transfer cannot abort the batch and strand every later file."""
+    local_session = tmp_path / "session_x"
+    local_session.mkdir()
+    captured: dict[str, Any] = {}
+    with (
+        patch("streettracker.cli.pull._remote_entries", return_value={"vehicle_9_main_1.jpg": 1.0}),
+        patch(
+            "streettracker.cli.pull.subprocess.run",
+            side_effect=_sftp_stub(local_session, captured),
+        ),
+    ):
+        pull.sftp_get_missing(
+            "orin", "u", "/k", "/p", local_session, "*_main_*.jpg", dry_run=False, jobs=1
+        )
+    assert '-get -p "vehicle_9_main_1.jpg"' in captured["input"]
+
+
+def test_sftp_get_missing_splits_across_parallel_streams(tmp_path: Path) -> None:
+    """--jobs N fans the age-ordered list across N sftp connections, striped
+    so every stream advances through the age range together."""
+    local_session = tmp_path / "session_x"
+    local_session.mkdir()
+    remote = {f"vehicle_{i}_main_1.jpg": float(i) for i in range(1, 7)}
+    captured: dict[str, Any] = {}
+
+    with (
+        patch("streettracker.cli.pull._remote_entries", return_value=remote),
+        patch(
+            "streettracker.cli.pull.subprocess.run",
+            side_effect=_sftp_stub(local_session, captured),
+        ),
+    ):
+        n = pull.sftp_get_missing(
+            "orin", "u", "/k", "/p", local_session, "*_main_*.jpg", dry_run=False, jobs=3
+        )
+    assert n == 6
+    assert len(captured["bodies"]) == 3  # three separate sftp batches
+    batches = [_GET_RE.findall(b) for b in captured["bodies"]]
+    assert sorted(sum(batches, [])) == sorted(remote)  # every file dealt exactly once
+    # Striped, not sliced: the oldest three land in three different streams.
+    assert sorted(b[0] for b in batches) == [
+        "vehicle_1_main_1.jpg",
+        "vehicle_2_main_1.jpg",
+        "vehicle_3_main_1.jpg",
+    ]
+
+
+def test_sftp_get_missing_reports_only_what_landed(tmp_path: Path) -> None:
+    """A file pruned on the device mid-pull does not arrive; the return
+    count reflects reality rather than the size of the request."""
+    local_session = tmp_path / "session_x"
+    local_session.mkdir()
+    remote = {"vehicle_1_main_1.jpg": 1.0, "vehicle_2_main_1.jpg": 2.0}
+    captured: dict[str, Any] = {}
+
+    with (
+        patch("streettracker.cli.pull._remote_entries", return_value=remote),
+        patch(
+            "streettracker.cli.pull.subprocess.run",
+            side_effect=_sftp_stub(local_session, captured, land={"vehicle_1_main_1.jpg"}),
+        ),
+    ):
+        n = pull.sftp_get_missing(
+            "orin", "u", "/k", "/p", local_session, "*_main_*.jpg", dry_run=False, jobs=1
+        )
+    assert n == 1  # requested 2, one was pruned away before its get
 
 
 def test_is_intact_jpeg_rejects_corruption(tmp_path: Path) -> None:
@@ -310,16 +473,19 @@ def test_sftp_get_missing_refetches_corrupt_local(tmp_path: Path) -> None:
     (local_session / "vehicle_1_main_1.jpg").write_bytes(_JPEG)  # intact -> skip
     (local_session / "vehicle_2_main_1.jpg").write_bytes(b"\x00" * 2048)  # zeroed -> refetch
     (local_session / "vehicle_3_main_1.jpg").write_bytes(b"\xff\xd8bad")  # no EOI -> refetch
-    remote = {"vehicle_1_main_1.jpg", "vehicle_2_main_1.jpg", "vehicle_3_main_1.jpg"}
+    remote = {
+        "vehicle_1_main_1.jpg": 100.0,
+        "vehicle_2_main_1.jpg": 200.0,
+        "vehicle_3_main_1.jpg": 300.0,
+    }
     captured: dict[str, Any] = {}
 
-    def _capture(args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        captured["input"] = kwargs.get("input", "")
-        return _fake_completed(returncode=0)
-
     with (
-        patch("streettracker.cli.pull._remote_basenames", return_value=remote),
-        patch("streettracker.cli.pull.subprocess.run", side_effect=_capture),
+        patch("streettracker.cli.pull._remote_entries", return_value=remote),
+        patch(
+            "streettracker.cli.pull.subprocess.run",
+            side_effect=_sftp_stub(local_session, captured),
+        ),
     ):
         n = pull.sftp_get_missing(
             "orin",
@@ -329,6 +495,7 @@ def test_sftp_get_missing_refetches_corrupt_local(tmp_path: Path) -> None:
             local_session,
             "*_main_*.jpg",
             dry_run=False,
+            jobs=1,
         )
     assert n == 2
     body = captured["input"]
@@ -342,7 +509,7 @@ def test_sftp_get_missing_nothing_new_skips_sftp(tmp_path: Path) -> None:
     local_session.mkdir()
     (local_session / "vehicle_1_main_1.jpg").write_bytes(_JPEG)
     with (
-        patch("streettracker.cli.pull._remote_basenames", return_value={"vehicle_1_main_1.jpg"}),
+        patch("streettracker.cli.pull._remote_entries", return_value={"vehicle_1_main_1.jpg": 1.0}),
         patch("streettracker.cli.pull.subprocess.run") as mock_run,
     ):
         n = pull.sftp_get_missing(
@@ -362,7 +529,7 @@ def test_sftp_get_missing_dry_run_skips_transfer(tmp_path: Path) -> None:
     local_session = tmp_path / "session_x"
     local_session.mkdir()
     with (
-        patch("streettracker.cli.pull._remote_basenames", return_value={"vehicle_9_main_1.jpg"}),
+        patch("streettracker.cli.pull._remote_entries", return_value={"vehicle_9_main_1.jpg": 1.0}),
         patch("streettracker.cli.pull.subprocess.run") as mock_run,
     ):
         n = pull.sftp_get_missing(
@@ -412,7 +579,7 @@ def test_main_skip_existing_dry_run(tmp_path: Path) -> None:
     fake_key.write_text("not-a-real-key")
 
     def _ssh_stub(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        # remote_inventory + the ls inside _remote_basenames both land here.
+        # remote_inventory + the find inside _remote_entries both land here.
         return _fake_completed("BYTES 0\nFILES 0\nMAIN 0\nHQ 0\nJSONL 0\n")
 
     with patch("streettracker.cli.pull.subprocess.run", side_effect=_ssh_stub):

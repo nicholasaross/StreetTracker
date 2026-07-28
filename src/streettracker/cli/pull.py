@@ -30,6 +30,7 @@ import os
 import shlex
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,6 +39,11 @@ DEFAULT_USER = "streettracker"
 DEFAULT_KEY = "~/.ssh/streettracker"
 DEFAULT_REMOTE_PARENT = "/home/streettracker/streettracker/output"
 DEFAULT_LOCAL_PARENT = "./output"
+# Parallel sftp streams for --skip-existing. Measured against the live Orin
+# (200-file arms, disjoint slices): 1 -> x1.00, 2 -> x1.41, 4 -> x1.61,
+# 8 -> x1.70. Four is the knee -- doubling again buys ~5 % for twice the
+# sshd sessions on a device that is also running the live tracker.
+DEFAULT_JOBS = 4
 
 
 @dataclass(slots=True)
@@ -204,9 +210,11 @@ def _immutable_image_patterns(only_main: bool) -> tuple[str, ...]:
     return ("*_main_*.jpg",) if only_main else ("*.jpg",)
 
 
-def _remote_basenames(host: str, user: str, key: str, remote_path: str, pattern: str) -> set[str]:
-    """Basenames of remote files matching ``pattern`` in ``remote_path``
-    (one SSH round-trip; empty set when nothing matches).
+def _remote_entries(
+    host: str, user: str, key: str, remote_path: str, pattern: str
+) -> dict[str, float]:
+    """Map ``{basename: mtime}`` for remote files matching ``pattern`` in
+    ``remote_path`` (one SSH round-trip; empty dict when nothing matches).
 
     Uses ``find ... -printf`` rather than ``ls -1 <glob>``: the shell
     expands ``ls -1 *.jpg`` client-of-the-remote-shell into one argv per
@@ -216,14 +224,27 @@ def _remote_basenames(host: str, user: str, key: str, remote_path: str, pattern:
     ``--skip-existing`` fetch nothing for exactly the large sessions the
     mining workflow targets. ``find -maxdepth 1 -name`` matches one
     argument server-side with no expansion (the same approach
-    :func:`remote_inventory` already relies on). ``-printf '%f\\n'``
-    emits bare basenames."""
+    :func:`remote_inventory` already relies on).
+
+    ``-printf '%T@ %f\\n'`` emits ``<epoch-seconds> <basename>``. The mtime
+    is what lets :func:`sftp_get_missing` fetch oldest-first -- the device
+    prunes snaps by age, so age order is the only order that makes an
+    interrupted pull lose the *newest* (still-safe) tail rather than files
+    scattered through the session. Snap basenames never contain spaces, but
+    we split on the first one only so an odd name can't corrupt the stamp."""
     cmd = (
         f"cd {shlex.quote(remote_path)} 2>/dev/null && "
-        f"find . -maxdepth 1 -name {shlex.quote(pattern)} -printf '%f\\n' 2>/dev/null"
+        f"find . -maxdepth 1 -name {shlex.quote(pattern)} -printf '%T@ %f\\n' 2>/dev/null"
     )
     out = _ssh_run(host, user, key, cmd, check=False)
-    return {line.strip() for line in out.splitlines() if line.strip()}
+    entries: dict[str, float] = {}
+    for raw in out.splitlines():
+        stamp, sep, name = raw.strip().partition(" ")
+        if not sep or not name:
+            continue
+        with contextlib.suppress(ValueError):
+            entries[name] = float(stamp)
+    return entries
 
 
 def _is_intact_jpeg(path: Path) -> bool:
@@ -250,6 +271,46 @@ def _is_intact_jpeg(path: Path) -> bool:
         return False
 
 
+def _stripe(names: list[str], n: int) -> list[list[str]]:
+    """Deal ``names`` round-robin into ``n`` lists, preserving order within
+    each.
+
+    Striping rather than slicing into contiguous blocks is what keeps the
+    parallel fetch age-ordered *globally*: every worker walks its own share
+    from oldest to newest at roughly the same rate, so the combined
+    "fetched so far" frontier advances by age. Contiguous blocks would have
+    the last worker start at the newest files immediately, which is exactly
+    the ordering the prune race needs to avoid."""
+    return [names[i::n] for i in range(n)]
+
+
+def _run_sftp_batch(
+    host: str,
+    user: str,
+    key: str,
+    remote_path: str,
+    local_session: Path,
+    names: list[str],
+) -> int:
+    """Fetch ``names`` over one ``sftp -b -`` connection; returns its exit code.
+
+    Each ``get`` is prefixed with ``-`` so a per-file error does not abort
+    the batch. That matters because this pull deliberately races the
+    device's hourly prune: a file that vanishes between the ``find`` and
+    its ``get`` would otherwise kill the whole stream and strand every
+    later file in it. Connection-level failures still surface as a
+    non-zero exit code.
+    """
+    # Forward slashes for the local lcd target: sftp treats backslash as an
+    # escape, and it accepts forward-slash paths on Windows.
+    local_lcd = str(local_session).replace("\\", "/")
+    lines = [f'cd "{remote_path}"', f'lcd "{local_lcd}"']
+    lines += [f'-get -p "{name}"' for name in names]
+    args = ["sftp", "-i", key, "-o", "BatchMode=yes", "-q", "-b", "-", f"{user}@{host}"]
+    proc = subprocess.run(args, input="\n".join(lines) + "\n", text=True)
+    return proc.returncode
+
+
 def sftp_get_missing(
     host: str,
     user: str,
@@ -259,9 +320,11 @@ def sftp_get_missing(
     pattern: str,
     *,
     dry_run: bool,
+    jobs: int = DEFAULT_JOBS,
 ) -> int:
-    """Fetch only the ``pattern`` files not already in ``local_session``,
-    in a single ``sftp`` batch. Returns the count fetched.
+    """Fetch the ``pattern`` files not already in ``local_session``, oldest
+    first, across ``jobs`` parallel ``sftp`` batches. Returns the count that
+    landed intact.
 
     Exact because snaps are immutable: a basename present locally is the
     same bytes as the remote one, so a name diff suffices. Uses ``sftp``
@@ -269,8 +332,15 @@ def sftp_get_missing(
     not shell-expand an explicit ``{a,b}`` file list, whereas ``sftp -b -``
     runs one ``get`` per line over a single connection (no per-file
     handshake, no command-line-length limit).
+
+    A single stream is latency- and cipher-bound well below the gigabit
+    link, so the file list is split across ``jobs`` connections -- a
+    measured x1.61 at the default 4 (see :data:`DEFAULT_JOBS`). Absolute
+    rates swing with how cold the snaps are on the device: a week-old
+    session read from disk at ~16 MB/s single-stream where a same-day one
+    served from page cache hit ~57 MB/s. The multiplier is what holds.
     """
-    remote = _remote_basenames(host, user, key, remote_path, pattern)
+    remote = _remote_entries(host, user, key, remote_path, pattern)
     # Immutability lets us diff by basename -- but only for files that
     # actually arrived intact. A corrupt local snap (interrupted prior
     # transfer) whose name is still on the Orin is re-fetched, which
@@ -283,27 +353,49 @@ def sftp_get_missing(
             local_intact.add(p.name)
         else:
             n_corrupt += 1
-    missing = sorted(remote - local_intact)
+    # Oldest-first (name as a stable tie-break) so an interrupted pull loses
+    # the newest tail -- the files the device will prune last, and so the
+    # ones a re-run can still recover.
+    missing = sorted(remote.keys() - local_intact, key=lambda n: (remote[n], n))
     corrupt_note = f" ({n_corrupt} corrupt, re-fetching)" if n_corrupt else ""
+    # Keep the "N remote / N local / N new" wording: the control panel's
+    # PullParser regex keys off it for the per-pattern progress tally.
     print(
-        f"[pull] {pattern}: {len(remote)} remote / {len(local_intact)} local intact"
-        f"{corrupt_note} / {len(missing)} to fetch"
+        f"[pull] {pattern}: {len(remote)} remote / {len(local_intact)} local / "
+        f"{len(missing)} new{corrupt_note}"
     )
     if not missing:
         return 0
     if dry_run:
         print(f"[dry-run] sftp -b - would fetch {len(missing)} file(s) into {local_session}")
         return 0
-    # Forward slashes for the local lcd target: sftp treats backslash as an
-    # escape, and it accepts forward-slash paths on Windows.
-    local_lcd = str(local_session).replace("\\", "/")
-    lines = [f'cd "{remote_path}"', f'lcd "{local_lcd}"']
-    lines += [f'get -p "{name}"' for name in missing]
-    args = ["sftp", "-i", key, "-o", "BatchMode=yes", "-q", "-b", "-", f"{user}@{host}"]
-    proc = subprocess.run(args, input="\n".join(lines) + "\n", text=True)
-    if proc.returncode != 0:
-        sys.exit(f"[pull] sftp failed (exit {proc.returncode})")
-    return len(missing)
+
+    batches = [b for b in _stripe(missing, max(1, min(jobs, len(missing)))) if b]
+    if len(batches) > 1:
+        print(f"[pull] {len(batches)} parallel sftp streams, oldest snap first", flush=True)
+    if len(batches) == 1:
+        failed = (
+            1 if _run_sftp_batch(host, user, key, remote_path, local_session, batches[0]) else 0
+        )
+    else:
+        with ThreadPoolExecutor(max_workers=len(batches)) as pool:
+            futures = [
+                pool.submit(_run_sftp_batch, host, user, key, remote_path, local_session, b)
+                for b in batches
+            ]
+            failed = sum(1 for f in futures if f.result() != 0)
+
+    # Per-file errors are swallowed by the `-get` prefix, so count what
+    # actually arrived rather than assuming the whole list landed.
+    landed = sum(1 for name in missing if _is_intact_jpeg(local_session / name))
+    if landed < len(missing):
+        print(
+            f"[pull] WARNING: {len(missing) - landed} of {len(missing)} did not land "
+            "(pruned on the device mid-pull, or a transfer error) -- re-run to retry"
+        )
+    if failed:
+        sys.exit(f"[pull] sftp failed ({failed} of {len(batches)} stream(s))")
+    return landed
 
 
 def skip_existing_pull(
@@ -315,6 +407,7 @@ def skip_existing_pull(
     *,
     only_main: bool,
     dry_run: bool,
+    jobs: int = DEFAULT_JOBS,
 ) -> None:
     """Incremental pull: name-diff the immutable image globs (sftp only
     the new snaps) and re-fetch the mutable metadata in full via scp
@@ -327,7 +420,7 @@ def skip_existing_pull(
     total_new = 0
     for pat in _immutable_image_patterns(only_main):
         total_new += sftp_get_missing(
-            host, user, key, remote_path, local_session, pat, dry_run=dry_run
+            host, user, key, remote_path, local_session, pat, dry_run=dry_run, jobs=jobs
         )
 
     mutable = (
@@ -391,6 +484,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "re-pull of a grown or still-live session.",
     )
     parser.add_argument(
+        "--jobs",
+        type=int,
+        default=DEFAULT_JOBS,
+        metavar="N",
+        help=f"Parallel sftp streams for --skip-existing (default: {DEFAULT_JOBS}; "
+        "1 restores single-stream). Files are fetched oldest-first regardless, "
+        "so an interrupted pull loses the newest tail rather than a random spread",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print the scp invocation and remote inventory; do not transfer",
@@ -427,6 +529,9 @@ def main(argv: list[str] | None = None) -> int:
         print("[pull] mode:    --only-main (skipping thumbs + HQ + HTML)")
 
     if args.skip_existing:
+        if args.jobs < 1:
+            print("[pull] --jobs must be >= 1", file=sys.stderr)
+            return 1
         skip_existing_pull(
             args.host,
             args.user,
@@ -435,6 +540,7 @@ def main(argv: list[str] | None = None) -> int:
             local_parent,
             only_main=args.only_main,
             dry_run=args.dry_run,
+            jobs=args.jobs,
         )
     else:
         scp_pull(
