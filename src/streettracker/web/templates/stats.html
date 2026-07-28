@@ -236,98 +236,14 @@
 {% endif %}
 
 {% if stats.people and stats.people.total %}
-{% set p = stats.people %}
-<h2 style="margin:34px 0 4px;font-size:18px">People</h2>
-<p class="hint" style="color:var(--muted);font-size:12.5px;margin:0 0 12px">
-  Pedestrians passing through the same view (anyone the detector classes as a
-  person — riders are split out as cyclists where classified).</p>
-<div class="tiles">
-  <div class="tile"><div class="big">{{ "{:,}".format(p.total) }}</div><div class="lbl">walks seen</div></div>
-  <div class="tile"><div class="big">{{ p.per_day_mean }}</div><div class="lbl">avg walks / day ({{ p.n_days }} day{{ 's' if p.n_days != 1 }})</div></div>
-  <div class="tile"><div class="big">{{ p.pct_l2r }}% / {{ p.pct_r2l }}%</div><div class="lbl">left→right / right→left</div></div>
-  {% if p.busiest_hour %}<div class="tile"><div class="big">{{ "%02d:00"|format(p.busiest_hour.hour) }}</div><div class="lbl">busiest walking hour ({{ p.busiest_hour.total }})</div></div>{% endif %}
-  <div class="tile"><div class="big">{{ p.dwell.median_s }}s</div><div class="lbl">median time in view</div></div>
-  {% if p.kinds and p.kinds.classified %}
-  <div class="tile"><div class="big">{{ "{:,}".format(p.kinds.walks) }}</div><div class="lbl">distinct walks (splits merged)</div></div>
-  <div class="tile"><div class="big">{{ p.kinds.pct_joggers }}%</div><div class="lbl">joggers ({{ "{:,}".format(p.kinds.joggers) }})</div></div>
-  <div class="tile"><div class="big">{{ "{:,}".format(p.kinds.cyclists) }}</div><div class="lbl">cyclists (since 13 Jun)</div></div>
-  <div class="tile"><div class="big">{{ "{:,}".format(p.kinds.dog_walks) }}</div><div class="lbl">dog walks (since 7 Jul)</div></div>
-  {% if p.kinds.round_trips %}
-  {% if p.kinds.round_trips_est is not none %}
-  <div class="tile"><div class="big">~{{ "{:,}".format(p.kinds.round_trips_est) }}</div><div class="lbl">likely out-and-back trips (of {{ "{:,}".format(p.kinds.round_trips) }} candidates{% if p.kinds.away_min_median %}, typ. {{ p.kinds.away_min_median }} min away{% endif %})</div></div>
-  {% else %}
-  <div class="tile"><div class="big">{{ "{:,}".format(p.kinds.round_trips) }}</div><div class="lbl">out-and-back candidates{% if p.kinds.away_min_median %} (typ. {{ p.kinds.away_min_median }} min away){% endif %}</div></div>
-  {% endif %}
-  {% endif %}
-  {% endif %}
-</div>
-
-<div class="row">
-  <div class="panel stat">
-    <h3>Walks by day of week</h3>
-    <div class="legend"><span><i style="background:#5b9dff"></i>left → right</span><span><i style="background:#1fb6a8"></i>right → left</span></div>
-    <div id="pdow"></div>
-  </div>
-  <div class="panel stat">
-    <h3>Time in view</h3>
-    <p class="hint">Seconds each person stayed in frame (median {{ p.dwell.median_s }}s, p90 {{ p.dwell.p90_s }}s).</p>
-    <div id="pdwell"></div>
-  </div>
-  {% if p.kinds and p.kinds.classified %}
-  <div class="panel stat">
-    <h3>Who's on foot</h3>
-    <p class="hint">Per person track, from the people enrichment. Dog walkers are a subset of walkers/joggers.</p>
-    <div class="hbars" id="pkinds"></div>
-  </div>
-  {% endif %}
-</div>
-
-{% if p.habitual %}
-{% set khex = {"dog walk": "#8a6240", "jogger": "#e08a3d", "cyclist": "#5b9dff"} %}
-<div class="panel stat">
-  <h3>Recurring walk patterns</h3>
-  <p class="hint">Times of day when a dog walk, jog or ride recurs across many days — only
-  slots that look like a single recurring walk qualify (rush-hour waves are filtered out).
-  These are statistics about the street, not tracked individuals: no walk is ever linked to
-  a walk on another day. "Typical time away" comes from same-day out-and-back estimates
-  starting in the slot.</p>
-  <div class="scrollx">
-  <table class="habits">
-    <thead><tr><th>kind</th><th>around</th><th>direction</th><th>seen on</th><th>walks</th><th>typical time away</th></tr></thead>
-    <tbody>
-    {% for s in p.habitual %}
-      <tr>
-        <td><span class="sw" style="background:{{ khex.get(s.kind, '#9aa3b2') }}"></span>{{ s.kind }}</td>
-        <td>~{{ s.time }}</td>
-        <td>{{ "left → right" if s.dkey == "l2r" else "right → left" }}</td>
-        <td>{{ s.days_seen }} of {{ s.days_covered }} days</td>
-        <td>{{ s.n_walks }}</td>
-        <td>{{ (s.away_min_median|string + " min") if s.away_min_median else "—" }}</td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  </div>
-</div>
-{% endif %}
-
-<div class="panel stat">
-  <h3>When people walk</h3>
-  <p class="hint">Walks by weekday (rows) × hour of day (columns). Brighter = busier; hours with no foot traffic are hidden.</p>
-  <div class="scrollx" id="pheatmap"></div>
-</div>
+<p class="hint" style="color:var(--muted);font-size:12.5px;margin:26px 0 0">
+  Foot traffic has moved to its own <a href="/people">People page</a>.</p>
 {% endif %}
 
 <p class="caveat">
   Stats cover all vehicle tracks across captured sessions (not 24/7 — the tracker
   pauses at night / in IR mode), so quiet periods may mean "not recording" rather
   than "no traffic". Each track ≈ one pass; brief ID-switches can double-count.
-  People figures share the same caveats. Riders detect as people: sessions since
-  2026-06-13 classify them as cyclists via bicycle-track pairing, but earlier
-  jogger counts include unfiltered riders (roughly +4pp). Dog-walk pairing
-  counts from 2026-07-07, when the dog class went live. Out-and-back trips and
-  recurring patterns are timing/kind/colour-agreement estimates, not
-  identification; nothing is matched across days.
   {% if stats.speed_unit == 'px/s' %}Speeds are pixels/second (relative, uncalibrated) — set a calibration to show mph.{% else %}Speeds in mph are approximate (single-point calibration; ignores perspective).{% endif %}
 </p>
 {% endif %}
@@ -409,26 +325,6 @@ function heatmapHtml(hm, rgb){
 }
 
 function renderHeatmap(){ el("heatmap").innerHTML = heatmapHtml(STATS.heatmap, "91,157,255"); }
-
-function renderPeople(){
-  const p=STATS.people;
-  if(!p || !p.total) return;
-  el("pdow").innerHTML = barChart({labels:DOW, width:360, height:190, minBar:34,
-    series:[{name:"L→R",color:C_L2R,values:DOW.map(x=>p.dow[x].l2r)},
-            {name:"R→L",color:C_R2L,values:DOW.map(x=>p.dow[x].r2l)}]});
-  const hist=p.dwell.hist;
-  el("pdwell").innerHTML = hist.length? barChart({
-    labels:hist.map(b=> b.hi===null? `${Math.round(b.lo)}+` : String(Math.round(b.lo))),
-    width:360, height:190, minBar:24,
-    series:[{name:"seconds in view",color:C_R2L,values:hist.map(b=>b.n)}]}) : '<p class="hint">No data.</p>';
-  el("pheatmap").innerHTML = heatmapHtml(p.heatmap, "31,182,168");
-  const k = p.kinds;
-  if(k && k.classified && el("pkinds")){
-    const KIND_HEX = {"walkers":"#1fb6a8","joggers":"#e08a3d","cyclists":"#5b9dff","dog walks":"#8a6240"};
-    hbars("pkinds", [["walkers",k.walkers],["joggers",k.joggers],["cyclists",k.cyclists],["dog walks",k.dog_walks]],
-      {swatch: n=>KIND_HEX[n], fill: n=>KIND_HEX[n]});
-  }
-}
 
 function renderSpeed(){
   const s=STATS.speed, hist=s.hist;
@@ -536,7 +432,6 @@ function init(){
       van:"#9aa3b2",pickup:"#8a6240",coupe:"#e0584f"};
     hbars("bodytypes", STATS.bodytypes, {swatch: k=>BODY_HEX[k]||"#5b9dff", fill: k=>BODY_HEX[k]||"#5b9dff"});
   }
-  renderPeople();
 }
 init();
 </script>

@@ -370,6 +370,23 @@ async def test_api_stats_mph_when_calibrated(output_root: Path) -> None:
 async def test_gallery_has_stats_nav(client: TestClient) -> None:
     html = await (await client.get("/")).text()
     assert 'href="/stats"' in html
+    assert 'href="/people"' in html
+
+
+async def test_people_page_renders(client: TestClient) -> None:
+    r = await client.get("/people")
+    assert r.status == 200
+    html = await r.text()
+    assert "const STATS" in html  # embedded data for the people charts
+    assert "renderPeople" in html
+
+
+async def test_people_moved_off_stats_page(client: TestClient) -> None:
+    """The People charts now live on /people; /stats should link out to them
+    rather than carry the block itself."""
+    html = await (await client.get("/stats")).text()
+    assert "renderPeople" not in html
+    assert 'href="/people"' in html
 
 
 # ----------------------------------------------------------------------

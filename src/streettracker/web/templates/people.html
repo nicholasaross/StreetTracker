@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+{% block title %}People — StreetTracker Showcase{% endblock %}
+{% block subtitle %}pedestrians, walks &amp; door trips{% endblock %}
+
+{% block content %}
+<style>
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin-bottom: 8px; }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+  .tile .big { font-size: 24px; font-weight: 700; }
+  .tile .lbl { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+  .panel.stat { margin-top: 22px; }
+  .panel.stat h3 { margin: 0 0 4px; font-size: 15px; }
+  .panel.stat .hint { color: var(--muted); font-size: 12.5px; margin: 0 0 12px; }
+  .legend { display: flex; gap: 16px; font-size: 12.5px; color: var(--muted); margin: 2px 0 10px; }
+  .legend i { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .scrollx { overflow-x: auto; }
+  svg.chart { display: block; height: auto; }
+  svg.chart .grid { stroke: var(--line); stroke-width: 1; }
+  svg.chart .ylab { fill: var(--muted); font-size: 10px; text-anchor: end; }
+  svg.chart .xlab { fill: var(--muted); font-size: 10px; text-anchor: middle; }
+  .row { display: flex; gap: 22px; flex-wrap: wrap; }
+  .row > .panel.stat { flex: 1 1 360px; margin-top: 22px; }
+  .heatmap { display: grid; grid-template-columns: 38px repeat(24, 1fr); gap: 2px; min-width: 560px; }
+  .hm-corner, .hm-h, .hm-d { font-size: 10px; color: var(--muted); display: flex; align-items: center; }
+  .hm-h { justify-content: center; }
+  .hm-d { justify-content: flex-end; padding-right: 5px; }
+  .hm-c { aspect-ratio: 1/1; border-radius: 2px; min-height: 13px; }
+  .hbars { display: flex; flex-direction: column; gap: 7px; }
+  .hbar { display: grid; grid-template-columns: 144px 1fr 42px; align-items: center; gap: 9px; font-size: 13px; }
+  .hbar .track { background: var(--panel-2); border-radius: 5px; overflow: hidden; }
+  .hbar .fill { height: 16px; border-radius: 5px; background: var(--accent); }
+  .hbar .n { color: var(--muted); text-align: right; }
+  .sw { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; border: 1px solid #0006; }
+  .caveat { color: var(--muted); font-size: 12px; margin-top: 26px; border-top: 1px solid var(--line); padding-top: 12px; }
+  .habits { border-collapse: collapse; font-size: 13px; width: 100%; }
+  .habits th { text-align: left; color: var(--muted); font-weight: 600; font-size: 12px; padding: 4px 14px 4px 0; }
+  .habits td { padding: 6px 14px 6px 0; border-top: 1px solid var(--line); white-space: nowrap; }
+</style>
+
+{% if stats.people and stats.people.total %}
+{% set p = stats.people %}
+<p class="hint" style="color:var(--muted);font-size:12.5px;margin:0 0 12px">
+  Pedestrians passing through the same view (anyone the detector classes as a
+  person — riders are split out as cyclists where classified).</p>
+<div class="tiles">
+  <div class="tile"><div class="big">{{ "{:,}".format(p.total) }}</div><div class="lbl">walks seen</div></div>
+  <div class="tile"><div class="big">{{ p.per_day_mean }}</div><div class="lbl">avg walks / day ({{ p.n_days }} day{{ 's' if p.n_days != 1 }})</div></div>
+  <div class="tile"><div class="big">{{ p.pct_l2r }}% / {{ p.pct_r2l }}%</div><div class="lbl">left→right / right→left</div></div>
+  {% if p.busiest_hour %}<div class="tile"><div class="big">{{ "%02d:00"|format(p.busiest_hour.hour) }}</div><div class="lbl">busiest walking hour ({{ p.busiest_hour.total }})</div></div>{% endif %}
+  <div class="tile"><div class="big">{{ p.dwell.median_s }}s</div><div class="lbl">median time in view</div></div>
+  {% if p.kinds and p.kinds.classified %}
+  <div class="tile"><div class="big">{{ "{:,}".format(p.kinds.walks) }}</div><div class="lbl">distinct walks (splits merged)</div></div>
+  <div class="tile"><div class="big">{{ p.kinds.pct_joggers }}%</div><div class="lbl">joggers ({{ "{:,}".format(p.kinds.joggers) }})</div></div>
+  <div class="tile"><div class="big">{{ "{:,}".format(p.kinds.cyclists) }}</div><div class="lbl">cyclists (since 13 Jun)</div></div>
+  <div class="tile"><div class="big">{{ "{:,}".format(p.kinds.dog_walks) }}</div><div class="lbl">dog walks (since 7 Jul)</div></div>
+  {% if p.kinds.round_trips %}
+  {% if p.kinds.round_trips_est is not none %}
+  <div class="tile"><div class="big">~{{ "{:,}".format(p.kinds.round_trips_est) }}</div><div class="lbl">likely out-and-back trips (of {{ "{:,}".format(p.kinds.round_trips) }} candidates{% if p.kinds.away_min_median %}, typ. {{ p.kinds.away_min_median }} min away{% endif %})</div></div>
+  {% else %}
+  <div class="tile"><div class="big">{{ "{:,}".format(p.kinds.round_trips) }}</div><div class="lbl">out-and-back candidates{% if p.kinds.away_min_median %} (typ. {{ p.kinds.away_min_median }} min away){% endif %}</div></div>
+  {% endif %}
+  {% endif %}
+  {% endif %}
+</div>
+
+<div class="row">
+  <div class="panel stat">
+    <h3>Walks by day of week</h3>
+    <div class="legend"><span><i style="background:#5b9dff"></i>left → right</span><span><i style="background:#1fb6a8"></i>right → left</span></div>
+    <div id="pdow"></div>
+  </div>
+  <div class="panel stat">
+    <h3>Time in view</h3>
+    <p class="hint">Seconds each person stayed in frame (median {{ p.dwell.median_s }}s, p90 {{ p.dwell.p90_s }}s).</p>
+    <div id="pdwell"></div>
+  </div>
+  {% if p.kinds and p.kinds.classified %}
+  <div class="panel stat">
+    <h3>Who's on foot</h3>
+    <p class="hint">Per person track, from the people enrichment. Dog walkers are a subset of walkers/joggers.</p>
+    <div class="hbars" id="pkinds"></div>
+  </div>
+  {% endif %}
+</div>
+
+{% if p.habitual %}
+{% set khex = {"dog walk": "#8a6240", "jogger": "#e08a3d", "cyclist": "#5b9dff"} %}
+<div class="panel stat">
+  <h3>Recurring walk patterns</h3>
+  <p class="hint">Times of day when a dog walk, jog or ride recurs across many days — only
+  slots that look like a single recurring walk qualify (rush-hour waves are filtered out).
+  These are statistics about the street, not tracked individuals: no walk is ever linked to
+  a walk on another day. "Typical time away" comes from same-day out-and-back estimates
+  starting in the slot.</p>
+  <div class="scrollx">
+  <table class="habits">
+    <thead><tr><th>kind</th><th>around</th><th>direction</th><th>seen on</th><th>walks</th><th>typical time away</th></tr></thead>
+    <tbody>
+    {% for s in p.habitual %}
+      <tr>
+        <td><span class="sw" style="background:{{ khex.get(s.kind, '#9aa3b2') }}"></span>{{ s.kind }}</td>
+        <td>~{{ s.time }}</td>
+        <td>{{ "left → right" if s.dkey == "l2r" else "right → left" }}</td>
+        <td>{{ s.days_seen }} of {{ s.days_covered }} days</td>
+        <td>{{ s.n_walks }}</td>
+        <td>{{ (s.away_min_median|string + " min") if s.away_min_median else "—" }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endif %}
+
+<div class="panel stat">
+  <h3>When people walk</h3>
+  <p class="hint">Walks by weekday (rows) × hour of day (columns). Brighter = busier; hours with no foot traffic are hidden.</p>
+  <div class="scrollx" id="pheatmap"></div>
+</div>
+
+<p class="caveat">
+  Figures cover all person tracks across captured sessions (not 24/7 — the tracker
+  pauses at night / in IR mode), so quiet periods may mean "not recording" rather
+  than "no traffic". Each walk ≈ one pass; brief ID-switches can double-count.
+  Riders detect as people: sessions since 2026-06-13 classify them as cyclists via
+  bicycle-track pairing, but earlier jogger counts include unfiltered riders
+  (roughly +4pp). Dog-walk pairing counts from 2026-07-07, when the dog class went
+  live. Out-and-back trips and recurring patterns are timing/kind/colour-agreement
+  estimates, not identification; nothing is matched across days.
+</p>
+{% else %}
+<p class="hint">No people data yet. Run <code>streettracker people &lt;session&gt;</code> on a
+  session (or the enrich playbook) and refresh.</p>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+const STATS = {{ stats | tojson }};
+const el = id => document.getElementById(id);
+const C_L2R = "#5b9dff", C_R2L = "#1fb6a8";
+const DOW = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+
+function niceMax(v){ if(v<=0) return 1; const p=Math.pow(10,Math.floor(Math.log10(v))); const f=v/p; const n=f<=1?1:f<=2?2:f<=5?5:10; return n*p; }
+function fmtNum(v){ return v>=1000? (v/1000).toFixed(v%1000?1:0)+"k" : String(Math.round(v)); }
+
+// Generic stacked vertical bar chart. Shared verbatim with the stats page.
+function barChart(opts){
+  const {labels, series, height=190, minBar=9, rotate=false, sparse=1} = opts;
+  const n = labels.length, padL=40, padR=8, padT=8, padB = rotate?54:22;
+  const W = Math.max(opts.width||660, n*minBar + padL + padR);
+  const innerW = W-padL-padR, innerH = height-padT-padB;
+  let maxV=0;
+  for(let i=0;i<n;i++){ let s=0; for(const ser of series) s+=(ser.values[i]||0); maxV=Math.max(maxV,s); }
+  maxV = niceMax(maxV);
+  const bw = Math.max(2, innerW/n*0.72);
+  const cx = i => padL + innerW*(i+0.5)/n;
+  const yy = v => padT + innerH*(1 - v/maxV);
+  const p=[];
+  for(let t=0;t<=4;t++){ const v=maxV*t/4, y=yy(v); p.push(`<line class="grid" x1="${padL}" y1="${y}" x2="${W-padR}" y2="${y}"/>`); p.push(`<text class="ylab" x="${padL-5}" y="${y+3}">${fmtNum(v)}</text>`); }
+  for(let i=0;i<n;i++){
+    let acc=0;
+    for(const ser of series){
+      const v=ser.values[i]||0; if(v<=0) continue;
+      const y0=yy(acc+v), h=yy(acc)-yy(acc+v); acc+=v;
+      p.push(`<rect x="${cx(i)-bw/2}" y="${y0}" width="${bw}" height="${Math.max(0,h)}" fill="${ser.color}"><title>${labels[i]}: ${ser.name} ${v}</title></rect>`);
+    }
+    if((i%sparse)===0 && opts.tick!==false){ const lab=labels[i]; const ty=height-padB+(rotate?12:14);
+      p.push(`<text class="xlab" x="${cx(i)}" y="${ty}" ${rotate?`transform="rotate(45 ${cx(i)} ${ty})"`:''}>${lab}</text>`); }
+  }
+  return `<svg class="chart" viewBox="0 0 ${W} ${height}" style="min-width:${W}px;width:${W}px">${p.join("")}</svg>`;
+}
+
+function heatmapHtml(hm, rgb){
+  const max=Math.max(1,...hm.flat());
+  const hours=[]; for(let x=0;x<24;x++){ let s=0; for(let d=0;d<7;d++) s+=hm[d][x]; if(s>0) hours.push(x); }
+  const cols=`38px repeat(${hours.length}, 1fr)`;
+  let h=`<div class="heatmap" style="grid-template-columns:${cols}"><div class="hm-corner"></div>`;
+  for(const x of hours) h+=`<div class="hm-h">${x}</div>`;
+  for(let d=0;d<7;d++){ h+=`<div class="hm-d">${DOW[d]}</div>`;
+    for(const x of hours){ const v=hm[d][x], a=v/max;
+      h+=`<div class="hm-c" title="${DOW[d]} ${x}:00 — ${v}" style="background:rgba(${rgb},${(0.06+0.94*a).toFixed(3)})"></div>`; } }
+  return h+"</div>";
+}
+
+function hbars(container, rows, opts){
+  opts=opts||{};
+  const max=Math.max(1,...rows.map(r=>r[1]));
+  el(container).innerHTML = rows.map(([k,v])=>{
+    const sw = opts.swatch? `<span class="sw" style="background:${opts.swatch(k)}"></span>`:"";
+    return `<div class="hbar"><div>${sw}${k}</div><div class="track"><div class="fill" style="width:${(100*v/max).toFixed(1)}%;${opts.fill?`background:${opts.fill(k)}`:''}"></div></div><div class="n">${v}</div></div>`;
+  }).join("") || '<p class="hint">No data.</p>';
+}
+
+function renderPeople(){
+  const p=STATS.people;
+  if(!p || !p.total) return;
+  el("pdow").innerHTML = barChart({labels:DOW, width:360, height:190, minBar:34,
+    series:[{name:"L→R",color:C_L2R,values:DOW.map(x=>p.dow[x].l2r)},
+            {name:"R→L",color:C_R2L,values:DOW.map(x=>p.dow[x].r2l)}]});
+  const hist=p.dwell.hist;
+  el("pdwell").innerHTML = hist.length? barChart({
+    labels:hist.map(b=> b.hi===null? `${Math.round(b.lo)}+` : String(Math.round(b.lo))),
+    width:360, height:190, minBar:24,
+    series:[{name:"seconds in view",color:C_R2L,values:hist.map(b=>b.n)}]}) : '<p class="hint">No data.</p>';
+  el("pheatmap").innerHTML = heatmapHtml(p.heatmap, "31,182,168");
+  const k = p.kinds;
+  if(k && k.classified && el("pkinds")){
+    const KIND_HEX = {"walkers":"#1fb6a8","joggers":"#e08a3d","cyclists":"#5b9dff","dog walks":"#8a6240"};
+    hbars("pkinds", [["walkers",k.walkers],["joggers",k.joggers],["cyclists",k.cyclists],["dog walks",k.dog_walks]],
+      {swatch: n=>KIND_HEX[n], fill: n=>KIND_HEX[n]});
+  }
+}
+
+renderPeople();
+</script>
+{% endblock %}
