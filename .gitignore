@@ -32,6 +32,7 @@ StreetTracker_ControlPanel.pptx
 # public repo -- it lives as a GitHub Release asset (see the tracked
 # makemodel_b0.meta.json sidecar for which release/model is in production).
 !src/streettracker/analysis/makemodel/models/bodytype_b0.pt
+!src/streettracker/analysis/makemodel/models/colour_b0.pt
 !src/streettracker/analysis/alpr/models/license_plate_detector.pt
 *.weights
 output/

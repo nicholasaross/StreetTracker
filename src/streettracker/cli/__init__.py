@@ -54,6 +54,7 @@ commands:
   makemodel-train fine-tune the make/model CNN on the CompCars sv_data
   makemodel        classify make/model on a session's snaps (writes _makemodel.json)
   bodytype        classify coarse body type (hatchback/suv/...) on a session's snaps
+  colour          classify vehicle colour (white/silver/black/...) on a session's snaps
   makemodel-build-uk  extract DVSA-labelled UK make crops from sessions
   makemodel-train-uk  train the UK make classifier on extracted crops
   showcase        local website: enriched + recurring vehicles, with tagging
@@ -146,6 +147,10 @@ def main(argv: list[str] | None = None) -> int:
         from streettracker.analysis.makemodel.bodytype_infer import main as bodytype_main
 
         return bodytype_main(rest)
+    if head == "colour":
+        from streettracker.analysis.makemodel.colour_infer import main as colour_main
+
+        return colour_main(rest)
     if head == "makemodel-build-uk":
         from streettracker.analysis.makemodel.uk_dataset import (
             build_main as makemodel_build_uk_main,

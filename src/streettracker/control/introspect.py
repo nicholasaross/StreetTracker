@@ -207,6 +207,7 @@ class SessionInfo:
     n_dvsa_labels: int  # 0 if dvsa-label hasn't run
     has_vehicles: bool
     has_makemodel: bool
+    has_colour: bool
     has_people: bool
 
     def to_json_dict(self) -> dict[str, Any]:
@@ -348,6 +349,7 @@ def session_info(session_dir: Path) -> SessionInfo:
         n_dvsa_labels=_dvsa_label_count(session_dir, label),
         has_vehicles=(session_dir / f"{label}_vehicles.json").is_file(),
         has_makemodel=(session_dir / f"{label}_makemodel_by_track.json").is_file(),
+        has_colour=(session_dir / f"{label}_colour_by_track.json").is_file(),
         has_people=(session_dir / f"{label}_people.json").is_file(),
     )
 

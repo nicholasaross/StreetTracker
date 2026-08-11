@@ -53,27 +53,31 @@ def test_normalize_make_drops_dvsa_placeholders() -> None:
 
 def _write_dataset(root: Path) -> None:
     """Manifest with 2 makes x 2 cars; FORD car P1 has 2 crops. Each car
-    also carries a body_type so the same fixture drives the make and
-    body-type dataset paths (FORD -> hatchback, AUDI -> saloon)."""
+    also carries a body_type and a colour, so the same fixture drives the
+    make, body-type and colour dataset paths (FORD -> hatchback / blue,
+    AUDI -> saloon / black)."""
     root.mkdir(parents=True, exist_ok=True)
     samples = [
-        ("FORD", "hatchback", "P1", 2),
-        ("FORD", "hatchback", "P2", 1),
-        ("AUDI", "saloon", "P3", 2),
-        ("AUDI", "saloon", "P4", 1),
+        ("FORD", "hatchback", "blue", "P1", 2),
+        ("FORD", "hatchback", "blue", "P2", 1),
+        ("AUDI", "saloon", "black", "P3", 2),
+        ("AUDI", "saloon", "black", "P4", 1),
     ]
     manifest_samples = []
-    for make, body, car, n in samples:
+    for make, body, colour, car, n in samples:
         (root / make).mkdir(exist_ok=True)
         for i in range(n):
             rel = f"{make}/{car}_{i}.jpg"
             Image.new("RGB", (224, 224), (80, 80, 80)).save(root / rel)
-            manifest_samples.append({"path": rel, "make": make, "car": car, "body_type": body})
+            manifest_samples.append(
+                {"path": rel, "make": make, "car": car, "body_type": body, "colour": colour}
+            )
     (root / "manifest.json").write_text(
         json.dumps(
             {
                 "makes": ["AUDI", "FORD"],
                 "body_types": ["hatchback", "saloon"],
+                "colours": ["black", "blue"],
                 "samples": manifest_samples,
             }
         )
@@ -127,6 +131,27 @@ def test_body_type_dataset_split(tmp_path: Path) -> None:
     assert set(train.class_counts()) == {"body_type"}
 
 
+def test_colour_dataset_split(tmp_path: Path) -> None:
+    """label_field='colour' trains the colour head: classes in canonical
+    COLOUR_CLASSES order, by-car split, no leakage, labels keyed 'colour'."""
+    _write_dataset(tmp_path)
+    train = UKMakeDataset(tmp_path, "train", label_field="colour", val_frac=0.5, seed=0)
+    val = UKMakeDataset(
+        tmp_path,
+        "val",
+        label_field="colour",
+        class_names=train.class_names,
+        val_frac=0.5,
+        seed=0,
+    )
+    assert train.class_names == ("black", "blue")  # canonical order, present-only
+    assert {s.car for s in train._samples}.isdisjoint({s.car for s in val._samples})
+    assert len(train) + len(val) == 6
+    _img, lab = train[0]
+    assert set(lab) == {"colour"}
+    assert set(train.class_counts()) == {"colour"}
+
+
 def test_body_type_dataset_drops_unlabelled(tmp_path: Path) -> None:
     """A car whose model wasn't covered (body_type == '') is excluded from
     the body-type dataset but would still count for make training."""
@@ -175,7 +200,18 @@ def test_extract_crops_from_synthetic_session(tmp_path: Path) -> None:
     )
     sess.joinpath("session_t_meta.json").write_text(json.dumps({"frame_size": [640, 360]}))
     sess.joinpath("session_t_dvsa_labels.json").write_text(
-        json.dumps({"labels": {"AB12CDE": {"make": "Ford", "model": "FOCUS", "track_ids": [1]}}})
+        json.dumps(
+            {
+                "labels": {
+                    "AB12CDE": {
+                        "make": "Ford",
+                        "model": "FOCUS",
+                        "primary_colour": "Blue",
+                        "track_ids": [1],
+                    }
+                }
+            }
+        )
     )
 
     out = tmp_path / "uk_crops"
@@ -191,6 +227,11 @@ def test_extract_crops_from_synthetic_session(tmp_path: Path) -> None:
     assert all(s["body_type"] == "hatchback" for s in manifest["samples"])
     assert stats["n_cars_body_labelled"] == 1
     assert stats["body_car_counts"] == {"hatchback": 1}
+    # DVSA "Blue" -> colour label is derived + carried through the same way.
+    assert manifest["colours"] == ["blue"]
+    assert all(s["colour"] == "blue" for s in manifest["samples"])
+    assert stats["n_cars_colour_labelled"] == 1
+    assert stats["colour_car_counts"] == {"blue": 1}
     assert all((out / s["path"]).exists() for s in manifest["samples"])
 
 
@@ -370,6 +411,26 @@ def test_train_main_target_body_type(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert seen["target"] == "body_type"
 
 
+def test_train_main_target_colour(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--target colour reaches train_uk_make when the corpus carries colour
+    labels (guards the manifest-key check: colours, plural)."""
+    import streettracker.analysis.makemodel.uk_dataset as uk
+
+    _write_dataset(tmp_path / "crops")  # writes a "colours" manifest key
+    seen: dict[str, str] = {}
+
+    def _fake_train(
+        dataset_dir: object, out_dir: object, config: object, *, target: str = "make"
+    ) -> dict:
+        seen["target"] = target
+        return {}
+
+    monkeypatch.setattr(uk, "train_uk_make", _fake_train)
+    rc = train_main([str(tmp_path / "crops"), "--target", "colour", "--cpu"])
+    assert rc == 0
+    assert seen["target"] == "colour"
+
+
 def test_train_main_body_type_rejects_legacy_corpus(tmp_path: Path) -> None:
     """A corpus built before body-type labels (no body_types key) is
     refused for --target body_type rather than silently training nothing."""
@@ -377,3 +438,12 @@ def test_train_main_body_type_rejects_legacy_corpus(tmp_path: Path) -> None:
     root.mkdir()
     (root / "manifest.json").write_text(json.dumps({"makes": ["FORD"], "samples": []}))
     assert train_main([str(root), "--target", "body_type", "--cpu"]) == 1
+
+
+def test_train_main_colour_rejects_legacy_corpus(tmp_path: Path) -> None:
+    """A corpus built before colour labels (no colours key) is refused for
+    --target colour rather than silently training nothing."""
+    root = tmp_path / "crops"
+    root.mkdir()
+    (root / "manifest.json").write_text(json.dumps({"makes": ["FORD"], "samples": []}))
+    assert train_main([str(root), "--target", "colour", "--cpu"]) == 1

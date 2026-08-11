@@ -288,6 +288,7 @@
           ${estep(x.n_dvsa_labels>0,"DVSA","DVSA MOT make/model/colour lookups by plate. The number is how many plates resolved.", x.n_dvsa_labels||"")}
           ${estep(x.has_vehicles,"Vehicles","Per-vehicle aggregation (streettracker vehicles → _vehicles.json). Optional — the showcase rebuilds this view live, so it is only saved where the command was run explicitly.")}
           ${estep(x.has_makemodel,"Make/model","Make/model CNN inference has run on this session's snaps.")}
+          ${estep(x.has_colour,"Colour","Vehicle-colour CNN inference (streettracker colour → _colour_by_track.json). Replaces the low-res HSV vote: ~87% vs DVSA (grouped) where HSV scored ~40%.")}
           ${estep(x.has_people,"People","Person activity enrichment (streettracker people → _people.json): walker/jogger/cyclist kinds + dog-walker pairing. Dog pairing only yields hits on sessions recorded after the dog class went live (2026-07-07).")}
         </td>
       </tr>`;
@@ -296,7 +297,7 @@
       <thead><tr><th>#</th><th>session</th><th>started</th><th>duration</th><th>tracks</th><th>snaps</th><th>enrichment</th></tr></thead>
       <tbody>${rows}</tbody></table>
       <div class="legend">
-        <span><b>Enrichment pipeline:</b> Plates → DVSA → Vehicles → Make/model → People</span>
+        <span><b>Enrichment pipeline:</b> Plates → DVSA → Vehicles → Make/model → Colour → People</span>
         <span><span class="tag on">done</span> step has run</span>
         <span><span class="tag stale">Plates v1</span> old crop path — re-run to recover R→L reads</span>
         <span><span class="tag">pending</span> not run yet</span>

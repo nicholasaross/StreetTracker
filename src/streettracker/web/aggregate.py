@@ -102,6 +102,11 @@ class ShowcaseCar:
     thumb: str | None = None
     directions: dict[str, int] = field(default_factory=dict)
     colors: dict[str, int] = field(default_factory=dict)
+    # Confidence-weighted majority colour from the colour CNN (reads the 4K
+    # snap; ``colour_source="cnn"``), pooled across this car's tracks. Far more
+    # reliable than the low-res HSV ``colors`` histogram — the template prefers
+    # it. None where no session carries a ``_colour_by_track.json`` for the car.
+    cnn_colour: str | None = None
     plate_variants: list[str] = field(default_factory=list)
     # Parked-car stints from the stationary-beacon detector (one dict per
     # episode, see ``analysis.parked.ParkedEpisode.to_json_dict``):
@@ -149,6 +154,24 @@ def _load_dvsa_extras(session_dir: Path) -> dict[str, dict[str, Any]]:
         return {}
     labels = payload.get("labels")
     return labels if isinstance(labels, dict) else {}
+
+
+def _load_colour_by_track(session_dir: Path) -> dict[int, str]:
+    """Return ``{track_id -> CNN colour}`` from a session's
+    ``_colour_by_track.json`` (confident tracks only), or ``{}``."""
+    path = session_dir / f"{session_dir.name}_colour_by_track.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    out: dict[int, str] = {}
+    for t in payload.get("tracks", []):
+        col, tid = t.get("colour"), t.get("track_id")
+        if col and tid is not None:
+            out[int(tid)] = str(col)
+    return out
 
 
 def resolve_image_urls(
@@ -222,7 +245,9 @@ def build_showcase(
     conf_by_plate: dict[str, float] = {}
     extras_by_plate: dict[str, dict[str, Any]] = {}
     colours_by_plate: dict[str, Counter] = {}
+    cnn_by_session: dict[str, dict[int, str]] = {}
     for d in sessions:
+        cnn_by_session[d.name] = _load_colour_by_track(d)
         for v in build_vehicles(d, fuzzy_ratio=fuzzy_ratio):
             if v.plate is None:
                 continue
@@ -261,6 +286,7 @@ def build_showcase(
                 "plates": set(),
                 "directions": Counter(),
                 "colors": Counter(),
+                "cnn_colors": Counter(),
                 "parked": [],
                 "images": [],
             },
@@ -282,9 +308,13 @@ def build_showcase(
         rec["directions"].update(v.directions)
         rec["colors"].update(v.colors)
         rec["parked"].extend(v.parked_episodes)
+        sess_cnn = cnn_by_session.get(sname, {})
         for visit in v.visits:
             rec["dates"].add(visit.time_start[:10])
             rec["images"].append(_image_urls(output_root, sname, visit))
+            cc = sess_cnn.get(visit.track_id)
+            if cc:
+                rec["cnn_colors"][cc] += 1
 
     out: list[ShowcaseCar] = []
     for plate, rec in pool.items():
@@ -321,10 +351,9 @@ def build_showcase(
                 thumb=card_img.thumb if card_img else None,
                 directions=dict(rec["directions"]),
                 colors=dict(rec["colors"]),
+                cnn_colour=(rec["cnn_colors"].most_common(1)[0][0] if rec["cnn_colors"] else None),
                 plate_variants=variants,
-                parked_episodes=sorted(
-                    rec["parked"], key=lambda e: e.get("first_seen") or ""
-                ),
+                parked_episodes=sorted(rec["parked"], key=lambda e: e.get("first_seen") or ""),
                 images=images,
             )
         )

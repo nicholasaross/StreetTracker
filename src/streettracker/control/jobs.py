@@ -79,6 +79,7 @@ _GPU_KINDS = frozenset(
         "alpr-run",
         "makemodel",
         "bodytype",
+        "colour",
         "makemodel-build-uk",
         "makemodel-train-uk",
         "export-engine",

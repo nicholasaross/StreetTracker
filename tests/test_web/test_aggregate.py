@@ -136,6 +136,34 @@ def test_single_plated_car_with_dvsa(tmp_path: Path) -> None:
     assert c.thumb == "/images/session_20260526_120000/vehicle_1.jpg"
 
 
+def test_cnn_colour_from_sidecar(tmp_path: Path) -> None:
+    """build_showcase pools the confident colour-CNN prediction per car from
+    the ``_colour_by_track.json`` sidecar (majority across its tracks)."""
+    d = _write_session(
+        tmp_path,
+        "session_20260526_120000",
+        [_track(1)],
+        _alpr((1, "AB12CDE", 0.97)),
+        _dvsa(AB12CDE={"make": "FORD", "model": "FOCUS", "primary_colour": "Blue"}),
+    )
+    (d / "session_20260526_120000_colour_by_track.json").write_text(
+        json.dumps({"tracks": [{"track_id": 1, "colour": "silver", "conf": 0.9}]})
+    )
+    c = build_showcase(tmp_path)[0]
+    assert c.cnn_colour == "silver"
+
+
+def test_cnn_colour_none_without_sidecar(tmp_path: Path) -> None:
+    _write_session(
+        tmp_path,
+        "session_20260526_120000",
+        [_track(1)],
+        _alpr((1, "AB12CDE", 0.97)),
+        _dvsa(AB12CDE={"make": "FORD", "model": "FOCUS", "primary_colour": "Blue"}),
+    )
+    assert build_showcase(tmp_path)[0].cnn_colour is None
+
+
 def test_only_main_session_thumb_falls_back_to_4k(tmp_path: Path) -> None:
     # --only-main pull: 4K _main snap on disk, no _hq/tile crop. The thumb
     # must fall back to the (existing) 4K snap rather than a missing crop URL.

@@ -52,6 +52,7 @@ from typing import Any
 
 from streettracker.analysis.dvsa import is_canonical_uk_plate
 from streettracker.analysis.makemodel.bodytype import body_type_for
+from streettracker.analysis.makemodel.colour import colour_class_for
 from streettracker.web.aggregate import discover_sessions, resolve_image_urls
 
 # m/s -> mph.
@@ -397,7 +398,14 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
         # class (reliable, plated cars) and fall back to the confident CNN
         # prediction (the unreadable majority). Built here so the car loop can
         # count it. Also harvests makes_by_plate from the same DVSA read.
+        # Per-track colour for the mix chart follows the same DVSA-first
+        # precedence: DVSA register colour (ground truth, plated cars) ->
+        # confident colour CNN -> the low-res HSV vote (`color` field) as a
+        # last resort. The CNN reads the 4K snap and scores ~87% vs DVSA
+        # (grouped) where HSV managed ~40%, so it's strongly preferred over
+        # HSV for the unplated majority.
         track_body: dict[int, str] = {}
+        track_colour: dict[int, str] = {}
         dl = d / f"{name}_dvsa_labels.json"
         if dl.exists():
             try:
@@ -409,9 +417,12 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
                 if make and plate not in makes_by_plate:
                     makes_by_plate[plate] = make
                 bt = body_type_for(row.get("make"), row.get("model"))
-                if bt:
-                    for tid in row.get("track_ids", []):
+                col = colour_class_for(row.get("primary_colour"))
+                for tid in row.get("track_ids", []):
+                    if bt:
                         track_body[int(tid)] = bt
+                    if col:
+                        track_colour[int(tid)] = col
         bp = d / f"{name}_bodytype_by_track.json"
         if bp.exists():
             try:
@@ -422,6 +433,16 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
                 tid, bt = t.get("track_id"), t.get("body_type")
                 if bt and tid is not None and tid not in track_body:  # DVSA wins
                     track_body[int(tid)] = bt
+        cp = d / f"{name}_colour_by_track.json"
+        if cp.exists():
+            try:
+                col_tracks = json.loads(cp.read_text(encoding="utf-8")).get("tracks", [])
+            except (OSError, json.JSONDecodeError):
+                col_tracks = []
+            for t in col_tracks:
+                tid, col = t.get("track_id"), t.get("colour")
+                if col and tid is not None and int(tid) not in track_colour:  # DVSA wins
+                    track_colour[int(tid)] = col
 
         for r in data:
             cls = r.get("class_name")
@@ -466,7 +487,9 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
             dow[_DOW[wd]]["total"] += 1
             heatmap[wd][dt.hour] += 1
             hour_totals[dt.hour] += 1
-            colours[r.get("color") or "unknown"] += 1
+            tid = r.get("track_id")
+            cnn_col = track_colour.get(int(tid)) if tid is not None else None
+            colours[cnn_col or r.get("color") or "unknown"] += 1
             bt = track_body.get(r.get("track_id"))
             if bt:
                 bodytypes[bt] += 1

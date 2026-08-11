@@ -184,6 +184,7 @@ def test_enrich_steps_chain() -> None:
         "vehicles",
         "makemodel",
         "bodytype",
+        "colour",
         "people",
     ]
     assert "--ghost-mask" in steps[0].job.args  # type: ignore[union-attr]
