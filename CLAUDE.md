@@ -251,6 +251,25 @@ Session files:
   to match the training corpus** (the CLI default; the make model's
   0.25 loosens the crop and skews a _shape_ classifier toward "van" —
   CNN-vs-DVSA agreement dropped 79 %→42 % at 0.25 on session_20260703).
+- `{session}_colour.json` + `{session}_colour_by_track.json` —
+  per-image + per-track confidence-weighted CNN vehicle colour (after
+  `colour`; `colour_source="cnn"`; classes white/silver/grey/black/blue/
+  red/green/yellow/orange/brown/purple). **Replaces the rubbish HSV
+  vote** (`common.color.vote_color`, the `color` field): the HSV path
+  reads a low-res sub-stream crop with an 8-colour palette and scores
+  only ~40 % grouped / 32 % fine per-track vs DVSA `primary_colour`
+  (light cars drift to black/blue; can't emit silver/orange/brown/
+  purple). The colour head reads the 4K snap (same "resolution is the
+  lever" fix as make) → **87 % grouped / 74 % fine per-track** on the
+  same held-out val cars (`.claude/color_accuracy.py`, shipped
+  2026-08-11, b0@384 `models/colour_b0.pt`). Same `--pad-frac 0.1`
+  discipline as bodytype. The HSV `color` field is left untouched
+  (offline sidecar, no Orin/schema change). **Wired in 2026-08-11:** the
+  `/stats` colour mix prefers DVSA `primary_colour` → this CNN → HSV; the
+  showcase car page shows the CNN `cnn_colour`; the control-panel
+  **enrich** playbook runs `colour` after `bodytype`; and the sessions
+  table shows a **Colour** enrichment badge (`has_colour` =
+  `_colour_by_track.json` present). All existing sessions backfilled.
 - `{session}_people.json` — per-person-track activity enrichment
   (after `people`): kind walker/jogger/cyclist + `dog_walker` flag via
   temporal+direction pairing with dog/bicycle tracks. Jogger split
@@ -308,6 +327,7 @@ uv run streettracker people output/<session>             # person activity enric
 uv run streettracker showcase --output-root output       # local website: enriched + recurring cars (http://127.0.0.1:8090/)
 uv run streettracker makemodel output/<session>          # CNN make/model inference -> _makemodel.json
 uv run streettracker bodytype output/<session>           # CNN body-type inference -> _bodytype_by_track.json (pad_frac 0.1)
+uv run streettracker colour output/<session>             # CNN vehicle-colour inference -> _colour_by_track.json (pad_frac 0.1); beats HSV 42%->87% grouped vs DVSA
 # Mine the Orin -> grow the UK make-classifier corpus (run pull from PowerShell):
 uv run streettracker pull --session <S> --only-main      # pull a session's 4K snaps from the Orin
 uv run streettracker makemodel-build-uk runs/uk_crops --output-size 512  # DVSA-labelled UK make crops @512 (auto-discovers sessions)

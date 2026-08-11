@@ -40,6 +40,7 @@ from streettracker.analysis.makemodel.bodytype import (
     body_type_for,
     normalize_make,
 )
+from streettracker.analysis.makemodel.colour import COLOUR_CLASSES, colour_class_for
 from streettracker.analysis.makemodel.cropper import VehicleCropper
 from streettracker.analysis.makemodel.dataset import build_eval_transform, build_train_transform
 from streettracker.analysis.makemodel.model import (
@@ -61,12 +62,19 @@ from streettracker.analysis.snap_assets import (
 
 __all__ = [
     "BODY_TYPES",
+    "COLOUR_CLASSES",
     "UKMakeDataset",
     "body_type_for",
+    "colour_class_for",
     "extract_crops",
     "normalize_make",
     "train_uk_make",
 ]
+
+# Non-make training targets -> the manifest key listing that target's present
+# classes. ``make`` is special (its classes are the top-level folder set).
+_TARGET_MANIFEST_KEY = {"body_type": "body_types", "colour": "colours"}
+_CANONICAL_CLASSES = {"body_type": BODY_TYPES, "colour": COLOUR_CLASSES}
 
 
 def _load_session_labels(session_dir: Path) -> dict[str, dict[str, Any]]:
@@ -131,6 +139,7 @@ def extract_crops(
     # body-type dataset drops it like a missing label.
     car_make: dict[str, str] = {}
     car_body: dict[str, str] = {}
+    car_colour: dict[str, str] = {}
     car_tracks: dict[str, list[tuple[Path, int]]] = defaultdict(list)
     for sess in sessions:
         for plate, v in _load_session_labels(sess).items():
@@ -139,6 +148,10 @@ def extract_crops(
                 continue
             car_make[plate] = mk
             car_body[plate] = body_type_for(v.get("make"), v.get("model"))
+            # Colour is a third, independent target derived from the DVSA
+            # register colour ("" where uninformative -> dropped like a
+            # missing make); see makemodel.colour.colour_class_for.
+            car_colour[plate] = colour_class_for(v.get("primary_colour"))
             for tid in v.get("track_ids", []):
                 car_tracks[plate].append((sess, int(tid)))
     make_car_counts = Counter(car_make.values())
@@ -187,16 +200,27 @@ def extract_crops(
             rel = f"{mk}/{car}_{cand.sess_name}_{cand.tid}_{cand.snap_index}.jpg"
             cv2.imwrite(str(out_dir / rel), crop)
             samples.append(
-                {"path": rel, "make": mk, "car": car, "body_type": car_body.get(car, "")}
+                {
+                    "path": rel,
+                    "make": mk,
+                    "car": car,
+                    "body_type": car_body.get(car, ""),
+                    "colour": car_colour.get(car, ""),
+                }
             )
 
-    body_present = sorted({s["body_type"] for s in samples if s["body_type"]})
+    body_present = [b for b in BODY_TYPES if any(s["body_type"] == b for s in samples)]
+    colour_present = [c for c in COLOUR_CLASSES if any(s["colour"] == c for s in samples)]
     body_car_counts = Counter(
         car_body[c] for c in car_make if car_make[c] in kept and car_body.get(c)
+    )
+    colour_car_counts = Counter(
+        car_colour[c] for c in car_make if car_make[c] in kept and car_colour.get(c)
     )
     manifest = {
         "makes": sorted(kept),
         "body_types": body_present,
+        "colours": colour_present,
         "min_cars_per_make": min_cars_per_make,
         "samples": samples,
     }
@@ -207,6 +231,9 @@ def extract_crops(
         "n_body_types": len(body_present),
         "n_cars_body_labelled": sum(1 for c in kept_cars if car_body.get(c)),
         "body_car_counts": dict(body_car_counts),
+        "n_colours": len(colour_present),
+        "n_cars_colour_labelled": sum(1 for c in kept_cars if car_colour.get(c)),
+        "colour_car_counts": dict(colour_car_counts),
         "n_cars": sum(1 for m in car_make.values() if m in kept),
         "n_crops": len(samples),
         "make_car_counts": {m: make_car_counts[m] for m in sorted(kept)},
@@ -258,8 +285,11 @@ class UKMakeDataset(Dataset):
             if label_field == "make":
                 names = tuple(manifest["makes"])
             else:
+                # Non-make targets (body_type / colour) resolve their present
+                # classes in a fixed canonical order so train + val share it.
+                canonical = _CANONICAL_CLASSES.get(label_field, BODY_TYPES)
                 present = {s[label_field] for s in manifest["samples"] if s.get(label_field)}
-                names = tuple(c for c in BODY_TYPES if c in present)
+                names = tuple(c for c in canonical if c in present)
         self.class_names = tuple(names)
         self.make_names = self.class_names  # back-compat alias
         idx = {m: i for i, m in enumerate(self.class_names)}
@@ -515,6 +545,13 @@ def build_main(argv: list[str] | None = None) -> int:
     )
     for bt, n in sorted(stats["body_car_counts"].items(), key=lambda x: -x[1]):
         print(f"  {bt:<16}{n}")
+    cl = stats["n_cars_colour_labelled"]
+    print(
+        f"[makemodel-build-uk] colours: {stats['n_colours']} classes, "
+        f"{cl}/{stats['n_cars']} cars labelled ({100 * cl / max(1, stats['n_cars']):.0f}%)"
+    )
+    for col, n in sorted(stats["colour_car_counts"].items(), key=lambda x: -x[1]):
+        print(f"  {col:<16}{n}")
     return 0
 
 
@@ -549,9 +586,10 @@ def train_main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--target",
-        choices=("make", "body_type"),
+        choices=("make", "body_type", "colour"),
         default="make",
-        help="label to train (default make; body_type = coarse hatchback/suv/... head)",
+        help="label to train (default make; body_type = coarse hatchback/suv/... head; "
+        "colour = white/silver/grey/black/... head)",
     )
     parser.add_argument(
         "--freeze-backbone", action="store_true", help="linear-probe (frozen backbone)"
@@ -583,12 +621,13 @@ def train_main(argv: list[str] | None = None) -> int:
         pretrained=not args.no_pretrained,
         force_cpu=args.cpu,
     )
-    if args.target == "body_type" and not json.loads(
-        (args.crops_dir / "manifest.json").read_text()
-    ).get("body_types"):
+    manifest_key = _TARGET_MANIFEST_KEY.get(args.target)
+    if manifest_key and not json.loads((args.crops_dir / "manifest.json").read_text()).get(
+        manifest_key
+    ):
         print(
-            "[makemodel-train-uk] this corpus has no body-type labels "
-            "-- rebuild with makemodel-build-uk to add them"
+            f"[makemodel-train-uk] this corpus has no {args.target} labels "
+            f"-- rebuild with makemodel-build-uk to add them"
         )
         return 1
     train_uk_make(args.crops_dir, args.out, config, target=args.target)

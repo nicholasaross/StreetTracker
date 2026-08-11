@@ -1,0 +1,26 @@
+{
+  "arch": "efficientnet_b0",
+  "input_size": 384,
+  "n_colours": 11,
+  "colours": [
+    "white",
+    "silver",
+    "grey",
+    "black",
+    "blue",
+    "red",
+    "green",
+    "yellow",
+    "orange",
+    "brown",
+    "purple"
+  ],
+  "val_colour_top1": 0.5746,
+  "promoted_at": "2026-08-11",
+  "source_run": "uk_colour_b0",
+  "trained_corpus": {
+    "name": "uk_crops_0708_bt_384",
+    "n_cars": 3937,
+    "n_crops": 47855
+  }
+}

@@ -36,7 +36,7 @@
       <table class="attrs">
         <tr><th>Year</th><td>{{ car.year or '—' }}</td></tr>
         <tr><th>Colour (DVSA)</th><td>{{ car.primary_colour or '—' }}</td></tr>
-        <tr><th>Observed colour</th><td>{{ car.colors | join_counts }}</td></tr>
+        <tr><th>Observed colour</th><td>{% if car.cnn_colour %}{{ car.cnn_colour }} <span style="opacity:.55">(AI)</span>{% else %}{{ car.colors | join_counts }}{% endif %}</td></tr>
         <tr><th>Fuel</th><td>{{ car.fuel_type or '—' }}</td></tr>
         <tr><th>Engine</th><td>{% if car.engine_size_cc %}{{ car.engine_size_cc }} cc{% else %}—{% endif %}</td></tr>
         <tr><th>Make/model from</th><td>{{ car.make_model_source or '—' }}</td></tr>

@@ -280,6 +280,33 @@ def test_colour_distribution(tmp_path: Path) -> None:
     assert colours == {"white": 2, "black": 1}
 
 
+def test_colour_mix_dvsa_preferred_cnn_then_hsv(tmp_path: Path) -> None:
+    """Colour mix precedence: DVSA register colour (plated) > colour CNN
+    sidecar > the low-res HSV `color` field for tracks nothing else covers."""
+    d = _mk_session(
+        tmp_path,
+        "session_col",
+        [
+            _track(1, color="black"),  # HSV black, but DVSA says Blue -> blue
+            _track(2, color="black"),  # HSV black, but CNN says silver -> silver
+            _track(3, color="green"),  # no DVSA, no CNN -> HSV green
+        ],
+        dvsa={"labels": {"AB12CDE": {"primary_colour": "Blue", "track_ids": [1]}}},
+    )
+    (d / "session_col_colour_by_track.json").write_text(
+        json.dumps(
+            {
+                "tracks": [
+                    {"track_id": 1, "colour": "grey", "conf": 0.9},  # ignored: DVSA wins
+                    {"track_id": 2, "colour": "silver", "conf": 0.9},  # used: no DVSA
+                ]
+            }
+        )
+    )
+    colours = dict(build_stats(tmp_path).colours)
+    assert colours == {"blue": 1, "silver": 1, "green": 1}
+
+
 def test_body_type_mix_dvsa_preferred_cnn_fallback(tmp_path: Path) -> None:
     """The body-type mix uses the DVSA-model-derived class where a plate is
     known (reliable) and the CNN sidecar only for tracks DVSA didn't cover."""
