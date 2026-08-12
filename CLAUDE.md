@@ -29,6 +29,18 @@ NRestarts=0):
   motion-window-hint artifact that completion-time bboxes corrected; honest net
   per-car ~48 %, not the inflated 63.9 %). R→L now needs hardware, not tuning.
   Detail in the [snap-gate config layout](#snap-gate-config-layout) section.
+  **⮕ SUPERSEDED 2026-07-28 — R→L SOLVED IN SOFTWARE (read this before
+  quoting anything above):** every "R→L camera-geometry-capped / HW-only /
+  needs hardware" claim in this bullet is **falsified**. The cap was
+  contaminated crops (recorded done-bboxes sit a median ~510 4K px off the
+  car + ~34-53 % of R→L "reads" were static parked/background plates), NOT
+  geometry. The full-frame trajectory-matched crop path (`alpr-run
+--crop-mode fullframe`, the default since 2026-07-28, PR #94/#95)
+  recovered R→L to **per-car parity in software** — production **R→L 69.7 %
+  / L→R 66.8 %, net 68.3 %** (was ~9-17 % R→L / ~45 % net). No 2nd camera.
+  The remaining variance is now time-of-day (day ~74.7 % vs dusk/dark
+  ~45.4 %) → next lever is **night lighting/exposure**, not geometry. See
+  Next-steps item 5.
 - **`vehicle_classes = [0,1,2,3,5,7]`** (person+car+bike+moto+bus+truck; was
   `[0,2]`).
 - **completion-time bbox capture** (`TrackRecord.main_snap_bboxes_done`) —
@@ -115,10 +127,28 @@ no person-specific snap gate needed. Both ancestor repos archived
    8B VLM spills
    ~17 GB commit to system RAM on the 10 GB 3080 — never run it beside
    panel jobs (it starved an `alpr-run` to death on 2026-07-08).
-5. **R→L hardware:** 2nd discreet camera on the approach — the only
-   remaining ANPR lever (R→L geometry-capped ~23 %). Needs multi-camera
-   architecture first: RoadGate assumes one road/one axis, so per-camera
-   gates + cross-camera track fusion before any purchase.
+5. **R→L SOLVED IN SOFTWARE (2026-07-28) — 2nd-camera plan shelved; night
+   exposure is the freed-up lever.** The 2026-06-19 verdict ("R→L
+   geometry-capped ~23 %, only a 2nd discreet approach camera can lift it")
+   was **falsified 2026-07-27/28**: the "cap" was contaminated crops, not
+   geometry. The recorded `main_snap_bboxes_done` sit a median **~510 4K px
+   off the car**, and ~34-53 % of R→L "reads" were static parked/background
+   plates. Fixed offline (E1 re-score) then **productionised** — the
+   full-frame trajectory-matched crop path (`analysis/alpr/fullframe.py`,
+   `TrajectoryCropDetector`): **`alpr-run --crop-mode fullframe` is the
+   default since 2026-07-28** (PR #94/#95; `--crop-mode hint` = legacy).
+   Production-confirmed on the re-enriched sessions: **R→L 69.7 % / L→R
+   66.8 % per-car canonical, net 68.3 %** (was ~9-17 % R→L / ~45 % net) —
+   **direction parity achieved, no hardware needed.** The whole local
+   corpus is on the fullframe path (panel `Plates v2` badge; **re-enrich
+   backlog cleared** — all ALPR'd sessions verified `crop_mode=fullframe`).
+   **The remaining variance is now time-of-day, not direction**: day
+   (06-18) ~74.7 % vs dusk/dark (18-06) ~45.4 % per-car → the freed-up
+   capture lever is **night lighting/exposure** (supplementary IR or a
+   night-specific ISP — distinct from the *daytime* Anti-Smearing
+   falsification), NOT geometry/hardware. Multi-camera architecture is no
+   longer a prerequisite for anything. Repro: `.claude/rl_rescore_e1.py`,
+   evidence in `.claude/rl_evidence_0727/`.
 6. **JP7:** wheel gate re-checked 2026-07-07 — still no jp7 index.
    Re-run `scripts/check_jp7_wheel.ps1` before any flash; stay on JP6.
 7. **Parked by choice — people P0 (retention policy).** Deliberately
@@ -577,7 +607,18 @@ names differ from the example.
 
 ## ANPR tuning loop
 
-**Current status (updated 2026-06-19 — per-direction band verdict in; core table from 2026-05-27):**
+**Current status (updated 2026-07-28 — R→L solved in software; per-direction band verdict 2026-06-19; core table from 2026-05-27):**
+
+**⮕ R→L UPDATE 2026-07-28 (overrides the rows below):** every "R→L
+camera-geometry ceiling / capped ~15-20 % at any position" entry in this
+table is **falsified**. The cap was contaminated crops (done-bboxes ~510 4K
+px off the car + static parked-plate reads), not geometry. The full-frame
+trajectory-matched crop path (`alpr-run --crop-mode fullframe`, default
+since 2026-07-28, PR #94/#95) lifted R→L to **per-car parity in software**
+— production **R→L 69.7 % / L→R 66.8 %, net 68.3 %** (was ~9-17 % R→L /
+~45 % net). Read the "Per-image high-conf" and "Direction-aware throttling"
+rows as history through 2026-06-19; the net-read rate and the R→L gap are
+what changed.
 
 | Layer                      | Status                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -596,6 +637,14 @@ Capture-side read-rate tuning is likewise exhausted — near-camera band
 position and camera exposure/shutter (Step 15) were both tried and
 falsified.
 
+**Conclusion UPDATE 2026-07-28:** the "camera-geometry-bound floor" was
+substantially an OFFLINE CROP-PATH artifact, not a capture limit. Switching
+the plate detector to a full-frame trajectory-matched crop (`--crop-mode
+fullframe`, default since 2026-07-28, PR #94/#95) lifted net per-car
+canonical to **~68 %** with R→L≈L→R — so R→L is NOT geometry-capped and
+needs no 2nd camera. The one residual capture lever is **night exposure**
+(day ~74.7 % vs dusk/dark ~45.4 % per-car). See Next-steps item 5.
+
 **Step 16 addendum (2026-06-11) — SUPERSEDED by the 2026-06-19 verdict.**
 The 06-11 motion-window-hint re-run claimed the honest per-snapped-car
 canonical rate was 63.9 % (R→L 69.0 % > L→R 58.6 %, asymmetry inverted) and
@@ -611,7 +660,12 @@ artifact of the hint window. **Honest reality: per-snapped-car canonical ~48 %
 - exposure + offline crop method all tried + falsified); R→L now needs hardware
   (a 2nd discreet camera on the approach), not tuning. The Anti-Smearing
   falsification stands (same-hint A/B). Full verdict: `.claude/verdict_band_0613.py`
-- `.claude/band_position_done.py`.
+- `.claude/band_position_done.py`. **SUPERSEDED 2026-07-28:** the "R→L
+  needs hardware" conclusion here was itself falsified. The "offline crop
+  method" this paragraph tried was the hint-window / completion-bbox crop; a
+  _full-frame trajectory-matched_ crop (`--crop-mode fullframe`, default since
+  2026-07-28) recovered R→L to per-car parity in software (net ~68 %). R→L no
+  longer needs a 2nd camera — see Next-steps item 5.
 
 ### Make/model classification
 
@@ -1104,7 +1158,18 @@ _every_ landing position (`band_position_done.py`), so firing R→L far buys
 nothing. The 2026-06-11 "R→L reads 56-76 % fired far" was a motion-window-
 hint forward-extrapolation artifact; completion-time bboxes (exact landing
 crops, no extrapolation) corrected it, restoring the pre-Step-16 ~14 %
-geometry floor. The reverse lower edge was nudged **0.25→0.30 on 2026-06-19**
+geometry floor.
+
+**⮕ CORRECTION 2026-07-28:** the "~14-20 % R→L geometry floor" asserted just
+above is **itself falsified** — it was measured through the *completion-bbox*
+crop, which still sits a median ~510 4K px off the car. The full-frame
+trajectory-matched crop (`alpr-run --crop-mode fullframe`, default since
+2026-07-28, PR #94/#95) reads R→L at **~70 % per-car** on the same snaps, so
+R→L is NOT camera-geometry-capped and the live-band question is moot for it
+(the reads were there all along, mis-cropped offline). The L→R reverse-band
+tuning in the rest of this paragraph still stands.
+
+The reverse lower edge was nudged **0.25→0.30 on 2026-06-19**
 (L→R departs/recedes ~0.10 t*norm during the ~700 ms snap latency, so 0.25
 fires landed in the weak far zone) and **validated 2026-06-22** on the ~72h
 `session_20260619_111111` soak: L→R per-car 73-82 % → **92.3 %**, per-image
