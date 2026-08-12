@@ -38,6 +38,18 @@
   .hbar .fill { height: 16px; border-radius: 5px; background: var(--accent); }
   .hbar .n { color: var(--muted); text-align: right; }
   .sw { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; border: 1px solid #0006; }
+  /* speed leaderboards (fastest by make / colour) — zoomed non-zero axis so the
+     compressed spread is legible, with a 95%-margin whisker on each bar. */
+  .srank { display: flex; flex-direction: column; gap: 8px; }
+  .srow { display: grid; grid-template-columns: 150px 1fr 78px; align-items: center; gap: 9px; font-size: 13px; }
+  .srow .track { position: relative; height: 20px; background: var(--panel-2); border-radius: 5px; }
+  .srow .fill { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 5px 0 0 5px; background: var(--accent); opacity: .8; }
+  .srow .ci { position: absolute; top: 50%; height: 11px; transform: translateY(-50%); border-left: 2px solid var(--text); border-right: 2px solid var(--text); opacity: .5; }
+  .srow .val { text-align: right; line-height: 1.15; }
+  .srow .val b { font-variant-numeric: tabular-nums; }
+  .srow .val small { display: block; color: var(--muted); font-size: 11px; font-weight: 400; }
+  .srank .axis { display: grid; grid-template-columns: 150px 1fr 78px; font-size: 10px; color: var(--muted); margin-top: 2px; }
+  .srank .axis span:nth-child(2) { display: flex; justify-content: space-between; }
   /* fastest */
   .fastest { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 8px; }
   .fcard { flex: 0 0 150px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; display: block; color: var(--text); transition: transform .08s ease, border-color .08s ease; }
@@ -221,6 +233,22 @@
   <div class="fastest" id="fastest"></div>
 </div>
 
+<div class="row" id="speedrankrow" hidden>
+  <div class="panel stat">
+    <h3>Fastest by make</h3>
+    <p class="hint">Makes ranked by <b>average</b> speed (plated cars only).
+      Only makes with enough passes are shown; the whisker is the 95% margin —
+      where whiskers overlap, the order is within noise.</p>
+    <div id="fastmakes"></div>
+  </div>
+  <div class="panel stat">
+    <h3>Fastest by colour</h3>
+    <p class="hint">Colours ranked by <b>average</b> speed, over all tracks with
+      a colour. Same reading: overlapping whiskers = no real difference.</p>
+    <div id="fastcolours"></div>
+  </div>
+</div>
+
 <div class="panel stat">
   <h3>Vehicle colours</h3>
   <div class="hbars" id="colours"></div>
@@ -358,6 +386,36 @@ function hbars(container, rows, opts){
   }).join("") || '<p class="hint">No data.</p>';
 }
 
+// Speed leaderboard: rows [{name,n,mean,margin,unit}], already fastest-first.
+// Axis is zoomed to [floor(min low), ceil(max high)] so the small spread reads;
+// each bar shows the mean as a fill from the axis floor plus a 95%-margin
+// whisker. opts.prefix(make icon) / opts.swatch+fill(colour) mirror hbars().
+function speedbars(container, rows, opts){
+  opts = opts || {};
+  if(!rows.length){ el(container).innerHTML = '<p class="hint">Not enough data yet.</p>'; return; }
+  const unit = rows[0].unit;
+  let lo = Math.min(...rows.map(r=>r.mean - r.margin));
+  let hi = Math.max(...rows.map(r=>r.mean + r.margin));
+  lo = Math.floor(lo); hi = Math.ceil(hi);
+  if(hi <= lo) hi = lo + 1;
+  const span = hi - lo, pct = v => (100*(v-lo)/span);
+  const body = rows.map(r=>{
+    const sw = opts.swatch? `<span class="sw" style="background:${opts.swatch(r.name)}"></span>`:"";
+    const pre = opts.prefix? opts.prefix(r.name) : "";
+    const fillCol = opts.fill? opts.fill(r.name) : "var(--accent)";
+    const w = pct(r.mean).toFixed(1);
+    const cL = pct(r.mean - r.margin).toFixed(1), cR = pct(r.mean + r.margin).toFixed(1);
+    const whisk = r.margin>0? `<span class="ci" style="left:${cL}%;width:${(cR-cL).toFixed(1)}%"></span>`:"";
+    return `<div class="srow" title="${r.name}: mean ${r.mean} ${unit} ±${r.margin} over ${r.n} passes">
+      <div>${pre}${sw}${r.name}</div>
+      <div class="track"><div class="fill" style="width:${w}%;background:${fillCol}"></div>${whisk}</div>
+      <div class="val"><b>${r.mean}</b> <small>±${r.margin} · n=${r.n}</small></div></div>`;
+  }).join("");
+  el(container).innerHTML = `<div class="srank">${body}
+    <div class="axis"><span></span><span><span>${lo}</span><span>${hi} ${unit}</span></span><span></span></div>
+  </div>`;
+}
+
 const COLOUR_HEX = {white:"#e8e8e8",black:"#222",silver:"#c0c5cc",grey:"#9aa3b2",gray:"#9aa3b2",
   red:"#e0584f",blue:"#4f7fe0",green:"#3da35d",yellow:"#e6c84f",orange:"#e08a3d",
   brown:"#8a6240",beige:"#d9c9a3",purple:"#8a5fd0",unknown:"#4a5160"};
@@ -427,6 +485,12 @@ function init(){
   renderDaily(); renderDow(); renderQuarter(sel.value); renderHeatmap(); renderSpeed();
   hbars("makes", STATS.makes, {prefix: makeIcon});
   hbars("colours", STATS.colours, {swatch: colHex, fill: colHex});
+  if ((STATS.fastest_makes && STATS.fastest_makes.length) ||
+      (STATS.fastest_colours && STATS.fastest_colours.length)) {
+    el("speedrankrow").hidden = false;
+    speedbars("fastmakes", STATS.fastest_makes || [], {prefix: makeIcon});
+    speedbars("fastcolours", STATS.fastest_colours || [], {swatch: colHex, fill: colHex});
+  }
   if (STATS.bodytypes && STATS.bodytypes.length && el("bodytypes")) {
     const BODY_HEX = {hatchback:"#5b9dff",suv:"#1fb6a8",saloon:"#8a6fd0",mpv:"#e08a3d",
       van:"#9aa3b2",pickup:"#8a6240",coupe:"#e0584f"};

@@ -68,6 +68,14 @@ _DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 N_FASTEST = 8
 N_TOP_MAKES = 12
 N_TOP_COLOURS = 10
+# "Fastest by make / by colour" leaderboards: rank groups by *mean* speed.
+# On this residential street the whole speed distribution is compressed
+# (~6-9 mph), so most groups sit inside each other's confidence intervals --
+# a naive top-N is dominated by tiny, noisy groups. Guard both ends: only
+# rank a group with at least this many tracks, and carry n + a 95% margin on
+# each row so the UI can show how uncertain the ranking is.
+N_SPEED_RANK = 5
+_SPEED_RANK_MIN_N = 40
 # Dwell (time-in-view) histogram: 10s buckets up to 60s, then one open
 # "60s+" bucket -- median walks sit ~12s on this scene, so six closed
 # buckets cover the bulk without flattening the chart.
@@ -111,6 +119,8 @@ class Stats:
     makes: list[list[Any]]  # [[make, n_distinct_cars], ...]
     colours: list[list[Any]]  # [[colour, n_journeys], ...]
     bodytypes: list[list[Any]]  # [[body_type, n_journeys], ...]; DVSA-derived + CNN fallback
+    fastest_makes: list[dict[str, Any]]  # makes ranked by mean speed; see _speed_ranking
+    fastest_colours: list[dict[str, Any]]  # colours ranked by mean speed
     people: dict[str, Any]  # person-track aggregates; see _empty_people()
     speed_unit: str  # "mph" | "px/s"
 
@@ -333,6 +343,8 @@ def _empty_stats(unit: str) -> Stats:
         makes=[],
         colours=[],
         bodytypes=[],
+        fastest_makes=[],
+        fastest_colours=[],
         people=_empty_people(),
         speed_unit=unit,
     )
@@ -362,6 +374,10 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
     colours: Counter[str] = Counter()
     bodytypes: Counter[str] = Counter()
     makes_by_plate: dict[str, str] = {}
+    # Per-track speeds grouped for the "fastest by make / colour" boards.
+    # Same detection guard as the individual fastest board.
+    speeds_by_make: dict[str, list[float]] = defaultdict(list)
+    speeds_by_colour: dict[str, list[float]] = defaultdict(list)
     fastest_raw: list[tuple[float, str, dict[str, Any]]] = []
     total = 0
     dates: set[str] = set()
@@ -406,6 +422,7 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
         # HSV for the unplated majority.
         track_body: dict[int, str] = {}
         track_colour: dict[int, str] = {}
+        track_make: dict[int, str] = {}
         dl = d / f"{name}_dvsa_labels.json"
         if dl.exists():
             try:
@@ -416,13 +433,15 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
                 make = (row.get("make") or "").strip()
                 if make and plate not in makes_by_plate:
                     makes_by_plate[plate] = make
-                bt = body_type_for(row.get("make"), row.get("model"))
+                bt: str | None = body_type_for(row.get("make"), row.get("model"))
                 col = colour_class_for(row.get("primary_colour"))
                 for tid in row.get("track_ids", []):
                     if bt:
                         track_body[int(tid)] = bt
                     if col:
                         track_colour[int(tid)] = col
+                    if make:
+                        track_make[int(tid)] = make.upper()
         bp = d / f"{name}_bodytype_by_track.json"
         if bp.exists():
             try:
@@ -507,6 +526,13 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
                 speeds_r2l.append(sp)
             if (r.get("num_detections") or 0) >= _FASTEST_MIN_DETECTIONS:
                 fastest_raw.append((sp, name, r))
+                if sp > 0:
+                    mk = track_make.get(int(tid)) if tid is not None else None
+                    if mk:
+                        speeds_by_make[mk].append(sp)
+                    grp_col = cnn_col or r.get("color")
+                    if grp_col and grp_col != "unknown":
+                        speeds_by_colour[grp_col].append(sp)
 
         pp = d / f"{name}_people.json"
         if pp.exists():
@@ -588,6 +614,8 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
     makes = [[m, n] for m, n in Counter(makes_by_plate.values()).most_common(N_TOP_MAKES)]
     colours_out = [[c, n] for c, n in colours.most_common(N_TOP_COLOURS)]
     bodytypes_out = [[b, n] for b, n in bodytypes.most_common()]
+    fastest_makes = _speed_ranking(speeds_by_make, factor, unit)
+    fastest_colours = _speed_ranking(speeds_by_colour, factor, unit)
 
     p_directed = p_dir["l2r"] + p_dir["r2l"]
     p_bh = max(range(24), key=lambda h: p_hour[h]) if p_total else None
@@ -624,6 +652,8 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
         makes=makes,
         colours=colours_out,
         bodytypes=bodytypes_out,
+        fastest_makes=fastest_makes,
+        fastest_colours=fastest_colours,
         people=people,
         speed_unit=unit,
     )
@@ -651,6 +681,44 @@ def _speed_hist(speeds: list[float], factor: float | None) -> list[dict[str, Any
         {"lo": round(i * width, 1), "hi": round((i + 1) * width, 1), "n": c}
         for i, c in enumerate(counts)
     ]
+
+
+def _speed_ranking(
+    groups: dict[str, list[float]],
+    factor: float | None,
+    unit: str,
+    *,
+    min_n: int = _SPEED_RANK_MIN_N,
+    top: int = N_SPEED_RANK,
+) -> list[dict[str, Any]]:
+    """Rank groups (make / colour) by mean speed, fastest first.
+
+    Only groups with >= ``min_n`` tracks qualify (a mean over a handful of
+    tracks is meaningless on this compressed distribution). Each row carries
+    the sample size and a 95% margin (1.96 * standard error of the mean) in
+    the display unit, so the UI can show the ranking's uncertainty rather than
+    implying a hard order. Input speeds are px/s; ``factor`` converts to mph.
+    """
+    rows: list[dict[str, Any]] = []
+    for name, speeds in groups.items():
+        if len(speeds) < min_n:
+            continue
+        disp = [s * factor if factor is not None else s for s in speeds]
+        n = len(disp)
+        mean = sum(disp) / n
+        var = sum((x - mean) ** 2 for x in disp) / (n - 1) if n > 1 else 0.0
+        margin = 1.96 * (var**0.5) / (n**0.5)
+        rows.append(
+            {
+                "name": name,
+                "n": n,
+                "mean": round(mean, 1),
+                "margin": round(margin, 1),
+                "unit": unit,
+            }
+        )
+    rows.sort(key=lambda r: r["mean"], reverse=True)
+    return rows[:top]
 
 
 def _build_fastest(

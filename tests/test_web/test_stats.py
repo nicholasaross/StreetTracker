@@ -19,7 +19,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from streettracker.common.schema import TrackRecord
 from streettracker.web.server import build_app
-from streettracker.web.stats import _DOW, MPH_PER_M_S, build_stats
+from streettracker.web.stats import _DOW, MPH_PER_M_S, _speed_ranking, build_stats
 
 _FAKE_JPEG = b"\xff\xd8\xff\xe0X\xff\xd9"
 
@@ -278,6 +278,59 @@ def test_colour_distribution(tmp_path: Path) -> None:
     )
     colours = dict(build_stats(tmp_path).colours)
     assert colours == {"white": 2, "black": 1}
+
+
+def test_speed_ranking_orders_gates_and_annotates() -> None:
+    """_speed_ranking: fastest-first, sample-size gated, n + 95% margin carried."""
+    groups = {
+        "FAST": [200.0] * 50,  # tight, big -> top, tiny margin
+        "SLOW": [100.0] * 50,
+        "NOISY": [500.0, 100.0] * 25,  # big spread -> wide margin, n=50
+        "TINY": [999.0] * 5,  # below min_n -> excluded despite huge mean
+    }
+    rows = _speed_ranking(groups, factor=None, unit="px/s", min_n=40, top=5)
+    assert [r["name"] for r in rows] == ["NOISY", "FAST", "SLOW"]  # mean 300>200>100
+    assert "TINY" not in {r["name"] for r in rows}  # gated out
+    fast = next(r for r in rows if r["name"] == "FAST")
+    assert fast["n"] == 50 and fast["mean"] == 200.0 and fast["margin"] == 0.0
+    noisy = next(r for r in rows if r["name"] == "NOISY")
+    assert noisy["margin"] > fast["margin"]  # uncertainty is surfaced
+    assert all(r["unit"] == "px/s" for r in rows)
+
+
+def test_speed_ranking_top_n_limit() -> None:
+    groups = {name: [float(100 + i)] * 40 for i, name in enumerate("ABCDEFG")}
+    assert len(_speed_ranking(groups, factor=None, unit="px/s", min_n=40, top=5)) == 5
+
+
+def test_fastest_by_make_and_colour_through_build_stats(tmp_path: Path) -> None:
+    """Integration: fastest_makes / fastest_colours populate, gate on sample
+    size, and convert to mph under a calibration."""
+    ford = [_track(i, speed=150.0, color="red") for i in range(1, 41)]  # 40 red FORDs
+    audi = [_track(i, speed=300.0, color="blue") for i in range(41, 80)]  # 39 -> gated
+    _mk_session(
+        tmp_path,
+        "session_20260526_090000",
+        ford + audi,
+        dvsa={
+            "labels": {
+                "AB12CDE": {"make": "FORD", "track_ids": list(range(1, 41))},
+                "LA68EWY": {"make": "AUDI", "track_ids": list(range(41, 80))},
+            }
+        },
+    )
+    s = build_stats(tmp_path, m_per_px=0.05)
+    make_names = {r["name"] for r in s.fastest_makes}
+    assert "FORD" in make_names  # 40 tracks clears the gate
+    assert "AUDI" not in make_names  # 39 tracks is below _SPEED_RANK_MIN_N
+    ford_row = next(r for r in s.fastest_makes if r["name"] == "FORD")
+    assert ford_row["n"] == 40
+    assert ford_row["mean"] == round(150.0 * 0.05 * MPH_PER_M_S, 1)  # px/s -> mph
+    assert ford_row["unit"] == "mph"
+    # Colours use the HSV `color` fallback here (no DVSA colour / CNN sidecar).
+    colour_names = {r["name"] for r in s.fastest_colours}
+    assert "red" in colour_names  # 40 red tracks
+    assert "blue" not in colour_names  # only 39
 
 
 def test_colour_mix_dvsa_preferred_cnn_then_hsv(tmp_path: Path) -> None:
