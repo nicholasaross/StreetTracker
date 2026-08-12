@@ -39,8 +39,10 @@ NRestarts=0):
   recovered R→L to **per-car parity in software** — production **R→L 69.7 %
   / L→R 66.8 %, net 68.3 %** (was ~9-17 % R→L / ~45 % net). No 2nd camera.
   The remaining variance is now time-of-day (day ~74.7 % vs dusk/dark
-  ~45.4 %) → next lever is **night lighting/exposure**, not geometry. See
-  Next-steps item 5.
+  ~45.4 %) → the residual capture lever is **night capture, characterised
+  2026-08-12 as MOTION BLUR, not underexposure** (night plates are still
+  detected but glyph-smeared → fix is a faster night shutter + IR fill, NOT
+  brightening). Not geometry. See Next-steps item 5.
 - **`vehicle_classes = [0,1,2,3,5,7]`** (person+car+bike+moto+bus+truck; was
   `[0,2]`).
 - **completion-time bbox capture** (`TrackRecord.main_snap_bboxes_done`) —
@@ -144,11 +146,32 @@ no person-specific snap gate needed. Both ancestor repos archived
    backlog cleared** — all ALPR'd sessions verified `crop_mode=fullframe`).
    **The remaining variance is now time-of-day, not direction**: day
    (06-18) ~74.7 % vs dusk/dark (18-06) ~45.4 % per-car → the freed-up
-   capture lever is **night lighting/exposure** (supplementary IR or a
-   night-specific ISP — distinct from the *daytime* Anti-Smearing
-   falsification), NOT geometry/hardware. Multi-camera architecture is no
-   longer a prerequisite for anything. Repro: `.claude/rl_rescore_e1.py`,
-   evidence in `.claude/rl_evidence_0727/`.
+   capture lever is **night capture**, NOT geometry/hardware. Multi-camera
+   architecture is no longer a prerequisite for anything. Repro:
+   `.claude/rl_rescore_e1.py`, evidence in `.claude/rl_evidence_0727/`.
+   **Night lever CHARACTERISED 2026-08-12 — it's MOTION BLUR, not
+   underexposure** (3 night-spanning fullframe soaks, `.claude/night_exposure_verdict.py`
+   + `.claude/night_exposure_pixels.py`). Per-car canonical: day ~84-89 % →
+   **dusk (19-21h) 48.7 %** → **dark (21-24h) 17.4 %**, both directions
+   equally (lighting, not geometry). Failure is NOT detection — plates are
+   still FOUND at night (det % 81-92 %, highest at dusk); the OCR/legibility
+   stage collapses (readable-given-detected 70 % day → 34 % dusk → 11 % dark).
+   The detected-but-unread night plates are **bright** (luma 120 > day reads'
+   100), not blown out, not IR-mono, but **~4.6× less sharp** (width-matched
+   Laplacian var 1397 vs day 6413) — horizontal smear in the travel direction
+   (`.claude/night_fail_plates.jpg`). **So the fix is to FREEZE motion at
+   night — a night-scheduled *faster* shutter + a supplementary IR illuminator
+   (cheap add-on), NOT "brighten"/longer exposure (that worsens the smear).**
+   This is the exact variant the daytime Anti-Smearing falsification (2026-05-31)
+   couldn't rule out: that faster-shutter test failed in *daylight* because day
+   plates were never blur-limited (day sharp ~6000), so its gain-noise cost more
+   than the blur removed; at night plates ARE blur-limited (~1400), so a
+   *night-only* faster shutter is mechanistically motivated. **Aim at dusk**
+   (5,191 snaps, det 92 %, only 34 % readable = biggest recoverable volume);
+   full dark is harder + lower volume; night is ~15 % of traffic so net gain is
+   bounded. Next: night-shutter + IR-fill A/B on a dusk soak (Reolink day/night
+   ISP schedule; `SetIsp` needs admin — `cv` acct is read-only — helpers
+   `.claude/setexp*.py`).
 6. **JP7:** wheel gate re-checked 2026-07-07 — still no jp7 index.
    Re-run `scripts/check_jp7_wheel.ps1` before any flash; stay on JP6.
 7. **Parked by choice — people P0 (retention policy).** Deliberately
