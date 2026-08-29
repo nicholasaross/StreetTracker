@@ -270,6 +270,16 @@ async def test_car_page_renders_and_404(client: TestClient) -> None:
     assert (await client.get("/car/NOPLATE")).status == 404
 
 
+async def test_schedule_page_renders(client: TestClient) -> None:
+    r = await client.get("/schedule")
+    assert r.status == 200
+    html = await r.text()
+    # The chart script always renders; the timetable panel only when there are
+    # enough recurring waves (the tiny test fixture shows the empty state).
+    assert "renderScheduleChart" in html
+    assert "class / session schedule" in html
+
+
 async def test_refresh(client: TestClient) -> None:
     r = await client.post("/api/refresh")
     assert r.status == 200

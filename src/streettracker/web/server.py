@@ -341,6 +341,15 @@ async def _people_page(request: web.Request) -> web.Response:
     )
 
 
+async def _schedule_page(request: web.Request) -> web.Response:
+    stats = request.app[STATE].stats
+    return _render(
+        request,
+        "schedule.html",
+        stats=stats.to_json_dict() if stats else {},
+    )
+
+
 async def _api_stats(request: web.Request) -> web.Response:
     stats = request.app[STATE].stats
     return web.json_response(stats.to_json_dict() if stats else {})
@@ -425,6 +434,7 @@ def build_app(
     app.router.add_get("/", _gallery)
     app.router.add_get("/stats", _stats_page)
     app.router.add_get("/people", _people_page)
+    app.router.add_get("/schedule", _schedule_page)
     app.router.add_get("/car/{plate}", _car_page)
     app.router.add_get("/api/cars", _api_cars)
     app.router.add_get("/api/cars/{plate}", _api_car)

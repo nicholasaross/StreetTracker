@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}Schedule — Vehicle Showcase{% endblock %}
+{% block subtitle %}inferred YMCA class / session schedule{% endblock %}
+
+{% block content %}
+<style>
+  .panel.stat { margin-top: 22px; }
+  .panel.stat h3 { margin: 0 0 4px; font-size: 15px; }
+  .panel.stat .hint { color: var(--muted); font-size: 12.5px; margin: 0 0 12px; }
+  .scrollx { overflow-x: auto; }
+  svg.chart { display: block; height: auto; }
+  svg.chart .grid { stroke: var(--line); stroke-width: 1; }
+  svg.chart .ylab { fill: var(--muted); font-size: 11px; }
+  svg.chart .xlab { fill: var(--muted); font-size: 10px; text-anchor: middle; }
+  svg.chart .wave:hover { fill-opacity: 1; }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); margin: 2px 0 12px; }
+  .legend i { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+  .habits { border-collapse: collapse; font-size: 13px; width: 100%; }
+  .habits th { text-align: left; color: var(--muted); font-weight: 600; font-size: 12px; padding: 4px 14px 6px 0; }
+  .habits td { padding: 7px 14px 7px 0; border-top: 1px solid var(--line); white-space: nowrap; }
+  .caveat { color: var(--muted); font-size: 12px; margin-top: 26px; border-top: 1px solid var(--line); padding-top: 12px; }
+</style>
+
+{% if stats.schedules %}
+<p class="hint" style="margin:0 0 4px">
+  Recurring waves of gym-bound arrivals (right→left), with the typical stay read from
+  the matching departure lag — mined from aggregate traffic over
+  {{ stats.overall.n_days }} days ({{ stats.overall.date_from }} → {{ stats.overall.date_to }}).
+  The busiest, most-regular waves line up with popular classes/sessions. Inferred from
+  flow, not a published timetable: times are approximate and "stay" is the typical dwell.</p>
+
+<div class="panel stat">
+  <h3>Weekly timetable</h3>
+  <div class="legend">
+    <span><i style="background:#1fb6a8"></i>high confidence</span>
+    <span><i style="background:#c9a227"></i>medium</span>
+    <span><i style="background:#9aa3b2"></i>low</span>
+    <span>bar length = typical stay · bar height = wave size (cars)</span>
+  </div>
+  <div class="scrollx" id="schedchart"></div>
+</div>
+
+<div class="panel stat">
+  <h3>All waves</h3>
+  <div class="scrollx">
+  <table class="habits">
+    <thead><tr><th>Day</th><th>Arrivals peak</th><th>Typical stay</th>
+      <th>Leave&nbsp;~</th><th>Cars / occurrence</th><th>Recurs</th><th>Confidence</th></tr></thead>
+    <tbody>
+    {% for r in stats.schedules %}
+      <tr{% if not loop.first and r.wd != loop.previtem.wd %} style="border-top:2px solid var(--line)"{% endif %}>
+        <td>{% if loop.first or r.wd != loop.previtem.wd %}<b>{{ r.weekday }}</b>{% endif %}</td>
+        <td>{{ r.arrive }}</td>
+        <td>{% if r.stay_min %}~{{ r.stay_min }} min{% else %}—{% endif %}</td>
+        <td>{{ r.leave or '—' }}</td>
+        <td>~{{ r.cars_per_time }}</td>
+        <td>{{ r.days_seen }}/{{ r.days_covered }}</td>
+        <td><span class="badge {{ 'reg' if r.confidence == 'high' else '' }}">{{ r.confidence }}</span></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<p class="caveat">
+  Identity-free: mined from all car tracks, so it covers the unread majority (a class is
+  a street-level pattern, not per-vehicle). Residents/staff are a tiny fraction of the daily
+  arrivals and don't move the waves. The tracker isn't 24/7 (it pauses at night / in IR),
+  so quiet periods can mean "not recording". "Typical stay" comes from a broad departure
+  signal — treat it as approximate dwell (≈ typical gym visit), not an exact class length.
+</p>
+{% else %}
+<p class="hint">Not enough recurring traffic yet to infer a schedule.</p>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+const STATS = {{ stats | tojson }};
+const DOW = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+const CONF = { high: "#1fb6a8", medium: "#c9a227", low: "#9aa3b2" };
+
+function renderScheduleChart(){
+  const host = document.getElementById("schedchart");
+  const sch = (STATS && STATS.schedules) || [];
+  if(!host) return;
+  if(!sch.length){ host.innerHTML = '<p class="hint">No recurring waves detected.</p>'; return; }
+
+  const T0 = 6*60, T1 = 21*60;               // 06:00..21:00
+  const laneH = 56, padL = 46, padR = 14, padT = 8, axisH = 26;
+  const W = 900, plotW = W - padL - padR, H = padT + 7*laneH + axisH;
+  const xx = m => padL + (Math.min(T1, Math.max(T0, m)) - T0) / (T1 - T0) * plotW;
+  const toMin = s => { const a = s.split(":"); return (+a[0])*60 + (+a[1]); };
+  const carsMax = Math.max(1, ...sch.map(r => r.cars_per_time || 0));
+  const p = [];
+
+  // Day lanes (alternating background) + labels.
+  for(let d=0; d<7; d++){
+    const y = padT + d*laneH;
+    if(d % 2 === 1) p.push(`<rect x="${padL}" y="${y}" width="${plotW}" height="${laneH}" fill="rgba(255,255,255,0.02)"/>`);
+    p.push(`<text class="ylab" x="${padL-8}" y="${y + laneH/2 + 4}" style="text-anchor:end">${DOW[d]}</text>`);
+  }
+  // Hour gridlines (label every 2 h).
+  for(let hh=6; hh<=21; hh++){
+    const x = xx(hh*60);
+    p.push(`<line class="grid" x1="${x}" y1="${padT}" x2="${x}" y2="${padT + 7*laneH}"${hh % 2 ? ' stroke-opacity="0.4"' : ''}/>`);
+    if(hh % 2 === 0) p.push(`<text class="xlab" x="${x}" y="${padT + 7*laneH + 16}">${String(hh).padStart(2,"0")}:00</text>`);
+  }
+  // Wave blocks: x = arrive..leave, height ∝ cars, colour = confidence.
+  for(const r of sch){
+    const a = toMin(r.arrive);
+    const leave = r.leave ? toMin(r.leave) : a + (r.stay_min || 30);
+    const x0 = xx(a), x1 = xx(leave), w = Math.max(x1 - x0, 6);
+    const lane = padT + r.wd*laneH;
+    const bh = 12 + (r.cars_per_time / carsMax) * (laneH - 26);
+    const y = lane + (laneH - bh) / 2;
+    const col = CONF[r.confidence] || CONF.low;
+    const stay = r.stay_min ? `${r.stay_min} min` : "?";
+    p.push(
+      `<rect class="wave" x="${x0.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${bh.toFixed(1)}" rx="4" fill="${col}" fill-opacity="0.82">` +
+      `<title>${DOW[r.wd]} ${r.arrive} · ~${r.cars_per_time} cars · stay ~${stay} · ${r.days_seen}/${r.days_covered} weeks (${r.confidence})</title></rect>`
+    );
+    if(w > 32) p.push(`<text x="${(x0+4).toFixed(1)}" y="${(lane + laneH/2 + 3).toFixed(1)}" style="font-size:9.5px;fill:#06121b;font-weight:700;pointer-events:none">${r.arrive}</text>`);
+  }
+  host.innerHTML = `<svg class="chart" viewBox="0 0 ${W} ${H}" style="min-width:${W}px;width:${W}px">${p.join("")}</svg>`;
+}
+
+renderScheduleChart();
+</script>
+{% endblock %}

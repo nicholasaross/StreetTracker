@@ -264,33 +264,8 @@
 {% endif %}
 
 {% if stats.schedules %}
-<div class="panel stat">
-  <h3>Inferred class / session schedule</h3>
-  <p class="hint">Recurring waves of gym-bound arrivals (R→L), with the typical
-  stay read from the matching departure lag — mined from aggregate traffic over
-  {{ stats.overall.n_days }} days. The busiest, most-regular waves line up with
-  popular classes/sessions. Inferred from flow, not a published timetable:
-  times are approximate and "stay" is the typical dwell.</p>
-  <div style="overflow-x:auto">
-  <table class="habits">
-    <thead><tr><th>Day</th><th>Arrivals peak</th><th>Typical stay</th>
-      <th>Leave&nbsp;~</th><th>Cars / occurrence</th><th>Recurs</th><th>Confidence</th></tr></thead>
-    <tbody>
-    {% for r in stats.schedules %}
-      <tr{% if not loop.first and r.wd != loop.previtem.wd %} style="border-top:2px solid var(--line)"{% endif %}>
-        <td>{% if loop.first or r.wd != loop.previtem.wd %}<b>{{ r.weekday }}</b>{% endif %}</td>
-        <td>{{ r.arrive }}</td>
-        <td>{% if r.stay_min %}~{{ r.stay_min }} min{% else %}—{% endif %}</td>
-        <td>{{ r.leave or '—' }}</td>
-        <td>~{{ r.cars_per_time }}</td>
-        <td>{{ r.days_seen }}/{{ r.days_covered }}</td>
-        <td><span class="badge {{ 'reg' if r.confidence == 'high' else '' }}">{{ r.confidence }}</span></td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  </div>
-</div>
+<p class="hint" style="color:var(--muted);font-size:12.5px;margin:26px 0 0">
+  The inferred class / session timetable has its own <a href="/schedule">Schedule page</a>.</p>
 {% endif %}
 
 {% if stats.people and stats.people.total %}
