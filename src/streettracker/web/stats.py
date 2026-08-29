@@ -44,6 +44,7 @@ labelled "relative".
 from __future__ import annotations
 
 import json
+import statistics
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -105,6 +106,24 @@ _HABITUAL_MIN_DAYS = 3
 _HABITUAL_MAX_SLOTS = 8
 _HABITUAL_MAX_WALKS_PER_DAY = 1.6
 
+# YMCA class-schedule inference (identity-free). A gym class/session starting
+# ~T shows up as a recurring wave of ARRIVALS (R->L, toward the gym) clustered
+# around T, followed by a wave of DEPARTURES (L->R) after the typical stay. We
+# mine, per weekday, arrival waves that (a) rise well above that weekday's
+# baseline flow and (b) recur across many same-weekday dates -- then read the
+# typical stay from the departure lag with the strongest excess. A street-level
+# pattern, not per-vehicle: works for the unread majority. Residents/staff are a
+# tiny fraction of the thousands of daily arrivals, so they don't move the waves.
+_SCHED_BIN_MIN = 5  # histogram resolution
+_SCHED_ACTIVE = (72, 252)  # 06:00-21:00, in 5-min bins
+# A 15-min arrival window must exceed this many times the weekday's median
+# 5-min arrival count to count as a wave (~1.7x the expected 3-bin baseline).
+_SCHED_ARR_FACTOR = 5.0
+_SCHED_MIN_DATES = 4  # must recur on this many distinct same-weekday dates
+_SCHED_MERGE_BINS = 6  # collapse waves within 30 min, keep the strongest
+_SCHED_MAX_PER_DAY = 8
+_SCHED_LAGS = (45, 60, 75, 90, 120)  # candidate stay/class lengths (min)
+
 
 @dataclass(slots=True)
 class Stats:
@@ -122,6 +141,7 @@ class Stats:
     fastest_makes: list[dict[str, Any]]  # makes ranked by mean speed; see _speed_ranking
     fastest_colours: list[dict[str, Any]]  # colours ranked by mean speed
     people: dict[str, Any]  # person-track aggregates; see _empty_people()
+    schedules: list[dict[str, Any]]  # inferred YMCA class/session waves; _infer_schedules
     speed_unit: str  # "mph" | "px/s"
 
     def to_json_dict(self) -> dict[str, Any]:
@@ -320,6 +340,105 @@ def _habitual_slots(
     return slots[:max_slots]
 
 
+def _bin5(points: list[tuple[str, int]]) -> tuple[list[int], list[set[str]]]:
+    """5-min histogram of ``(date, minute-of-day)`` points: per-bin counts and
+    the set of distinct dates contributing to each bin."""
+    nb = 1440 // _SCHED_BIN_MIN
+    counts = [0] * nb
+    dates: list[set[str]] = [set() for _ in range(nb)]
+    for d, m in points:
+        b = m // _SCHED_BIN_MIN
+        counts[b] += 1
+        dates[b].add(d)
+    return counts, dates
+
+
+def _infer_schedules(
+    arrivals: dict[int, list[tuple[str, int]]],
+    departures: dict[int, list[tuple[str, int]]],
+) -> list[dict[str, Any]]:
+    """Infer the YMCA class/session schedule from aggregate traffic waves.
+
+    ``arrivals`` / ``departures`` map a weekday (0=Mon) to ``(date,
+    minute-of-day)`` points -- arrivals are R->L (toward the gym), departures
+    L->R. Per weekday we find arrival waves that rise above that weekday's
+    baseline and recur across ``_SCHED_MIN_DATES`` distinct dates, then read the
+    typical stay from the departure lag (in ``_SCHED_LAGS``) with the strongest
+    excess over baseline. Rows carry the arrival time, an estimated stay +
+    leave time, the typical wave size, and how many of the weekday's dates it
+    appeared on -- ranked by size. See the module constants for thresholds.
+    """
+    lo, hi = _SCHED_ACTIVE
+    out: list[dict[str, Any]] = []
+    for wd in range(7):
+        apts = arrivals.get(wd, [])
+        n_dates_wd = len({d for d, _ in apts})
+        if n_dates_wd < _SCHED_MIN_DATES:
+            continue
+        ah, ad = _bin5(apts)
+        dh, _dd = _bin5(departures.get(wd, []))
+        active_counts = [ah[b] for b in range(lo, hi)]
+        abase = statistics.median(active_counts) or 1.0
+        dbase = statistics.median([dh[b] for b in range(lo, hi)]) or 1.0
+
+        cand: list[tuple[int, int, int, int | None, int]] = []
+        for b in range(lo + 1, hi - 1):
+            awin = ah[b - 1] + ah[b] + ah[b + 1]  # 15-min arrivals
+            if awin < abase * _SCHED_ARR_FACTOR:
+                continue
+            if ah[b] < max(ah[b - 2 : b + 3]):  # must be the local peak
+                continue
+            wave_dates = ad[b - 1] | ad[b] | ad[b + 1]
+            if len(wave_dates) < _SCHED_MIN_DATES:
+                continue
+            # Typical stay: the departure lag with the strongest 15-min excess.
+            best_lag: int | None = None
+            best_exc = 0
+            for lag in _SCHED_LAGS:
+                c = b + lag // _SCHED_BIN_MIN
+                if c + 1 >= len(dh):
+                    continue
+                dwin = dh[c - 1] + dh[c] + dh[c + 1]
+                exc = int(dwin - dbase * 3)
+                if best_lag is None or exc > best_exc:
+                    best_lag, best_exc = lag, exc
+            cand.append((b, awin, len(wave_dates), best_lag if best_exc > 0 else None, best_exc))
+
+        # Collapse waves within _SCHED_MERGE_BINS, keeping the largest.
+        cand.sort(key=lambda s: -s[1])
+        kept: list[tuple[int, int, int, int | None, int]] = []
+        for s in cand:
+            if all(abs(s[0] - k[0]) > _SCHED_MERGE_BINS for k in kept):
+                kept.append(s)
+
+        for b, awin, n_dates, stay, _dep_exc in kept[:_SCHED_MAX_PER_DAY]:
+            t = b * _SCHED_BIN_MIN
+            per_occurrence = round(awin / max(1, n_dates), 1)
+            regularity = n_dates / n_dates_wd
+            if awin >= abase * 8 and regularity >= 0.7 and stay is not None:
+                conf = "high"
+            elif regularity >= 0.5 and stay is not None:
+                conf = "medium"
+            else:
+                conf = "low"
+            leave = (t + stay) if stay is not None else None
+            out.append(
+                {
+                    "wd": wd,
+                    "weekday": _DOW[wd],
+                    "arrive": f"{t // 60:02d}:{t % 60:02d}",
+                    "stay_min": stay,
+                    "leave": (f"{leave // 60:02d}:{leave % 60:02d}") if leave is not None else None,
+                    "cars_per_time": per_occurrence,
+                    "days_seen": n_dates,
+                    "days_covered": n_dates_wd,
+                    "confidence": conf,
+                }
+            )
+    out.sort(key=lambda s: (s["wd"], s["arrive"]))
+    return out
+
+
 def _empty_stats(unit: str) -> Stats:
     return Stats(
         overall={
@@ -346,6 +465,7 @@ def _empty_stats(unit: str) -> Stats:
         fastest_makes=[],
         fastest_colours=[],
         people=_empty_people(),
+        schedules=[],
         speed_unit=unit,
     )
 
@@ -381,6 +501,10 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
     fastest_raw: list[tuple[float, str, dict[str, Any]]] = []
     total = 0
     dates: set[str] = set()
+    # Per-weekday (date, minute-of-day) arrival (R->L) / departure (L->R) points
+    # for the YMCA class-schedule miner (_infer_schedules).
+    sched_arr: dict[int, list[tuple[str, int]]] = defaultdict(list)
+    sched_dep: dict[int, list[tuple[str, int]]] = defaultdict(list)
 
     # People accumulators (person tracks; separate date set so the car
     # per-day mean keeps its existing denominator).
@@ -517,6 +641,8 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
                 dow[_DOW[wd]][dkey] += 1
                 by_day_15[date][q][dkey] += 1
                 quarter_profile[q] += 1
+                minute = dt.hour * 60 + dt.minute
+                (sched_arr if dkey == "r2l" else sched_dep)[wd].append((date, minute))
 
             sp = float(r.get("speed_px_s") or 0.0)
             all_speeds.append(sp)
@@ -642,6 +768,8 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
         "habitual": _habitual_slots(p_habit),
     }
 
+    schedules = _infer_schedules(sched_arr, sched_dep)
+
     return Stats(
         overall=overall,
         daily=daily_list,
@@ -655,6 +783,7 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
         fastest_makes=fastest_makes,
         fastest_colours=fastest_colours,
         people=people,
+        schedules=schedules,
         speed_unit=unit,
     )
 

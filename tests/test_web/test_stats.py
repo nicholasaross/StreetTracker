@@ -19,7 +19,13 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from streettracker.common.schema import TrackRecord
 from streettracker.web.server import build_app
-from streettracker.web.stats import _DOW, MPH_PER_M_S, _speed_ranking, build_stats
+from streettracker.web.stats import (
+    _DOW,
+    MPH_PER_M_S,
+    _infer_schedules,
+    _speed_ranking,
+    build_stats,
+)
 
 _FAKE_JPEG = b"\xff\xd8\xff\xe0X\xff\xd9"
 
@@ -169,6 +175,38 @@ def test_15min_buckets(tmp_path: Path) -> None:
     buckets = s.by_day_15min["2026-05-26"]
     assert buckets[36]["l2r"] == 1 and buckets[36]["r2l"] == 0
     assert buckets[37]["r2l"] == 1
+
+
+def test_infer_schedules_finds_recurring_wave() -> None:
+    # A wave of arrivals at 09:00 every Monday, with a matching departure wave
+    # 60 min later, should surface as a Monday schedule row (~09:00, ~60 min).
+    mondays = [
+        "2026-06-01",
+        "2026-06-08",
+        "2026-06-15",
+        "2026-06-22",
+        "2026-06-29",
+        "2026-07-06",
+    ]
+    arrivals: dict[int, list[tuple[str, int]]] = {0: []}
+    departures: dict[int, list[tuple[str, int]]] = {0: []}
+    for d in mondays:
+        arrivals[0] += [(d, 9 * 60)] * 15  # 09:00 arrival wave (R->L)
+        departures[0] += [(d, 10 * 60)] * 15  # 10:00 departure wave (L->R)
+    sched = _infer_schedules(arrivals, departures)
+    mon = [r for r in sched if r["weekday"] == "Mon"]
+    assert mon, "expected a Monday wave"
+    top = mon[0]
+    assert top["arrive"] == "09:00"
+    assert top["stay_min"] == 60
+    assert top["days_seen"] == 6
+    assert top["confidence"] == "high"
+
+
+def test_infer_schedules_ignores_sparse_noise() -> None:
+    # A couple of scattered arrivals on too few dates is not a schedule.
+    arrivals = {2: [("2026-06-03", 600), ("2026-06-10", 700)]}
+    assert _infer_schedules(arrivals, {}) == []
 
 
 def test_persons_excluded(tmp_path: Path) -> None:
