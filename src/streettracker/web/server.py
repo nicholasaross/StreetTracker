@@ -42,6 +42,7 @@ import jinja2
 from aiohttp import web
 
 from streettracker.web.aggregate import ShowcaseCar, build_showcase, discover_sessions
+from streettracker.web.classify import BUCKETS
 from streettracker.web.metadata import DEFAULT_FILENAME, MetadataStore, is_tagged
 from streettracker.web.stats import (
     DEFAULT_ROAD_AXIS_PX,
@@ -75,13 +76,26 @@ class _State:
 
     output_root: Path
     m_per_px: float | None = None
+    metadata_path: Path | None = None
     cars: list[ShowcaseCar] = field(default_factory=list)
     cars_by_plate: dict[str, ShowcaseCar] = field(default_factory=dict)
     sessions: set[str] = field(default_factory=set)
     stats: Stats | None = None
 
+    def _merge_map(self) -> dict[str, str]:
+        """Operator plate merges from the metadata store: ``{source -> target}``
+        for entries carrying a ``merge_into`` (this card's car is really that
+        plate). Fed to :func:`build_showcase` to fold OCR-split cards together."""
+        path = self.metadata_path or (self.output_root / DEFAULT_FILENAME)
+        store = MetadataStore(path).load()
+        return {
+            p: (e["merge_into"] or "").strip()
+            for p, e in store.items()
+            if isinstance(e, dict) and (e.get("merge_into") or "").strip()
+        }
+
     def reaggregate(self) -> None:
-        self.cars = build_showcase(self.output_root)
+        self.cars = build_showcase(self.output_root, merge_map=self._merge_map())
         self.cars_by_plate = {c.plate: c for c in self.cars}
         self.sessions = {d.name for d in discover_sessions(self.output_root)}
         self.stats = build_stats(self.output_root, m_per_px=self.m_per_px)
@@ -160,6 +174,8 @@ def _meta_view(raw: dict[str, Any]) -> dict[str, Any]:
         "favourite": bool(raw.get("favourite", False)),
         "make_override": (raw.get("make_override") or ""),
         "make_hidden": bool(raw.get("make_hidden", False)),
+        "classification_override": (raw.get("classification_override") or ""),
+        "merge_into": (raw.get("merge_into") or ""),
         "updated_at": (raw.get("updated_at") or ""),
     }
 
@@ -181,10 +197,46 @@ def _apply_make_override(d: dict[str, Any], raw: dict[str, Any]) -> None:
         d["make_model_source"] = "manual"
 
 
+def _apply_classification_override(d: dict[str, Any], raw: dict[str, Any]) -> None:
+    """Let an operator-set bucket win over the inferred classification. Only a
+    recognised bucket slug is honoured; anything else is ignored (the inferred
+    label stands). The override is treated as ground truth (high certainty)."""
+    override = (raw.get("classification_override") or "").strip()
+    if override in BUCKETS and override != "":
+        d["classification"] = override
+        d["classification_source"] = "manual"
+        d["classification_certainty"] = "high"
+        d["classification_score"] = 1.0
+        d["classification_reason"] = "Set by you."
+
+
+def _gather_meta(car: ShowcaseCar, store: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Metadata for a card, following its OCR variants.
+
+    A car's plate can be read several ways (``SK69NJZ`` vs a misread
+    ``SK59NJZ``); fuzzy clustering folds them onto one canonical card, but a tag
+    the operator set on a *variant* plate is keyed under that variant. Read the
+    canonical entry first, then let any variant entry fill fields the canonical
+    lacks -- so a tag follows the car regardless of which spelling it was set on.
+    (Writes still go to the canonical plate, so this self-heals over time.)"""
+    raw = dict(store.get(car.plate, {}))
+    for variant in car.plate_variants:
+        entry = store.get(variant)
+        if not isinstance(entry, dict):
+            continue
+        for k, v in entry.items():
+            if k == "updated_at":
+                continue
+            if not raw.get(k):  # canonical wins; variant fills the gaps
+                raw[k] = v
+    return raw
+
+
 def _merge(car: ShowcaseCar, store: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    raw = store.get(car.plate, {})
+    raw = _gather_meta(car, store)
     d = car.to_json_dict()
     _apply_make_override(d, raw)
+    _apply_classification_override(d, raw)
     d["meta"] = _meta_view(raw)
     d["tagged"] = is_tagged(raw)
     return d
@@ -360,14 +412,13 @@ def build_app(
     ``aiohttp.test_utils`` without a real socket. ``m_per_px`` calibrates
     speed to mph (``None`` -> px/s).
     """
-    state = _State(output_root=output_root, m_per_px=m_per_px)
+    meta_path = metadata_path if metadata_path is not None else output_root / DEFAULT_FILENAME
+    state = _State(output_root=output_root, m_per_px=m_per_px, metadata_path=meta_path)
     state.reaggregate()
 
     app = web.Application()
     app[STATE] = state
-    app[META_STORE] = MetadataStore(
-        metadata_path if metadata_path is not None else output_root / DEFAULT_FILENAME
-    )
+    app[META_STORE] = MetadataStore(meta_path)
     app[JINJA] = _make_jinja()
     app[BRAND_SVGS] = _load_brand_svgs()
 

@@ -17,7 +17,8 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from streettracker.common.schema import TrackRecord
-from streettracker.web.server import _apply_make_override, build_app
+from streettracker.web.aggregate import ShowcaseCar
+from streettracker.web.server import _apply_make_override, _gather_meta, build_app
 
 SESSION = "session_20260526_120000"
 _FAKE_JPEG = b"\xff\xd8\xff\xe0FAKEJPEG\xff\xd9"
@@ -175,6 +176,36 @@ def test_apply_make_override_hide_wins_over_override() -> None:
     d = {"make": "PORSCHE", "model": "911", "year": 2017, "make_model_source": "cnn"}
     _apply_make_override(d, {"make_hidden": True, "make_override": "DAF"})
     assert d["make"] is None and d["make_model_source"] == "hidden"
+
+
+def test_gather_meta_follows_ocr_variant() -> None:
+    # A tag set on a misread variant (SK69NJZ) surfaces on the canonical card
+    # (SK59NJZ), while the canonical's own field (favourite) still wins.
+    car = ShowcaseCar(
+        plate="SK59NJZ",
+        make=None,
+        model=None,
+        year=None,
+        make_model_source=None,
+        primary_colour=None,
+        fuel_type=None,
+        engine_size_cc=None,
+        n_visits=1,
+        n_sessions=1,
+        n_dates=1,
+        kind="one-off",
+        first_seen="",
+        last_seen="",
+        plate_variants=["SK69NJZ"],
+    )
+    store = {
+        "SK59NJZ": {"favourite": True},
+        "SK69NJZ": {"name": "Our car", "owner": "Louise"},
+    }
+    raw = _gather_meta(car, store)
+    assert raw["owner"] == "Louise"
+    assert raw["name"] == "Our car"
+    assert raw["favourite"] is True
 
 
 async def test_put_metadata_unknown_plate_404(client: TestClient) -> None:

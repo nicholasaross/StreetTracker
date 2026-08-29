@@ -43,6 +43,7 @@ from streettracker.analysis.vehicles import (
     build_vehicles,
     make_distinct_vehicle_checker,
 )
+from streettracker.web.classify import classify_vehicle
 
 
 @dataclass(slots=True)
@@ -108,6 +109,17 @@ class ShowcaseCar:
     # it. None where no session carries a ``_colour_by_track.json`` for the car.
     cnn_colour: str | None = None
     plate_variants: list[str] = field(default_factory=list)
+    # Behavioural bucket (analysis in web/classify.py): resident / ymca_staff /
+    # visitor / brief / unclassified, with a certainty band, a 0..1 score, a
+    # human justification, and the raw evidence numbers. ``classification_source``
+    # is "inferred" here; the server flips it to "manual" when an operator
+    # override in the metadata store wins at display time.
+    classification: str = "unclassified"
+    classification_certainty: str = "low"
+    classification_score: float = 0.0
+    classification_reason: str = ""
+    classification_source: str = "inferred"
+    classification_evidence: dict[str, Any] = field(default_factory=dict)
     # Parked-car stints from the stationary-beacon detector (one dict per
     # episode, see ``analysis.parked.ParkedEpisode.to_json_dict``):
     # windows where this car sat in view while its static plate was read
@@ -223,10 +235,93 @@ def _image_urls(output_root: Path, session: str, visit: Any) -> ShowcaseImage:
     )
 
 
+def _new_pool_rec() -> dict[str, Any]:
+    """A fresh per-canonical-plate accumulator for :func:`build_showcase`."""
+    return {
+        "make": None,
+        "model": None,
+        "year": None,
+        "make_model_source": None,
+        "sessions": set(),
+        "dates": set(),
+        "plates": set(),
+        "directions": Counter(),
+        "colors": Counter(),
+        "cnn_colors": Counter(),
+        "parked": [],
+        "images": [],
+        "trips": [],
+    }
+
+
+def _merge_pool_rec(dst: dict[str, Any], src: dict[str, Any]) -> None:
+    """Fold ``src``'s accumulated data into ``dst`` (operator plate merge)."""
+    for k in ("sessions", "dates", "plates"):
+        dst[k].update(src[k])
+    for k in ("directions", "colors", "cnn_colors"):
+        dst[k].update(src[k])
+    for k in ("parked", "images", "trips"):
+        dst[k].extend(src[k])
+    if dst["make"] is None and src["make"] is not None:
+        for f in ("make", "model", "year", "make_model_source"):
+            dst[f] = src[f]
+
+
+def _apply_operator_merges(pool: dict[str, dict[str, Any]], merge_map: dict[str, str]) -> None:
+    """Fold operator-merged cards into their target card, in place.
+
+    ``merge_map`` maps a source plate (a card the operator declared is *really*
+    another plate) to that target. Both ends are resolved through each card's
+    full variant set, so a merge set on ANY OCR variant of a card (not just its
+    current canonical) still folds the whole card -- important because the
+    canonical spelling can shift as read frequencies change. Chains (A->B->C)
+    resolve to the final target; self- and cyclic maps are ignored. A target
+    that isn't yet a card is created. Used for OCR splits the automatic fuzzy
+    clustering can't catch (2+ char misreads, or a DVSA-colour-conflict veto)."""
+    # Any known plate string -> the pool card it belongs to. Canonical keys win
+    # over variant strings (two-pass so a real key is never shadowed).
+    where: dict[str, str] = {key: key for key in pool}
+    for key, rec in pool.items():
+        for p in rec["plates"]:
+            where.setdefault(p, key)
+
+    norm: dict[str, str] = {}
+    for s, t in merge_map.items():
+        su, tu = s.strip().upper(), t.strip().upper()
+        if not su or not tu:
+            continue
+        sc, tc = where.get(su, su), where.get(tu, tu)
+        if sc != tc:
+            norm[sc] = tc
+    if not norm:
+        return
+
+    def resolve(p: str) -> str:
+        seen = {p}
+        while p in norm:
+            p = norm[p]
+            if p in seen:  # cycle guard
+                break
+            seen.add(p)
+        return p
+
+    moves = {key: resolve(key) for key in list(pool)}
+    for src_key, tgt in moves.items():
+        if tgt == src_key:
+            continue
+        src_rec = pool.pop(src_key, None)
+        if src_rec is None:
+            continue
+        tgt_rec = pool.setdefault(tgt, _new_pool_rec())
+        tgt_rec["plates"].add(src_key)
+        _merge_pool_rec(tgt_rec, src_rec)
+
+
 def build_showcase(
     output_root: Path,
     *,
     fuzzy_ratio: int | None = FUZZY_RATIO_DEFAULT,
+    merge_map: dict[str, str] | None = None,
 ) -> list[ShowcaseCar]:
     """Build the cross-session showcase: one :class:`ShowcaseCar` per plate.
 
@@ -243,6 +338,7 @@ def build_showcase(
     # the richer DVSA rows keyed by raw plate.
     plated: list[tuple[str, str, Vehicle]] = []
     conf_by_plate: dict[str, float] = {}
+    support_by_plate: Counter = Counter()  # total sightings backing each spelling
     extras_by_plate: dict[str, dict[str, Any]] = {}
     colours_by_plate: dict[str, Counter] = {}
     cnn_by_session: dict[str, dict[int, str]] = {}
@@ -253,6 +349,7 @@ def build_showcase(
                 continue
             plated.append((d.name, v.plate, v))
             conf_by_plate[v.plate] = max(conf_by_plate.get(v.plate, 0.0), v.plate_conf or 0.0)
+            support_by_plate[v.plate] += v.n_visits
             colours_by_plate.setdefault(v.plate, Counter()).update(v.colors)
         for plate, row in _load_dvsa_extras(d).items():
             if isinstance(row, dict):
@@ -262,11 +359,15 @@ def build_showcase(
     # seen in different sessions (same fuzzy logic build_cross_session uses).
     # The DVSA-distinct veto keeps provably different registered vehicles
     # (e.g. a red UP and a white GOLF one character apart) on separate cards.
+    # ``support`` (total sightings) is the primary canonical order so the plate
+    # the OCR reads MOST OFTEN anchors the card -- a one-off high-conf misread
+    # can't hijack the label from the real, frequently-read plate.
     if fuzzy_ratio is not None:
         canonical = _cluster_plates_by_similarity(
             list(conf_by_plate.items()),
             ratio=fuzzy_ratio,
             is_distinct=make_distinct_vehicle_checker(extras_by_plate, colours_by_plate),
+            support=dict(support_by_plate),
         )
     else:
         canonical = {p: p for p in conf_by_plate}
@@ -274,23 +375,7 @@ def build_showcase(
     pool: dict[str, dict[str, Any]] = {}
     for sname, vplate, v in plated:
         key = canonical.get(vplate, vplate)
-        rec = pool.setdefault(
-            key,
-            {
-                "make": None,
-                "model": None,
-                "year": None,
-                "make_model_source": None,
-                "sessions": set(),
-                "dates": set(),
-                "plates": set(),
-                "directions": Counter(),
-                "colors": Counter(),
-                "cnn_colors": Counter(),
-                "parked": [],
-                "images": [],
-            },
-        )
+        rec = pool.setdefault(key, _new_pool_rec())
         rec["sessions"].add(sname)
         # Track every raw plate string folded in (canonical + this vehicle's
         # plate + its within-session fuzzy variants) so the DVSA extras join
@@ -312,9 +397,17 @@ def build_showcase(
         for visit in v.visits:
             rec["dates"].add(visit.time_start[:10])
             rec["images"].append(_image_urls(output_root, sname, visit))
+            rec["trips"].append(
+                (visit.time_start_unix, visit.time_end_unix, visit.direction, visit.time_start)
+            )
             cc = sess_cnn.get(visit.track_id)
             if cc:
                 rec["cnn_colors"][cc] += 1
+
+    # Operator plate merges (e.g. SH69NJZ + SK59NJZ -> SK69NJZ) after automatic
+    # clustering, for OCR splits fuzzy matching can't safely catch.
+    if merge_map:
+        _apply_operator_merges(pool, merge_map)
 
     out: list[ShowcaseCar] = []
     for plate, rec in pool.items():
@@ -325,20 +418,34 @@ def build_showcase(
         n_visits = len(images)
         n_dates = len(rec["dates"])
         kind = "different-day" if n_dates >= 2 else "same-day" if n_visits >= 2 else "one-off"
-        # DVSA extras: first matching raw plate among the folded-in strings.
+        # DVSA extras: the canonical plate's row wins, else the first matching
+        # raw plate among the folded-in strings (checked canonical-first).
         extras: dict[str, Any] = {}
         for cand in (plate, *sorted(rec["plates"])):
             if cand in extras_by_plate:
                 extras = extras_by_plate[cand]
                 break
+        # Make/model/year: prefer the DVSA row of the canonical plate -- the same
+        # source `extras` uses for colour, so make and colour agree and a misread
+        # variant's DVSA row (a different registered car) can't supply the make
+        # (e.g. KV64FYH is a RENAULT CAPTUR, but a variant RV64FYH is a real VW
+        # GOLF). Fall back to the pooled value (e.g. a CNN prediction) only when
+        # no DVSA row backs this card.
+        if extras.get("make"):
+            make, model, year = extras.get("make"), extras.get("model"), extras.get("year")
+            make_source: str | None = "dvsa"
+        else:
+            make, model, year = rec["make"], rec["model"], rec["year"]
+            make_source = rec["make_model_source"]
         variants = sorted(p for p in rec["plates"] if p != plate)
+        cls = classify_vehicle(rec["trips"], parked_episodes=rec["parked"])
         out.append(
             ShowcaseCar(
                 plate=plate,
-                make=rec["make"],
-                model=rec["model"],
-                year=rec["year"],
-                make_model_source=rec["make_model_source"],
+                make=make,
+                model=model,
+                year=year,
+                make_model_source=make_source,
                 primary_colour=extras.get("primary_colour") or None,
                 fuel_type=extras.get("fuel_type") or None,
                 engine_size_cc=extras.get("engine_size_cc"),
@@ -353,6 +460,11 @@ def build_showcase(
                 colors=dict(rec["colors"]),
                 cnn_colour=(rec["cnn_colors"].most_common(1)[0][0] if rec["cnn_colors"] else None),
                 plate_variants=variants,
+                classification=cls.bucket,
+                classification_certainty=cls.certainty,
+                classification_score=cls.score,
+                classification_reason=cls.reason,
+                classification_evidence=cls.evidence,
                 parked_episodes=sorted(rec["parked"], key=lambda e: e.get("first_seen") or ""),
                 images=images,
             )

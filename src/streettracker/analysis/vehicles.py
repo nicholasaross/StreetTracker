@@ -131,8 +131,8 @@ class Vehicle:
     track_ids: list[int]
     first_seen: str
     last_seen: str
-    gap_minutes_max: float        # max gap between consecutive visits, 0.0 if n_visits==1
-    gap_minutes_min: float        # min gap, 0.0 if n_visits==1
+    gap_minutes_max: float  # max gap between consecutive visits, 0.0 if n_visits==1
+    gap_minutes_min: float  # min gap, 0.0 if n_visits==1
     directions: dict[str, int] = field(default_factory=dict)
     colors: dict[str, int] = field(default_factory=dict)
     visits: list[VehicleVisit] = field(default_factory=list)
@@ -162,8 +162,7 @@ class Vehicle:
 
     def to_json_dict(self) -> dict[str, Any]:
         d = asdict(self)
-        d["visits"] = [v.to_json_dict() if isinstance(v, VehicleVisit) else v
-                       for v in d["visits"]]
+        d["visits"] = [v.to_json_dict() if isinstance(v, VehicleVisit) else v for v in d["visits"]]
         # asdict turns tuples into tuples; JSON encoder accepts those
         # but for explicit shape we normalise to [plate, conf] lists.
         d["plate_variants"] = [[p, c] for p, c in d.get("plate_variants", [])]
@@ -204,15 +203,28 @@ class CrossVehicle:
 # Groups are deliberately broad: white/silver/grey are near-impossible to
 # tell apart at this camera's distance, so they corroborate each other.
 _COLOUR_GROUPS = {
-    "white": "light", "silver": "light", "grey": "light", "gray": "light",
-    "beige": "light", "cream": "light",
+    "white": "light",
+    "silver": "light",
+    "grey": "light",
+    "gray": "light",
+    "beige": "light",
+    "cream": "light",
     "black": "black",
-    "red": "red", "orange": "red", "maroon": "red", "burgundy": "red", "pink": "red",
-    "blue": "blue", "navy": "blue", "turquoise": "blue",
+    "red": "red",
+    "orange": "red",
+    "maroon": "red",
+    "burgundy": "red",
+    "pink": "red",
+    "blue": "blue",
+    "navy": "blue",
+    "turquoise": "blue",
     "green": "green",
-    "yellow": "yellow", "gold": "yellow",
-    "brown": "brown", "bronze": "brown",
-    "purple": "purple", "violet": "purple",
+    "yellow": "yellow",
+    "gold": "yellow",
+    "brown": "brown",
+    "bronze": "brown",
+    "purple": "purple",
+    "violet": "purple",
 }
 
 
@@ -285,6 +297,7 @@ def _cluster_plates_by_similarity(
     *,
     ratio: int,
     is_distinct: Callable[[str, str], bool] | None = None,
+    support: dict[str, float] | None = None,
 ) -> dict[str, str]:
     """Cluster plate strings by Levenshtein similarity.
 
@@ -298,15 +311,22 @@ def _cluster_plates_by_similarity(
     (see :func:`make_distinct_vehicle_checker` -- two near spellings
     that are provably different registered vehicles).
 
+    ``support`` optionally maps a plate to how much read evidence backs
+    it (e.g. total sightings). When given it is the PRIMARY seed order:
+    the most-read spelling anchors the cluster, so a one-off high-conf
+    misread can't hijack the canonical from a plate read far more often
+    (OCR confidence commonly ties at 1.0, and the old alphabetical
+    tie-break then picked the wrong spelling -- e.g. a single ``FD51PVX``
+    read beating an 84-read ``FD61PVX`` because '5' < '6'). Without
+    ``support`` the order is by confidence, as before.
+
     Returns a map ``{plate -> canonical_plate}``. The canonical for a
-    cluster is the highest-conf plate in it; tie-broken by the
+    cluster is its seed; ties fall through to confidence then the
     alphabetically-first string for determinism.
 
-    Greedy seed-and-grow: process plates highest-conf first. For each
-    plate, check if it matches any existing cluster's seed at >= ratio
-    (with same length); if yes, attach; otherwise start a new cluster.
-    This biases toward the high-conf plate being canonical, which is
-    what downstream wants.
+    Greedy seed-and-grow: process plates in seed order. For each plate,
+    check if it matches any existing cluster's seed at >= ratio (with
+    same length); if yes, attach; otherwise start a new cluster.
     """
     if not plates_with_conf or ratio is None:
         return {p: p for p, _c in plates_with_conf}
@@ -314,11 +334,12 @@ def _cluster_plates_by_similarity(
     # Lazy import so the module loads on Python without rapidfuzz.
     from rapidfuzz import fuzz
 
-    # Sort by (-conf, plate) so canonical seeds are highest-conf,
-    # alphabetical tie-break for determinism.
-    ordered = sorted(plates_with_conf, key=lambda x: (-x[1], x[0]))
+    # Seed order: most-supported first (when support given), then highest
+    # confidence, then alphabetical for determinism.
+    sup = support or {}
+    ordered = sorted(plates_with_conf, key=lambda x: (-sup.get(x[0], 0.0), -x[1], x[0]))
     canonical: dict[str, str] = {}  # plate -> canonical
-    seeds: list[str] = []           # cluster seeds (canonical plates)
+    seeds: list[str] = []  # cluster seeds (canonical plates)
 
     for plate, _conf in ordered:
         matched_seed: str | None = None
@@ -354,9 +375,7 @@ def _load_dvsa_labels(path: Path) -> dict[str, dict[str, Any]]:
     return labels if isinstance(labels, dict) else {}
 
 
-def _attach_dvsa_labels(
-    vehicles: list[Vehicle], labels: dict[str, dict[str, Any]]
-) -> int:
+def _attach_dvsa_labels(vehicles: list[Vehicle], labels: dict[str, dict[str, Any]]) -> int:
     """Fill make/model/year on each plated vehicle from the DVSA harvest.
 
     Tries the canonical plate first, then any fuzzy ``plate_variants``
@@ -623,13 +642,9 @@ def build_vehicles(
         for plate, items in strict_groups.items():
             if plate is None:
                 continue
-            max_conf = max(
-                (b.get("ocr_conf") or 0.0) for _r, b in items if b
-            )
+            max_conf = max((b.get("ocr_conf") or 0.0) for _r, b in items if b)
             plated_plates.append((plate, max_conf))
-            colours_by_plate[plate] = Counter(
-                (rec.get("color") or "unknown") for rec, _b in items
-            )
+            colours_by_plate[plate] = Counter((rec.get("color") or "unknown") for rec, _b in items)
         canonical = _cluster_plates_by_similarity(
             plated_plates,
             ratio=fuzzy_ratio,
@@ -649,12 +664,8 @@ def build_vehicles(
         clusters.setdefault(can, []).extend(items)
         if can != plate:
             # Record this OCR variant under the cluster's canonical.
-            variant_conf = max(
-                (b.get("ocr_conf") or 0.0) for _r, b in items if b
-            )
-            cluster_variants.setdefault(can, []).append(
-                (plate, variant_conf)
-            )
+            variant_conf = max((b.get("ocr_conf") or 0.0) for _r, b in items if b)
+            cluster_variants.setdefault(can, []).append((plate, variant_conf))
 
     out: list[Vehicle] = []
     for plate, items in clusters.items():
@@ -710,13 +721,9 @@ def _attach_parked_episodes(
         if v.plate is None:
             continue
         norm = normalize_plate(v.plate)
-        anchor_confs[norm] = max(
-            anchor_confs.get(norm, 0.0), v.plate_conf or 0.0
-        )
+        anchor_confs[norm] = max(anchor_confs.get(norm, 0.0), v.plate_conf or 0.0)
     joint = list(anchor_confs.items()) + [
-        (ep.plate, 0.0)
-        for ep in detection.episodes
-        if ep.plate not in anchor_confs
+        (ep.plate, 0.0) for ep in detection.episodes if ep.plate not in anchor_confs
     ]
     if fuzzy_ratio is not None:
         canonical = _cluster_plates_by_similarity(joint, ratio=fuzzy_ratio)
@@ -770,18 +777,14 @@ def build_cross_session(
             if v.plate is None:
                 continue
             plated.append((d.name, v))
-            conf_by_plate[v.plate] = max(
-                conf_by_plate.get(v.plate, 0.0), v.plate_conf or 0.0
-            )
+            conf_by_plate[v.plate] = max(conf_by_plate.get(v.plate, 0.0), v.plate_conf or 0.0)
 
     if fuzzy_ratio is not None:
         # Cross-session veto evidence: DVSA rows pooled across the cohort
         # + each spelling's observed colours pooled across its sessions.
         labels_pool: dict[str, dict[str, Any]] = {}
         for d in session_dirs:
-            for plate, row in _load_dvsa_labels(
-                d / f"{d.name}_dvsa_labels.json"
-            ).items():
+            for plate, row in _load_dvsa_labels(d / f"{d.name}_dvsa_labels.json").items():
                 labels_pool.setdefault(plate, row)
         colours_pool: dict[str, Counter] = {}
         for _sname, v in plated:
@@ -802,9 +805,15 @@ def build_cross_session(
         key = canonical.get(v.plate, v.plate)
         rec = pool.setdefault(
             key,
-            {"make": None, "model": None, "year": None,
-             "make_model_source": None, "sessions": set(),
-             "variants": set(), "visits": []},
+            {
+                "make": None,
+                "model": None,
+                "year": None,
+                "make_model_source": None,
+                "sessions": set(),
+                "variants": set(),
+                "visits": [],
+            },
         )
         rec["sessions"].add(sname)
         if v.plate != key:
@@ -813,7 +822,10 @@ def build_cross_session(
             rec["variants"].add(pv)
         if v.make and rec["make"] is None:
             rec["make"], rec["model"], rec["year"], rec["make_model_source"] = (
-                v.make, v.model, v.year, v.make_model_source
+                v.make,
+                v.model,
+                v.year,
+                v.make_model_source,
             )
         for vis in v.visits:
             rec["visits"].append((vis.time_start, vis.direction))
@@ -823,21 +835,25 @@ def build_cross_session(
         starts = sorted(t for t, _d in rec["visits"] if t)
         dates = sorted({t[:10] for t, _d in rec["visits"] if t})
         n_visits = len(rec["visits"])
-        kind = (
-            "different-day" if len(dates) >= 2
-            else "same-day" if n_visits >= 2
-            else "one-off"
+        kind = "different-day" if len(dates) >= 2 else "same-day" if n_visits >= 2 else "one-off"
+        out.append(
+            CrossVehicle(
+                plate=plate,
+                make=rec["make"],
+                model=rec["model"],
+                year=rec["year"],
+                make_model_source=rec["make_model_source"],
+                n_visits=n_visits,
+                n_dates=len(dates),
+                dates=dates,
+                sessions=sorted(rec["sessions"]),
+                kind=kind,
+                directions=dict(Counter(d for _t, d in rec["visits"])),
+                first_seen=starts[0] if starts else "",
+                last_seen=starts[-1] if starts else "",
+                plate_variants=sorted(rec["variants"]),
+            )
         )
-        out.append(CrossVehicle(
-            plate=plate, make=rec["make"], model=rec["model"], year=rec["year"],
-            make_model_source=rec["make_model_source"],
-            n_visits=n_visits, n_dates=len(dates), dates=dates,
-            sessions=sorted(rec["sessions"]), kind=kind,
-            directions=dict(Counter(d for _t, d in rec["visits"])),
-            first_seen=starts[0] if starts else "",
-            last_seen=starts[-1] if starts else "",
-            plate_variants=sorted(rec["variants"]),
-        ))
     _kind_rank = {"different-day": 0, "same-day": 1, "one-off": 2}
     out.sort(key=lambda c: (_kind_rank[c.kind], -c.n_visits, c.plate))
     return out
@@ -846,7 +862,7 @@ def build_cross_session(
 def _make_single_vehicle(rec: dict, best: dict | None) -> Vehicle:
     visit = _make_visit(rec, best)
     plate = best["ocr_text"] if best else None
-    plate_conf = (best.get("ocr_conf") if best else None)
+    plate_conf = best.get("ocr_conf") if best else None
     return Vehicle(
         plate=plate,
         plate_conf=plate_conf,
@@ -862,17 +878,13 @@ def _make_single_vehicle(rec: dict, best: dict | None) -> Vehicle:
     )
 
 
-def _make_grouped_vehicle(
-    plate: str, items: list[tuple[dict, dict | None]]
-) -> Vehicle:
+def _make_grouped_vehicle(plate: str, items: list[tuple[dict, dict | None]]) -> Vehicle:
     # Sort visits chronologically by track start.
     items_sorted = sorted(items, key=lambda p: p[0]["time_start_unix"])
     visits = [_make_visit(rec, best) for rec, best in items_sorted]
 
     # Plate confidence: max across visits' best reads.
-    plate_conf = max(
-        (b.get("ocr_conf") or 0.0) for _r, b in items_sorted if b
-    )
+    plate_conf = max((b.get("ocr_conf") or 0.0) for _r, b in items_sorted if b)
     track_ids = [v.track_id for v in visits]
     first_seen = visits[0].time_start
     last_seen = visits[-1].time_end
@@ -1044,9 +1056,7 @@ def _run_cross(args: argparse.Namespace) -> int:
     return 0
 
 
-def _print_cross_summary(
-    cross: list[CrossVehicle], dirs: list[Path], out_path: Path
-) -> None:
+def _print_cross_summary(cross: list[CrossVehicle], dirs: list[Path], out_path: Path) -> None:
     diff = [c for c in cross if c.kind == "different-day"]
     same = [c for c in cross if c.kind == "same-day"]
     both = [c for c in cross if len(c.sessions) >= 2]
@@ -1102,9 +1112,7 @@ def main(argv: list[str] | None = None) -> int:
 
     session = session_dir.name
     out_path = session_dir / f"{session}_vehicles.json"
-    out_path.write_text(
-        json.dumps([v.to_json_dict() for v in vehicles], indent=2)
-    )
+    out_path.write_text(json.dumps([v.to_json_dict() for v in vehicles], indent=2))
     print(f"[vehicles] wrote {out_path}  ({len(vehicles)} vehicles)")
 
     # Headline numbers.
@@ -1135,9 +1143,7 @@ def main(argv: list[str] | None = None) -> int:
         for v in sorted(recurring, key=lambda x: -x.n_visits)[:5]:
             extras = ""
             if v.plate_variants:
-                variant_strs = ", ".join(
-                    f"{p}@{c:.2f}" for p, c in v.plate_variants
-                )
+                variant_strs = ", ".join(f"{p}@{c:.2f}" for p, c in v.plate_variants)
                 extras = f"  variants=[{variant_strs}]"
             print(
                 f"    {v.plate}  n_visits={v.n_visits}  "

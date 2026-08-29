@@ -12,7 +12,12 @@ from dataclasses import asdict
 from pathlib import Path
 
 from streettracker.common.schema import TrackRecord
-from streettracker.web.aggregate import build_showcase, discover_sessions
+from streettracker.web.aggregate import (
+    _apply_operator_merges,
+    _new_pool_rec,
+    build_showcase,
+    discover_sessions,
+)
 
 _FAKE_JPEG = b"\xff\xd8\xff\xe0X\xff\xd9"
 
@@ -295,6 +300,80 @@ def test_fuzzy_disabled_keeps_variants_separate(tmp_path: Path) -> None:
     )
     cars = build_showcase(tmp_path, fuzzy_ratio=None)
     assert len(cars) == 2
+
+
+def test_operator_merge_folds_ocr_splits_into_one_card(tmp_path: Path) -> None:
+    # Two OCR misreads of one car (2-char apart, so fuzzy clustering leaves them
+    # separate). An operator merge_map folds both into the true plate SK69NJZ.
+    _write_session(
+        tmp_path,
+        "session_20260526_120000",
+        [_track(1), _track(2, date="2026-05-27")],
+        _alpr((1, "SH69NJZ", 0.99), (2, "SH69NJZ", 0.97)),
+    )
+    _write_session(
+        tmp_path,
+        "session_20260528_120000",
+        [_track(3, date="2026-05-28")],
+        _alpr((3, "SK59NJZ", 0.95)),
+    )
+    # Without the merge: two distinct cards.
+    assert len(build_showcase(tmp_path)) == 2
+
+    cars = build_showcase(tmp_path, merge_map={"SH69NJZ": "SK69NJZ", "SK59NJZ": "SK69NJZ"})
+    assert len(cars) == 1
+    c = cars[0]
+    assert c.plate == "SK69NJZ"
+    assert c.n_visits == 3  # 2 + 1 sightings pooled
+    assert set(c.plate_variants) >= {"SH69NJZ", "SK59NJZ"}
+
+
+def test_card_make_comes_from_canonical_not_a_variant_dvsa_row(tmp_path: Path) -> None:
+    # The canonical plate's DVSA row is a Renault; a merged 1-char misread
+    # variant is a real, different VW Golf. The card must show the canonical's
+    # make (Renault) -- consistent with its colour -- not the variant's Golf.
+    _write_session(
+        tmp_path,
+        "session_20260101_120000",  # earlier name -> pooled first (the trap)
+        [_track(1, date="2026-01-01")],
+        _alpr((1, "AA11AAB", 0.99)),
+        _dvsa(AA11AAB={"make": "VOLKSWAGEN", "model": "GOLF", "primary_colour": "Silver"}),
+    )
+    _write_session(
+        tmp_path,
+        "session_20260201_120000",
+        [_track(2, date="2026-02-01"), _track(3, date="2026-02-02"), _track(4, date="2026-02-03")],
+        _alpr((2, "AA11AAA", 0.99), (3, "AA11AAA", 0.99), (4, "AA11AAA", 0.99)),
+        _dvsa(AA11AAA={"make": "RENAULT", "model": "CAPTUR", "primary_colour": "Blue"}),
+    )
+    cars = build_showcase(tmp_path)
+    assert len(cars) == 1  # merged (frequency picks AA11AAA as canonical)
+    c = cars[0]
+    assert c.plate == "AA11AAA"
+    assert (c.make, c.model) == ("RENAULT", "CAPTUR")
+    assert c.primary_colour == "Blue"  # make + colour now agree
+    assert c.make_model_source == "dvsa"
+
+
+def test_operator_merge_set_on_a_variant_still_folds_the_card() -> None:
+    # A merge set on any OCR variant of a card (not just its current canonical)
+    # must still fold the whole card -- the canonical spelling can shift as read
+    # frequencies change, orphaning a merge keyed on the old spelling (the
+    # LA68CWT/LA68EWT case).
+    pool: dict[str, dict] = {}
+    src = pool.setdefault("LA68CWT", _new_pool_rec())
+    src["plates"].update({"LA68CWT", "LA68EWT"})  # LA68EWT is a variant here
+    src["sessions"].add("s1")
+    tgt = pool.setdefault("LA68CWY", _new_pool_rec())
+    tgt["plates"].add("LA68CWY")
+    tgt["sessions"].add("s2")
+
+    # merge_into was set on the VARIANT LA68EWT, not the canonical LA68CWT.
+    _apply_operator_merges(pool, {"LA68EWT": "LA68CWY"})
+
+    assert "LA68CWT" not in pool  # folded away
+    assert set(pool) == {"LA68CWY"}
+    assert pool["LA68CWY"]["plates"] >= {"LA68CWT", "LA68EWT", "LA68CWY"}
 
 
 def test_regulars_sorted_first(tmp_path: Path) -> None:

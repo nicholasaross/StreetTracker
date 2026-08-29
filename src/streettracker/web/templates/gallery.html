@@ -1,12 +1,21 @@
 {% extends "base.html" %}
 
+{% set BUCKET_TAG = {
+  'resident': '🏠 Resident',
+  'ymca_staff': '🏋 YMCA staff',
+  'visitor': '🚶 Visitor',
+  'brief': '⚡ Drop-off',
+} %}
+
 {% macro card(c) %}
 <a class="card" href="/car/{{ c.plate }}"
    data-plate="{{ c.plate }}" data-kind="{{ c.kind }}"
+   data-bucket="{{ c.classification }}"
    data-fav="{{ 1 if c.meta.favourite else 0 }}"
    data-tagged="{{ 1 if c.tagged else 0 }}"
    data-search="{{ (c.plate ~ ' ' ~ (c.make or '') ~ ' ' ~ (c.model or '') ~ ' ' ~ c.meta.owner ~ ' ' ~ c.meta.name) | lower }}">
   <div class="badges">
+    {% if c.classification in BUCKET_TAG %}<span class="badge {{ c.classification }}">{{ BUCKET_TAG[c.classification] }} <span class="cert">· {{ c.classification_certainty }}</span></span>{% endif %}
     {% if c.kind == 'different-day' %}<span class="badge reg">★ Regular ×{{ c.n_visits }}</span>{% endif %}
     {% if c.meta.owner %}<span class="badge owner">{{ c.meta.owner }}</span>{% endif %}
   </div>
@@ -41,6 +50,9 @@
   <div class="chips">
     <button class="chip active" data-filter="all">All</button>
     <button class="chip" data-filter="regulars">★ Regulars</button>
+    <button class="chip" data-filter="resident">🏠 Residents</button>
+    <button class="chip" data-filter="ymca_staff">🏋 YMCA staff</button>
+    <button class="chip" data-filter="visitor">🚶 Visitors</button>
     <button class="chip" data-filter="favourites">⭐ Favourites</button>
     <button class="chip" data-filter="tagged">Tagged</button>
   </div>
@@ -74,6 +86,8 @@
       if (activeFilter === "regulars") ok = card.dataset.kind === "different-day";
       else if (activeFilter === "favourites") ok = card.dataset.fav === "1";
       else if (activeFilter === "tagged") ok = card.dataset.tagged === "1";
+      else if (["resident", "ymca_staff", "visitor", "brief"].includes(activeFilter))
+        ok = card.dataset.bucket === activeFilter;
       if (ok && q) ok = card.dataset.search.includes(q);
       card.classList.toggle("hidden", !ok);
       if (ok) shown++;

@@ -16,7 +16,11 @@ from pathlib import Path
 
 import pytest
 
-from streettracker.analysis.vehicles import build_cross_session, build_vehicles
+from streettracker.analysis.vehicles import (
+    _cluster_plates_by_similarity,
+    build_cross_session,
+    build_vehicles,
+)
 from streettracker.common.schema import TrackRecord
 
 
@@ -33,13 +37,9 @@ def _write_session(
     data_path = session / "session_test_data.json"
     data_path.write_text(json.dumps([asdict(t) for t in tracks]))
     if alpr_by_track is not None:
-        (session / "session_test_alpr_by_track.json").write_text(
-            json.dumps(alpr_by_track)
-        )
+        (session / "session_test_alpr_by_track.json").write_text(json.dumps(alpr_by_track))
     if dvsa_labels is not None:
-        (session / "session_test_dvsa_labels.json").write_text(
-            json.dumps(dvsa_labels)
-        )
+        (session / "session_test_dvsa_labels.json").write_text(json.dumps(dvsa_labels))
     if alpr_images is not None:
         (session / "session_test_alpr.json").write_text(json.dumps(alpr_images))
     if makemodel_by_track is not None:
@@ -61,9 +61,7 @@ def _write_named_session(
     distinct names."""
     session = tmp_path / name
     session.mkdir()
-    (session / f"{name}_data.json").write_text(
-        json.dumps([asdict(t) for t in tracks])
-    )
+    (session / f"{name}_data.json").write_text(json.dumps([asdict(t) for t in tracks]))
     (session / f"{name}_alpr_by_track.json").write_text(json.dumps(alpr_by_track))
     if dvsa_labels is not None:
         (session / f"{name}_dvsa_labels.json").write_text(json.dumps(dvsa_labels))
@@ -72,31 +70,38 @@ def _write_named_session(
 
 def _alpr_one(track_id: int, plate: str, conf: float) -> dict:
     return {
-        "tracks": [{
-            "track_id": track_id,
-            "best_preferred": {
-                "track_id": track_id, "snap_index": 1,
-                "image": f"vehicle_{track_id}_main_1.jpg",
-                "ocr_text": plate, "ocr_conf": conf, "det_conf": 0.85,
-            },
-        }],
+        "tracks": [
+            {
+                "track_id": track_id,
+                "best_preferred": {
+                    "track_id": track_id,
+                    "snap_index": 1,
+                    "image": f"vehicle_{track_id}_main_1.jpg",
+                    "ocr_text": plate,
+                    "ocr_conf": conf,
+                    "det_conf": 0.85,
+                },
+            }
+        ],
     }
 
 
-def test_build_vehicles_single_plated_visit(
-    tmp_path: Path, sample_track: TrackRecord
-) -> None:
+def test_build_vehicles_single_plated_visit(tmp_path: Path, sample_track: TrackRecord) -> None:
     """One track with a high-conf plate -> one Vehicle with n_visits=1."""
     alpr = {
-        "tracks": [{
-            "track_id": 42,
-            "best_preferred": {
-                "track_id": 42, "snap_index": 1,
-                "image": "vehicle_42_main_1.jpg",
-                "ocr_text": "AB12CDE", "ocr_conf": 0.98,
-                "det_conf": 0.85,
-            },
-        }],
+        "tracks": [
+            {
+                "track_id": 42,
+                "best_preferred": {
+                    "track_id": 42,
+                    "snap_index": 1,
+                    "image": "vehicle_42_main_1.jpg",
+                    "ocr_text": "AB12CDE",
+                    "ocr_conf": 0.98,
+                    "det_conf": 0.85,
+                },
+            }
+        ],
     }
     session = _write_session(tmp_path, [sample_track], alpr)
 
@@ -139,18 +144,22 @@ def test_build_vehicles_recurring_plate_groups_visits(
             {
                 "track_id": 42,
                 "best_preferred": {
-                    "track_id": 42, "snap_index": 1,
+                    "track_id": 42,
+                    "snap_index": 1,
                     "image": "vehicle_42_main_1.jpg",
-                    "ocr_text": "AB12CDE", "ocr_conf": 0.98,
+                    "ocr_text": "AB12CDE",
+                    "ocr_conf": 0.98,
                     "det_conf": 0.85,
                 },
             },
             {
                 "track_id": 99,
                 "best_preferred": {
-                    "track_id": 99, "snap_index": 2,
+                    "track_id": 99,
+                    "snap_index": 2,
                     "image": "vehicle_99_main_2.jpg",
-                    "ocr_text": "AB12CDE", "ocr_conf": 0.93,
+                    "ocr_text": "AB12CDE",
+                    "ocr_conf": 0.93,
                     "det_conf": 0.81,
                 },
             },
@@ -178,29 +187,31 @@ def test_build_vehicles_unread_tracks_emit_anonymous_vehicles(
     """Tracks below conf threshold + tracks absent from alpr rollup
     both fall under plate=None and emit one Vehicle each."""
     t1 = sample_track  # in rollup at high conf
-    t2 = replace(sample_track, track_id=51,
-                 time_start_unix=sample_track.time_start_unix + 30)
+    t2 = replace(sample_track, track_id=51, time_start_unix=sample_track.time_start_unix + 30)
     # t2 is in the rollup but at LOW conf -> treated as unread.
     # t3 is not in the rollup at all.
-    t3 = replace(sample_track, track_id=52,
-                 time_start_unix=sample_track.time_start_unix + 60)
+    t3 = replace(sample_track, track_id=52, time_start_unix=sample_track.time_start_unix + 60)
     alpr = {
         "tracks": [
             {
                 "track_id": 42,
                 "best_preferred": {
-                    "track_id": 42, "snap_index": 1,
+                    "track_id": 42,
+                    "snap_index": 1,
                     "image": "vehicle_42_main_1.jpg",
-                    "ocr_text": "AA15AAA", "ocr_conf": 0.95,
+                    "ocr_text": "AA15AAA",
+                    "ocr_conf": 0.95,
                     "det_conf": 0.85,
                 },
             },
             {
                 "track_id": 51,
                 "best_preferred": {
-                    "track_id": 51, "snap_index": 1,
+                    "track_id": 51,
+                    "snap_index": 1,
                     "image": "vehicle_51_main_1.jpg",
-                    "ocr_text": "MAYBE", "ocr_conf": 0.42,  # below 0.9
+                    "ocr_text": "MAYBE",
+                    "ocr_conf": 0.42,  # below 0.9
                     "det_conf": 0.40,
                 },
             },
@@ -214,23 +225,24 @@ def test_build_vehicles_unread_tracks_emit_anonymous_vehicles(
     assert plates.count(None) == 2  # t2 (low conf) + t3 (absent)
 
 
-def test_build_vehicles_no_unread_filter(
-    tmp_path: Path, sample_track: TrackRecord
-) -> None:
+def test_build_vehicles_no_unread_filter(tmp_path: Path, sample_track: TrackRecord) -> None:
     """include_unread=False drops anonymous-vehicle tracks."""
     t1 = sample_track
-    t2 = replace(sample_track, track_id=51,
-                 time_start_unix=sample_track.time_start_unix + 30)
+    t2 = replace(sample_track, track_id=51, time_start_unix=sample_track.time_start_unix + 30)
     alpr = {
-        "tracks": [{
-            "track_id": 42,
-            "best_preferred": {
-                "track_id": 42, "snap_index": 1,
-                "image": "vehicle_42_main_1.jpg",
-                "ocr_text": "AA15AAA", "ocr_conf": 0.95,
-                "det_conf": 0.85,
-            },
-        }],
+        "tracks": [
+            {
+                "track_id": 42,
+                "best_preferred": {
+                    "track_id": 42,
+                    "snap_index": 1,
+                    "image": "vehicle_42_main_1.jpg",
+                    "ocr_text": "AA15AAA",
+                    "ocr_conf": 0.95,
+                    "det_conf": 0.85,
+                },
+            }
+        ],
     }
     session = _write_session(tmp_path, [t1, t2], alpr)
 
@@ -239,13 +251,12 @@ def test_build_vehicles_no_unread_filter(
     assert vehicles[0].plate == "AA15AAA"
 
 
-def test_build_vehicles_persons_are_skipped(
-    tmp_path: Path, sample_track: TrackRecord
-) -> None:
+def test_build_vehicles_persons_are_skipped(tmp_path: Path, sample_track: TrackRecord) -> None:
     """class_name == 'person' tracks are excluded from the vehicle
     aggregation -- plate snaps would be anatomically wrong anyway."""
-    person = replace(sample_track, track_id=200, class_name="person",
-                     class_id=0, asset_prefix="person")
+    person = replace(
+        sample_track, track_id=200, class_name="person", class_id=0, asset_prefix="person"
+    )
     car = sample_track
     session = _write_session(tmp_path, [person, car], alpr_by_track={"tracks": []})
 
@@ -263,6 +274,27 @@ def test_build_vehicles_missing_alpr_rollup_is_tolerated(
     vehicles = build_vehicles(session)
     assert len(vehicles) == 1
     assert vehicles[0].plate is None
+
+
+def test_cluster_canonical_prefers_most_supported_on_conf_tie() -> None:
+    # Both spellings tie on confidence (1.0). Without support the alphabetical
+    # tie-break would pick the (wrong) FD51PVX; with support the frequently-read
+    # FD61PVX anchors the cluster (the real-world FD51/FD61 bug).
+    plates = [("FD51PVX", 1.0), ("FD61PVX", 1.0)]
+    without = _cluster_plates_by_similarity(plates, ratio=85)
+    assert without["FD61PVX"] == "FD51PVX"  # old behaviour: alphabetical
+
+    withsup = _cluster_plates_by_similarity(plates, ratio=85, support={"FD61PVX": 84, "FD51PVX": 3})
+    assert withsup["FD51PVX"] == "FD61PVX"
+    assert withsup["FD61PVX"] == "FD61PVX"
+
+
+def test_cluster_support_outranks_a_single_high_conf_misread() -> None:
+    # A one-off misread at max confidence must not hijack the canonical from a
+    # plate read far more often at slightly lower confidence.
+    plates = [("AB12CDF", 1.0), ("AB12CDE", 0.95)]
+    m = _cluster_plates_by_similarity(plates, ratio=85, support={"AB12CDE": 50, "AB12CDF": 1})
+    assert m["AB12CDF"] == "AB12CDE"
 
 
 def test_fuzzy_clustering_merges_one_char_variants(
@@ -285,16 +317,19 @@ def test_fuzzy_clustering_merges_one_char_variants(
             {
                 "track_id": 42,
                 "best_preferred": {
-                    "track_id": 42, "snap_index": 1,
+                    "track_id": 42,
+                    "snap_index": 1,
                     "image": "vehicle_42_main_1.jpg",
-                    "ocr_text": "AB12CDE", "ocr_conf": 0.98,
+                    "ocr_text": "AB12CDE",
+                    "ocr_conf": 0.98,
                     "det_conf": 0.85,
                 },
             },
             {
                 "track_id": 99,
                 "best_preferred": {
-                    "track_id": 99, "snap_index": 1,
+                    "track_id": 99,
+                    "snap_index": 1,
                     "image": "vehicle_99_main_1.jpg",
                     "ocr_text": "AB12CXE",  # one-char diff at position 5
                     "ocr_conf": 0.93,
@@ -323,26 +358,28 @@ def test_fuzzy_clustering_does_not_merge_different_lengths(
     visually too risky to collapse without manual review. Documented
     as a deliberate conservative choice in vehicles.py."""
     t1 = sample_track
-    t2 = replace(sample_track, track_id=99,
-                 time_start_unix=sample_track.time_end_unix + 60)
+    t2 = replace(sample_track, track_id=99, time_start_unix=sample_track.time_end_unix + 60)
     alpr = {
         "tracks": [
             {
                 "track_id": 42,
                 "best_preferred": {
-                    "track_id": 42, "snap_index": 1,
+                    "track_id": 42,
+                    "snap_index": 1,
                     "image": "vehicle_42_main_1.jpg",
-                    "ocr_text": "AB12CDE", "ocr_conf": 0.98,  # len 7
+                    "ocr_text": "AB12CDE",
+                    "ocr_conf": 0.98,  # len 7
                     "det_conf": 0.85,
                 },
             },
             {
                 "track_id": 99,
                 "best_preferred": {
-                    "track_id": 99, "snap_index": 1,
+                    "track_id": 99,
+                    "snap_index": 1,
                     "image": "vehicle_99_main_1.jpg",
                     "ocr_text": "B12CDE",  # len 6, ratio is high but
-                                            # length differs -- skip
+                    # length differs -- skip
                     "ocr_conf": 0.93,
                     "det_conf": 0.81,
                 },
@@ -362,25 +399,28 @@ def test_fuzzy_clustering_disabled_keeps_strict_string_equality(
     """fuzzy_ratio=None preserves the strict-string grouping (legacy
     behaviour). The two near-variants stay separate."""
     t1 = sample_track
-    t2 = replace(sample_track, track_id=99,
-                 time_start_unix=sample_track.time_end_unix + 60)
+    t2 = replace(sample_track, track_id=99, time_start_unix=sample_track.time_end_unix + 60)
     alpr = {
         "tracks": [
             {
                 "track_id": 42,
                 "best_preferred": {
-                    "track_id": 42, "snap_index": 1,
+                    "track_id": 42,
+                    "snap_index": 1,
                     "image": "vehicle_42_main_1.jpg",
-                    "ocr_text": "AB12CDE", "ocr_conf": 0.98,
+                    "ocr_text": "AB12CDE",
+                    "ocr_conf": 0.98,
                     "det_conf": 0.85,
                 },
             },
             {
                 "track_id": 99,
                 "best_preferred": {
-                    "track_id": 99, "snap_index": 1,
+                    "track_id": 99,
+                    "snap_index": 1,
                     "image": "vehicle_99_main_1.jpg",
-                    "ocr_text": "AB12CXE", "ocr_conf": 0.93,
+                    "ocr_text": "AB12CXE",
+                    "ocr_conf": 0.93,
                     "det_conf": 0.81,
                 },
             },
@@ -416,23 +456,26 @@ def test_fuzzy_clustering_allows_temporally_overlapping_merges(
         time_start_unix=sample_track.time_start_unix + 3,
         time_end_unix=sample_track.time_end_unix + 4,
         direction="right to left",  # opposite of t1 -- mirrors the
-                                    # real BotSORT ID-switch case
+        # real BotSORT ID-switch case
     )
     alpr = {
         "tracks": [
             {
                 "track_id": 42,
                 "best_preferred": {
-                    "track_id": 42, "snap_index": 1,
+                    "track_id": 42,
+                    "snap_index": 1,
                     "image": "vehicle_42_main_1.jpg",
-                    "ocr_text": "LD22BWG", "ocr_conf": 0.98,
+                    "ocr_text": "LD22BWG",
+                    "ocr_conf": 0.98,
                     "det_conf": 0.85,
                 },
             },
             {
                 "track_id": 99,
                 "best_preferred": {
-                    "track_id": 99, "snap_index": 1,
+                    "track_id": 99,
+                    "snap_index": 1,
                     "image": "vehicle_99_main_1.jpg",
                     "ocr_text": "LD22BMG",  # 1-char diff, ratio 85.7
                     "ocr_conf": 0.93,
@@ -461,23 +504,25 @@ def test_fuzzy_clustering_high_threshold_does_not_merge_distant_plates(
     length. Guards against false positives on visually-similar but
     distinct plates."""
     t1 = sample_track  # AB12CDE
-    t2 = replace(sample_track, track_id=99,
-                 time_start_unix=sample_track.time_end_unix + 60)
+    t2 = replace(sample_track, track_id=99, time_start_unix=sample_track.time_end_unix + 60)
     alpr = {
         "tracks": [
             {
                 "track_id": 42,
                 "best_preferred": {
-                    "track_id": 42, "snap_index": 1,
+                    "track_id": 42,
+                    "snap_index": 1,
                     "image": "vehicle_42_main_1.jpg",
-                    "ocr_text": "AB12CDE", "ocr_conf": 0.98,
+                    "ocr_text": "AB12CDE",
+                    "ocr_conf": 0.98,
                     "det_conf": 0.85,
                 },
             },
             {
                 "track_id": 99,
                 "best_preferred": {
-                    "track_id": 99, "snap_index": 1,
+                    "track_id": 99,
+                    "snap_index": 1,
                     "image": "vehicle_99_main_1.jpg",
                     "ocr_text": "XY99CFG",  # 4-char diff, ratio < 50
                     "ocr_conf": 0.93,
@@ -493,9 +538,7 @@ def test_fuzzy_clustering_high_threshold_does_not_merge_distant_plates(
     assert plated == ["AB12CDE", "XY99CFG"]
 
 
-def test_build_vehicles_sorted_by_first_seen(
-    tmp_path: Path, sample_track: TrackRecord
-) -> None:
+def test_build_vehicles_sorted_by_first_seen(tmp_path: Path, sample_track: TrackRecord) -> None:
     """Output is chronological by first_seen."""
     t_late = sample_track
     t_early = replace(
@@ -505,8 +548,7 @@ def test_build_vehicles_sorted_by_first_seen(
         time_start_unix=sample_track.time_start_unix - 1925,
         time_end_unix=sample_track.time_end_unix - 1925,
     )
-    session = _write_session(tmp_path, [t_late, t_early],
-                             alpr_by_track={"tracks": []})
+    session = _write_session(tmp_path, [t_late, t_early], alpr_by_track={"tracks": []})
     vehicles = build_vehicles(session)
     assert [v.track_ids for v in vehicles] == [[10], [42]]
 
@@ -530,16 +572,19 @@ def test_build_vehicles_filters_non_canonical_plates_by_default(
             {
                 "track_id": 42,
                 "best_preferred": {
-                    "track_id": 42, "snap_index": 1,
+                    "track_id": 42,
+                    "snap_index": 1,
                     "image": "vehicle_42_main_1.jpg",
-                    "ocr_text": "AB12CDE", "ocr_conf": 0.98,
+                    "ocr_text": "AB12CDE",
+                    "ocr_conf": 0.98,
                     "det_conf": 0.85,
                 },
             },
             {
                 "track_id": 51,
                 "best_preferred": {
-                    "track_id": 51, "snap_index": 1,
+                    "track_id": 51,
+                    "snap_index": 1,
                     "image": "vehicle_51_main_1.jpg",
                     "ocr_text": "1157WHT",  # OCR garbage (leading digit)
                     "ocr_conf": 0.99,
@@ -564,18 +609,21 @@ def test_build_vehicles_include_non_canonical_recovers_legacy_behavior(
 ) -> None:
     """Operators who care about trade plates / NI plates / similar can
     opt out of the canonical filter and get the pre-PR-#37 behavior."""
-    t1 = replace(sample_track, track_id=51,
-                 time_start_unix=sample_track.time_start_unix + 30)
+    t1 = replace(sample_track, track_id=51, time_start_unix=sample_track.time_start_unix + 30)
     alpr = {
-        "tracks": [{
-            "track_id": 51,
-            "best_preferred": {
-                "track_id": 51, "snap_index": 1,
-                "image": "vehicle_51_main_1.jpg",
-                "ocr_text": "1157WHT", "ocr_conf": 0.99,
-                "det_conf": 0.85,
-            },
-        }],
+        "tracks": [
+            {
+                "track_id": 51,
+                "best_preferred": {
+                    "track_id": 51,
+                    "snap_index": 1,
+                    "image": "vehicle_51_main_1.jpg",
+                    "ocr_text": "1157WHT",
+                    "ocr_conf": 0.99,
+                    "det_conf": 0.85,
+                },
+            }
+        ],
     }
     session = _write_session(tmp_path, [t1], alpr)
 
@@ -584,30 +632,38 @@ def test_build_vehicles_include_non_canonical_recovers_legacy_behavior(
     assert plated == ["1157WHT"]
 
 
-def test_build_vehicles_attaches_dvsa_make_model(
-    tmp_path: Path, sample_track: TrackRecord
-) -> None:
+def test_build_vehicles_attaches_dvsa_make_model(tmp_path: Path, sample_track: TrackRecord) -> None:
     """When <session>_dvsa_labels.json is present, the plate-keyed
     make/model/year join populates the vehicle (DVSA-first prong)."""
     alpr = {
-        "tracks": [{
-            "track_id": 42,
-            "best_preferred": {
-                "track_id": 42, "snap_index": 1,
-                "image": "vehicle_42_main_1.jpg",
-                "ocr_text": "AB12CDE", "ocr_conf": 0.98, "det_conf": 0.85,
-            },
-        }],
+        "tracks": [
+            {
+                "track_id": 42,
+                "best_preferred": {
+                    "track_id": 42,
+                    "snap_index": 1,
+                    "image": "vehicle_42_main_1.jpg",
+                    "ocr_text": "AB12CDE",
+                    "ocr_conf": 0.98,
+                    "det_conf": 0.85,
+                },
+            }
+        ],
     }
     dvsa = {
         "labels": {
             "AB12CDE": {
-                "plate": "AB12CDE", "make": "FORD", "model": "FOCUS",
-                "year": 2017, "primary_colour": "Blue",
-                "fuel_type": "Petrol", "track_ids": [42],
+                "plate": "AB12CDE",
+                "make": "FORD",
+                "model": "FOCUS",
+                "year": 2017,
+                "primary_colour": "Blue",
+                "fuel_type": "Petrol",
+                "track_ids": [42],
             },
         },
-        "unknown": [], "skipped_non_canonical": [],
+        "unknown": [],
+        "skipped_non_canonical": [],
     }
     session = _write_session(tmp_path, [sample_track], alpr, dvsa_labels=dvsa)
 
@@ -626,14 +682,19 @@ def test_build_vehicles_no_dvsa_labels_leaves_make_model_none(
 ) -> None:
     """No labels file -> make/model/year/source stay None."""
     alpr = {
-        "tracks": [{
-            "track_id": 42,
-            "best_preferred": {
-                "track_id": 42, "snap_index": 1,
-                "image": "vehicle_42_main_1.jpg",
-                "ocr_text": "AB12CDE", "ocr_conf": 0.98, "det_conf": 0.85,
-            },
-        }],
+        "tracks": [
+            {
+                "track_id": 42,
+                "best_preferred": {
+                    "track_id": 42,
+                    "snap_index": 1,
+                    "image": "vehicle_42_main_1.jpg",
+                    "ocr_text": "AB12CDE",
+                    "ocr_conf": 0.98,
+                    "det_conf": 0.85,
+                },
+            }
+        ],
     }
     session = _write_session(tmp_path, [sample_track], alpr)  # no dvsa file
 
@@ -652,29 +713,44 @@ def test_build_vehicles_dvsa_label_via_fuzzy_variant(
     does, the variant's make/model is used -- the canonical (higher-
     conf) read 404'd while a lower-conf OCR variant resolved on DVSA."""
     t2 = replace(
-        sample_track, track_id=99,
+        sample_track,
+        track_id=99,
         time_start_unix=sample_track.time_end_unix + 120,
         time_end_unix=sample_track.time_end_unix + 127,
     )
     alpr = {
         "tracks": [
-            {"track_id": 42, "best_preferred": {
-                "track_id": 42, "snap_index": 1,
-                "image": "vehicle_42_main_1.jpg",
-                "ocr_text": "AB12CDE", "ocr_conf": 0.98, "det_conf": 0.85}},
-            {"track_id": 99, "best_preferred": {
-                "track_id": 99, "snap_index": 1,
-                "image": "vehicle_99_main_1.jpg",
-                "ocr_text": "AB12CXE", "ocr_conf": 0.93, "det_conf": 0.81}},
+            {
+                "track_id": 42,
+                "best_preferred": {
+                    "track_id": 42,
+                    "snap_index": 1,
+                    "image": "vehicle_42_main_1.jpg",
+                    "ocr_text": "AB12CDE",
+                    "ocr_conf": 0.98,
+                    "det_conf": 0.85,
+                },
+            },
+            {
+                "track_id": 99,
+                "best_preferred": {
+                    "track_id": 99,
+                    "snap_index": 1,
+                    "image": "vehicle_99_main_1.jpg",
+                    "ocr_text": "AB12CXE",
+                    "ocr_conf": 0.93,
+                    "det_conf": 0.81,
+                },
+            },
         ],
     }
     # canonical AB12CDE not on file; the merged variant AB12CXE is.
     dvsa = {
         "labels": {
-            "AB12CXE": {"make": "VAUXHALL", "model": "ASTRA",
-                        "year": 2015, "track_ids": [99]},
+            "AB12CXE": {"make": "VAUXHALL", "model": "ASTRA", "year": 2015, "track_ids": [99]},
         },
-        "unknown": ["AB12CDE"], "skipped_non_canonical": [],
+        "unknown": ["AB12CDE"],
+        "skipped_non_canonical": [],
     }
     session = _write_session(tmp_path, [sample_track, t2], alpr, dvsa_labels=dvsa)
 
@@ -689,18 +765,23 @@ def test_build_vehicles_dvsa_label_via_fuzzy_variant(
     assert v.make_model_source == "dvsa"
 
 
-def test_cross_session_different_day_repeat(
-    tmp_path: Path, sample_track: TrackRecord
-) -> None:
+def test_cross_session_different_day_repeat(tmp_path: Path, sample_track: TrackRecord) -> None:
     """Same plate in two sessions on different calendar dates -> one
     CrossVehicle classified different-day, carrying the DVSA make/model."""
     sa = _write_named_session(
-        tmp_path, "session_A", [sample_track], _alpr_one(42, "AB12CDE", 0.98),
-        dvsa_labels={"labels": {"AB12CDE": {
-            "make": "FORD", "model": "FOCUS", "year": 2017, "track_ids": [42]}}},
+        tmp_path,
+        "session_A",
+        [sample_track],
+        _alpr_one(42, "AB12CDE", 0.98),
+        dvsa_labels={
+            "labels": {
+                "AB12CDE": {"make": "FORD", "model": "FOCUS", "year": 2017, "track_ids": [42]}
+            }
+        },
     )
     b = replace(
-        sample_track, track_id=43,
+        sample_track,
+        track_id=43,
         time_start="2026-05-18T09:00:00+01:00",
         time_start_unix=sample_track.time_start_unix + 86400,
         time_end_unix=sample_track.time_end_unix + 86400,
@@ -720,20 +801,21 @@ def test_cross_session_different_day_repeat(
     assert c.make_model_source == "dvsa"
 
 
-def test_cross_session_same_day_repeat(
-    tmp_path: Path, sample_track: TrackRecord
-) -> None:
+def test_cross_session_same_day_repeat(tmp_path: Path, sample_track: TrackRecord) -> None:
     """Two visits of one plate on the SAME date (one session) -> same-day."""
     t2 = replace(
-        sample_track, track_id=43,
+        sample_track,
+        track_id=43,
         time_start="2026-05-17T15:00:00+01:00",
         time_start_unix=sample_track.time_start_unix + 1600,
         time_end_unix=sample_track.time_end_unix + 1600,
     )
-    alpr = {"tracks": [
-        _alpr_one(42, "AB12CDE", 0.98)["tracks"][0],
-        _alpr_one(43, "AB12CDE", 0.95)["tracks"][0],
-    ]}
+    alpr = {
+        "tracks": [
+            _alpr_one(42, "AB12CDE", 0.98)["tracks"][0],
+            _alpr_one(43, "AB12CDE", 0.95)["tracks"][0],
+        ]
+    }
     s = _write_named_session(tmp_path, "session_A", [sample_track, t2], alpr)
     cross = build_cross_session([s])
     c = next(c for c in cross if c.plate == "AB12CDE")
@@ -747,21 +829,20 @@ def test_cross_session_fuzzy_merges_variants_across_sessions(
     tmp_path: Path, sample_track: TrackRecord
 ) -> None:
     """A 1-char OCR diff across sessions collapses to one CrossVehicle."""
-    sa = _write_named_session(tmp_path, "session_A", [sample_track],
-                              _alpr_one(42, "AB12CDE", 0.98))
+    sa = _write_named_session(tmp_path, "session_A", [sample_track], _alpr_one(42, "AB12CDE", 0.98))
     b = replace(
-        sample_track, track_id=43,
+        sample_track,
+        track_id=43,
         time_start="2026-05-18T09:00:00+01:00",
         time_start_unix=sample_track.time_start_unix + 86400,
         time_end_unix=sample_track.time_end_unix + 86400,
     )
-    sb = _write_named_session(tmp_path, "session_B", [b],
-                              _alpr_one(43, "AB12CXE", 0.95))
+    sb = _write_named_session(tmp_path, "session_B", [b], _alpr_one(43, "AB12CXE", 0.95))
     cross = build_cross_session([sa, sb])
     plated = [c for c in cross if c.plate is not None]
     assert len(plated) == 1
     c = plated[0]
-    assert c.plate == "AB12CDE"           # higher-conf canonical
+    assert c.plate == "AB12CDE"  # higher-conf canonical
     assert "AB12CXE" in c.plate_variants  # merged variant
     assert c.kind == "different-day"
     assert c.n_visits == 2
@@ -803,9 +884,12 @@ def _two_spelling_session(
                 {
                     "track_id": tid,
                     "best_preferred": {
-                        "track_id": tid, "snap_index": 1,
+                        "track_id": tid,
+                        "snap_index": 1,
                         "image": f"vehicle_{tid}_main_1.jpg",
-                        "ocr_text": plate, "ocr_conf": conf, "det_conf": 0.9,
+                        "ocr_text": plate,
+                        "ocr_conf": conf,
+                        "det_conf": 0.9,
                     },
                 }
             )
@@ -813,11 +897,15 @@ def _two_spelling_session(
     dvsa = {
         "labels": {
             "GU65UGK": {
-                "make": "VOLKSWAGEN", "model": "UP", "year": 2015,
+                "make": "VOLKSWAGEN",
+                "model": "UP",
+                "year": 2015,
                 "primary_colour": "Red",
             },
             "GU65UGM": {
-                "make": "VOLKSWAGEN", "model": "GOLF", "year": 2015,
+                "make": "VOLKSWAGEN",
+                "model": "GOLF",
+                "year": 2015,
                 "primary_colour": "White",
             },
         }
@@ -863,28 +951,44 @@ def test_fuzzy_merge_kept_without_colour_corroboration(
     assert [p for p, _c in plated[0].plate_variants] == ["GU65UGM"]
 
 
-def test_fuzzy_veto_applies_cross_session(
-    tmp_path: Path, sample_track: TrackRecord
-) -> None:
+def test_fuzzy_veto_applies_cross_session(tmp_path: Path, sample_track: TrackRecord) -> None:
     """The veto holds when the two real cars appear in different
     sessions and only meet at the cross-session pooling layer."""
-    dvsa_a = {"labels": {"GU65UGK": {
-        "make": "VOLKSWAGEN", "model": "UP", "year": 2015, "primary_colour": "Red"}}}
-    dvsa_b = {"labels": {"GU65UGM": {
-        "make": "VOLKSWAGEN", "model": "GOLF", "year": 2015, "primary_colour": "White"}}}
+    dvsa_a = {
+        "labels": {
+            "GU65UGK": {"make": "VOLKSWAGEN", "model": "UP", "year": 2015, "primary_colour": "Red"}
+        }
+    }
+    dvsa_b = {
+        "labels": {
+            "GU65UGM": {
+                "make": "VOLKSWAGEN",
+                "model": "GOLF",
+                "year": 2015,
+                "primary_colour": "White",
+            }
+        }
+    }
     sa = _write_named_session(
-        tmp_path, "session_A",
+        tmp_path,
+        "session_A",
         [replace(sample_track, color="red")],
-        _alpr_one(42, "GU65UGK", 0.99), dvsa_labels=dvsa_a,
+        _alpr_one(42, "GU65UGK", 0.99),
+        dvsa_labels=dvsa_a,
     )
     b_track = replace(
-        sample_track, track_id=43, color="white",
+        sample_track,
+        track_id=43,
+        color="white",
         time_start="2026-05-18T09:00:00+01:00",
         time_start_unix=sample_track.time_start_unix + 86400,
         time_end_unix=sample_track.time_end_unix + 86400,
     )
     sb = _write_named_session(
-        tmp_path, "session_B", [b_track], _alpr_one(43, "GU65UGM", 0.98),
+        tmp_path,
+        "session_B",
+        [b_track],
+        _alpr_one(43, "GU65UGM", 0.98),
         dvsa_labels=dvsa_b,
     )
 
@@ -903,14 +1007,17 @@ def test_fuzzy_veto_applies_cross_session(
 
 def _cnn_row(tid: int, make: str, conf: float) -> dict:
     return {
-        "track_id": tid, "make": make, "model": None, "year": None,
-        "conf": conf, "n_high_conf_reads": 5, "n_reads": 6,
+        "track_id": tid,
+        "make": make,
+        "model": None,
+        "year": None,
+        "conf": conf,
+        "n_high_conf_reads": 5,
+        "n_reads": 6,
     }
 
 
-def test_cnn_make_fills_vehicles_without_dvsa(
-    tmp_path: Path, sample_track: TrackRecord
-) -> None:
+def test_cnn_make_fills_vehicles_without_dvsa(tmp_path: Path, sample_track: TrackRecord) -> None:
     """An unread car (no plate) gets its make from the CNN rollup; a
     DVSA-labelled car keeps the ground truth even when the CNN
     disagrees."""
@@ -921,10 +1028,12 @@ def test_cnn_make_fills_vehicles_without_dvsa(
         [plated, unread],
         _alpr_one(50, "AB12CDE", 0.98),
         dvsa_labels={"labels": {"AB12CDE": {"make": "FORD", "model": "FOCUS", "year": 2017}}},
-        makemodel_by_track={"tracks": [
-            _cnn_row(50, "VAUXHALL", 0.99),   # disagrees with DVSA -> ignored
-            _cnn_row(51, "TOYOTA", 0.87),
-        ]},
+        makemodel_by_track={
+            "tracks": [
+                _cnn_row(50, "VAUXHALL", 0.99),  # disagrees with DVSA -> ignored
+                _cnn_row(51, "TOYOTA", 0.87),
+            ]
+        },
     )
 
     vehicles = build_vehicles(session)
@@ -937,18 +1046,18 @@ def test_cnn_make_fills_vehicles_without_dvsa(
     assert by_tid[51].make_model_source == "cnn"
 
 
-def test_cnn_make_respects_conf_floor_and_flag(
-    tmp_path: Path, sample_track: TrackRecord
-) -> None:
+def test_cnn_make_respects_conf_floor_and_flag(tmp_path: Path, sample_track: TrackRecord) -> None:
     low = replace(sample_track, track_id=60)
     ok = replace(sample_track, track_id=61)
     session = _write_session(
         tmp_path,
         [low, ok],
-        makemodel_by_track={"tracks": [
-            _cnn_row(60, "BMW", 0.31),        # below the 0.5 vote-share floor
-            _cnn_row(61, "KIA", 0.74),
-        ]},
+        makemodel_by_track={
+            "tracks": [
+                _cnn_row(60, "BMW", 0.31),  # below the 0.5 vote-share floor
+                _cnn_row(61, "KIA", 0.74),
+            ]
+        },
     )
 
     vehicles = build_vehicles(session)
@@ -964,9 +1073,7 @@ def test_cnn_make_respects_conf_floor_and_flag(
 # Stationary-beacon (parked plate) suppression.
 
 
-def _image_read(
-    tid: int, snap: int, text: str, conf: float, cx: float, cy: float
-) -> dict:
+def _image_read(tid: int, snap: int, text: str, conf: float, cx: float, cy: float) -> dict:
     """One per-image ``_alpr.json`` read at centre (cx, cy)."""
     x1, y1 = cx - 65.0, cy - 17.0
     return {
@@ -1009,28 +1116,24 @@ def _parked_session(tmp_path: Path, sample_track: TrackRecord) -> Path:
             {
                 "track_id": tid,
                 "best_preferred": {
-                    "track_id": tid, "snap_index": 1,
+                    "track_id": tid,
+                    "snap_index": 1,
                     "image": f"vehicle_{tid}_main_1.jpg",
-                    "ocr_text": "LX19PXR", "ocr_conf": 0.99, "det_conf": 0.9,
+                    "ocr_text": "LX19PXR",
+                    "ocr_conf": 0.99,
+                    "det_conf": 0.9,
                 },
             }
             for tid in (42, 43, 44, 45, 46, 90)
         ],
     }
-    images = [
-        _image_read(tid, 1, "LX19PXR", 0.99, 2080, 455)
-        for tid in (42, 43, 44, 45, 46)
-    ]
+    images = [_image_read(tid, 1, "LX19PXR", 0.99, 2080, 455) for tid in (42, 43, 44, 45, 46)]
     images.append(_image_read(42, 2, "AB12CDE", 0.95, 900, 700))
     images.append(_image_read(90, 1, "LX19PXR", 0.99, 2664, 300))
-    return _write_session(
-        tmp_path, hosts + [departure], by_track, alpr_images=images
-    )
+    return _write_session(tmp_path, hosts + [departure], by_track, alpr_images=images)
 
 
-def test_parked_beacon_suppressed_into_episode(
-    tmp_path: Path, sample_track: TrackRecord
-) -> None:
+def test_parked_beacon_suppressed_into_episode(tmp_path: Path, sample_track: TrackRecord) -> None:
     session = _parked_session(tmp_path, sample_track)
 
     vehicles = build_vehicles(session)
@@ -1062,6 +1165,6 @@ def test_parked_suppression_disabled_restores_phantom_visits(
 
     by_plate = {v.plate: v for v in vehicles if v.plate}
     lx = by_plate["LX19PXR"]
-    assert lx.n_visits == 6              # the pre-fix phantom behaviour
+    assert lx.n_visits == 6  # the pre-fix phantom behaviour
     assert lx.parked_episodes == []
     assert "AB12CDE" not in by_plate

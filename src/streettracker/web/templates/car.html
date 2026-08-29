@@ -1,4 +1,11 @@
 {% extends "base.html" %}
+{% set BUCKET_TAG = {
+  'resident': '🏠 Resident',
+  'ymca_staff': '🏋 YMCA staff',
+  'visitor': '🚶 Visitor',
+  'brief': '⚡ Brief / drop-off',
+  'unclassified': '❓ Unclassified',
+} %}
 {% block title %}{{ car.plate }} — Vehicle Showcase{% endblock %}
 {% block subtitle %}{% if car.make %}{{ car.make }} {{ car.model or '' }}{% else %}{{ car.plate }}{% endif %}{% endblock %}
 
@@ -25,15 +32,22 @@
     <div class="mm" style="font-size:18px">
       {% if car.make %}{{ car.make }} {{ car.model or '' }}{% else %}Unidentified make{% endif %}
     </div>
-    {% if car.kind == 'different-day' %}
-    <div style="margin:8px 0 16px"><span class="badge reg">★ Regular — seen on {{ car.n_dates }} different days</span></div>
-    {% else %}
-    <div style="margin-bottom:16px"></div>
-    {% endif %}
+    <div style="margin:8px 0 16px; display:flex; gap:8px; flex-wrap:wrap">
+      {% if car.classification in BUCKET_TAG %}
+      <span class="badge {{ car.classification }}">{{ BUCKET_TAG[car.classification] }} <span class="cert">· {{ car.classification_certainty }}</span></span>
+      {% endif %}
+      {% if car.kind == 'different-day' %}
+      <span class="badge reg">★ Regular — {{ car.n_dates }} different days</span>
+      {% endif %}
+    </div>
 
     <div class="panel" style="margin-bottom:18px">
       <h3>Details</h3>
       <table class="attrs">
+        <tr><th>Classification</th><td>{{ BUCKET_TAG.get(car.classification, car.classification) }}
+          <span style="opacity:.6">({{ 'you set this' if car.classification_source == 'manual' else 'inferred' }})</span></td></tr>
+        <tr><th>Certainty</th><td>{{ car.classification_certainty }}</td></tr>
+        {% if car.classification_reason %}<tr><th>Why</th><td>{{ car.classification_reason }}</td></tr>{% endif %}
         <tr><th>Year</th><td>{{ car.year or '—' }}</td></tr>
         <tr><th>Colour (DVSA)</th><td>{{ car.primary_colour or '—' }}</td></tr>
         <tr><th>Observed colour</th><td>{% if car.cnn_colour %}{{ car.cnn_colour }} <span style="opacity:.55">(AI)</span>{% else %}{{ car.colors | join_counts }}{% endif %}</td></tr>
@@ -76,6 +90,18 @@
         <div class="field"><label>Correct make <span class="muted">(overrides DVSA / CNN)</span></label>
           <input type="text" name="make_override" value="{{ car.meta.make_override }}"
                  placeholder="e.g. DAF — leave blank to keep the detected make"></div>
+        <div class="field"><label>Classification <span class="muted">(overrides the inferred bucket)</span></label>
+          <select name="classification_override">
+            <option value="">Auto — use inferred ({{ BUCKET_TAG.get(car.classification, car.classification) }})</option>
+            <option value="resident" {{ 'selected' if car.meta.classification_override == 'resident' }}>🏠 Resident</option>
+            <option value="ymca_staff" {{ 'selected' if car.meta.classification_override == 'ymca_staff' }}>🏋 YMCA staff</option>
+            <option value="visitor" {{ 'selected' if car.meta.classification_override == 'visitor' }}>🚶 Visitor</option>
+            <option value="brief" {{ 'selected' if car.meta.classification_override == 'brief' }}>⚡ Brief / drop-off</option>
+            <option value="unclassified" {{ 'selected' if car.meta.classification_override == 'unclassified' }}>❓ Unclassified</option>
+          </select></div>
+        <div class="field"><label>Correct plate <span class="muted">(merge OCR misreads into one car)</span></label>
+          <input type="text" name="merge_into" value="{{ car.meta.merge_into }}"
+                 placeholder="e.g. SK69NJZ — folds this card into that plate"></div>
         <div class="row-check">
           <input type="checkbox" id="hideMake" name="make_hidden" {{ 'checked' if car.meta.make_hidden }}>
           <label for="hideMake">🚫 Wrong make / not a car — hide it</label>
@@ -120,15 +146,26 @@
       owner: f["owner"].value,
       notes: f["notes"].value,
       make_override: f["make_override"].value,
+      classification_override: f["classification_override"].value,
+      merge_into: f["merge_into"].value.trim().toUpperCase(),
       make_hidden: f["make_hidden"].checked,
       favourite: f["favourite"].checked,
     };
     setMeta("{{ car.plate }}", fields).then(() => {
       const n = document.getElementById("saveNote");
       n.classList.add("show");
-      // Reload so a make override/hide is reflected in the make line + Details
-      // (and the gallery) immediately, not just on the next manual refresh.
-      setTimeout(() => window.location.reload(), 650);
+      // A plate merge restructures the cards (this card folds into another), so
+      // it only takes effect on re-aggregation -- rebuild, then jump to the
+      // target card. Other edits apply at display time, so just reload.
+      const target = fields.merge_into;
+      if (target && target !== "{{ car.plate }}") {
+        n.textContent = "Merging… rebuilding";
+        fetch("/api/refresh", { method: "POST" })
+          .then(() => { window.location = "/car/" + encodeURIComponent(target); })
+          .catch(() => window.location.reload());
+      } else {
+        setTimeout(() => window.location.reload(), 650);
+      }
     }).catch(e => alert(e.message));
     return false;
   }

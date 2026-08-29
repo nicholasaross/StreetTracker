@@ -25,7 +25,22 @@ from typing import Any
 # (e.g. a CNN guess that aliased a neighbouring car, or a lorry the car-only
 # classifier can't refuse): override replaces the displayed make, hidden
 # suppresses it entirely. Applied at display time (server `_apply_make_override`).
-USER_FIELDS = ("name", "owner", "notes", "favourite", "make_override", "make_hidden")
+USER_FIELDS = (
+    "name",
+    "owner",
+    "notes",
+    "favourite",
+    "make_override",
+    "make_hidden",
+    # Behavioural bucket set by the operator; a non-empty value wins over the
+    # inferred classification at display time (server `_apply_classification_override`).
+    "classification_override",
+    # Operator plate merge: this card's car is REALLY this plate -- fold it (and
+    # its OCR variants) into that canonical card. For OCR splits the automatic
+    # fuzzy clustering can't catch (2+ char misreads, or a DVSA-colour-conflict
+    # veto). Applied in aggregate.build_showcase.
+    "merge_into",
+)
 # Keys coerced to bool; everything else is stripped text.
 _BOOL_FIELDS = ("favourite", "make_hidden")
 
@@ -45,7 +60,17 @@ def is_tagged(meta: dict[str, Any] | None) -> bool:
         return False
     if meta.get("favourite") or meta.get("make_hidden"):
         return True
-    return any((meta.get(k) or "").strip() for k in ("name", "owner", "notes", "make_override"))
+    return any(
+        (meta.get(k) or "").strip()
+        for k in (
+            "name",
+            "owner",
+            "notes",
+            "make_override",
+            "classification_override",
+            "merge_into",
+        )
+    )
 
 
 @dataclass(slots=True)
