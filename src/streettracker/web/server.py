@@ -72,6 +72,36 @@ _BRAND_MAX_SLUG = 32
 _BRANDS_DIR = Path(__file__).resolve().parent / "static" / "brands"
 
 
+def _session_fingerprint(output_root: Path) -> dict[str, float]:
+    """``{session_name: newest *.json mtime}`` over the discovered sessions.
+
+    A cheap disk signature for staleness detection: a newly pulled session adds
+    a key, and a re-enriched one bumps its value (any file write updates that
+    file's mtime, so the max over the session's JSON sidecars moves). Compared
+    against the signature captured at the last aggregation to tell whether the
+    on-disk data has moved ahead of the cached view. One ``glob`` + a handful of
+    ``stat`` calls per session -- only ever run on an HTML page render or a
+    status poll, both human-paced."""
+    fp: dict[str, float] = {}
+    for d in discover_sessions(output_root):
+        newest = 0.0
+        for p in d.glob("*.json"):
+            try:
+                m = p.stat().st_mtime
+            except OSError:
+                continue
+            newest = max(newest, m)
+        fp[d.name] = newest
+    return fp
+
+
+# The aggregation result, published atomically: cars, plate index, session
+# names, stats, and the disk fingerprint that produced them.
+_Aggregate = tuple[
+    list[ShowcaseCar], dict[str, ShowcaseCar], set[str], "Stats | None", dict[str, float]
+]
+
+
 @dataclass
 class _State:
     """Mutable, in-memory showcase state.
@@ -87,6 +117,9 @@ class _State:
     cars_by_plate: dict[str, ShowcaseCar] = field(default_factory=dict)
     sessions: set[str] = field(default_factory=set)
     stats: Stats | None = None
+    # Disk fingerprint (see _session_fingerprint) captured when the cached view
+    # was built; staleness = the disk has moved on from this.
+    _disk_fp: dict[str, float] = field(default_factory=dict, repr=False)
     # Serialises refreshes so two overlapping POSTs can't run duplicate
     # (~60-90 s) rebuilds or publish over each other.
     _refresh_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
@@ -103,29 +136,36 @@ class _State:
             if isinstance(e, dict) and (e.get("merge_into") or "").strip()
         }
 
-    def _compute(
-        self,
-    ) -> tuple[list[ShowcaseCar], dict[str, ShowcaseCar], set[str], Stats | None]:
+    def _compute(self) -> _Aggregate:
         """Heavy, read-only aggregation over the whole output root.
 
         Touches no shared state, so it's safe to run in a worker thread -- it
         can't publish a half-built view. Caller applies the result via
-        :meth:`_publish`."""
+        :meth:`_publish`. The disk fingerprint is captured *first* so that any
+        file landing during the (~60-90 s) aggregation is seen as staleness on
+        the next check rather than being silently folded in as up-to-date."""
+        fp = _session_fingerprint(self.output_root)
         cars = build_showcase(self.output_root, merge_map=self._merge_map())
         return (
             cars,
             {c.plate: c for c in cars},
             {d.name for d in discover_sessions(self.output_root)},
             build_stats(self.output_root, m_per_px=self.m_per_px),
+            fp,
         )
 
-    def _publish(
-        self,
-        result: tuple[list[ShowcaseCar], dict[str, ShowcaseCar], set[str], Stats | None],
-    ) -> None:
+    def _publish(self, result: _Aggregate) -> None:
         """Swap a freshly computed view in atomically (single-threaded on the
         event loop, or synchronously at startup)."""
-        self.cars, self.cars_by_plate, self.sessions, self.stats = result
+        self.cars, self.cars_by_plate, self.sessions, self.stats, self._disk_fp = result
+
+    def stale_sessions(self) -> list[str]:
+        """Session names added or changed on disk since the cached view was
+        built -- i.e. what a refresh would pick up. Empty when up to date."""
+        current = _session_fingerprint(self.output_root)
+        return sorted(
+            name for name, mtime in current.items() if self._disk_fp.get(name) != mtime
+        )
 
     def reaggregate(self) -> None:
         """Synchronous full rebuild. Used at startup, before the event loop
@@ -329,9 +369,12 @@ def _data_through(state: _State) -> str | None:
 
 def _render(request: web.Request, template: str, **ctx: Any) -> web.Response:
     # The header (base.html) shows a data-freshness flag + refresh button on
-    # every page, so inject the "data through" date into every render unless a
-    # handler set it explicitly.
-    ctx.setdefault("data_through", _data_through(request.app[STATE]))
+    # every page, so inject the "data through" date + the stale-sessions count
+    # into every render unless a handler set them explicitly. The header also
+    # polls /api/status to keep these live without a reload.
+    state = request.app[STATE]
+    ctx.setdefault("data_through", _data_through(state))
+    ctx.setdefault("stale_count", len(state.stale_sessions()))
     tmpl = request.app[JINJA].get_template(template)
     # ``no-store`` keeps browsers from serving a stale HTML page across server
     # restarts -- a real wart after a code change, since the embedded JS (e.g.
@@ -424,6 +467,21 @@ async def _api_stats(request: web.Request) -> web.Response:
     return web.json_response(stats.to_json_dict() if stats else {})
 
 
+async def _api_status(request: web.Request) -> web.Response:
+    """Lightweight freshness probe the header polls: the most-recent-data date
+    and whether newer/changed sessions sit on disk (a refresh would pick up)."""
+    state = request.app[STATE]
+    stale = state.stale_sessions()
+    return web.json_response(
+        {
+            "data_through": _data_through(state),
+            "stale": bool(stale),
+            "stale_count": len(stale),
+            "sessions": stale[:20],
+        }
+    )
+
+
 async def _api_refresh(request: web.Request) -> web.Response:
     state = request.app[STATE]
     await state.reaggregate_async()
@@ -510,6 +568,7 @@ def build_app(
     app.router.add_get("/api/cars/{plate}", _api_car)
     app.router.add_put("/api/cars/{plate}/metadata", _api_set_metadata)
     app.router.add_get("/api/stats", _api_stats)
+    app.router.add_get("/api/status", _api_status)
     app.router.add_post("/api/refresh", _api_refresh)
     app.router.add_get("/images/{session}/{filename}", _serve_image)
     app.router.add_get("/brand/{slug}.svg", _brand_svg)

@@ -12,6 +12,9 @@
       --gold: #f5c518; --danger: #ff6b6b; --radius: 12px;
     }
     * { box-sizing: border-box; }
+    /* The `hidden` attribute must win over any element's own display rule
+       (e.g. .stale-badge's inline-flex would otherwise defeat it). */
+    [hidden] { display: none !important; }
     body {
       margin: 0; background: var(--bg); color: var(--text);
       font: 15px/1.5 -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
@@ -47,6 +50,18 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     .refresh-note { font-size: 12.5px; color: var(--accent-2); }
     .refresh-note.err { color: var(--danger); }
+    .stale-badge {
+      display: inline-flex; align-items: center; gap: 5px; padding: 5px 11px;
+      border-radius: 20px; border: 1px solid rgba(245,197,24,.5);
+      background: rgba(245,197,24,.14); color: var(--gold);
+      font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer;
+    }
+    .stale-badge:hover { background: rgba(245,197,24,.24); }
+    .stale-badge .dot {
+      width: 7px; height: 7px; border-radius: 50%; background: var(--gold);
+      animation: pulse 1.6s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
     .wrap { max-width: 1320px; margin: 0 auto; padding: 24px; }
     .statbar { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 13px; }
     .statbar b { color: var(--text); }
@@ -150,6 +165,11 @@
       <span class="through" title="Date of the most recent data shown (all vehicle tracks). Pull new sessions, then Refresh.">
         Data through <b>{{ data_through | fmt_date if data_through else '—' }}</b>
       </span>
+      <button class="stale-badge" id="stale-badge" type="button" onclick="refreshData()"
+              title="Newer or re-enriched sessions are on disk. Click to rebuild the showcase."
+              {% if not stale_count %}hidden{% endif %}>
+        <span class="dot"></span><span id="stale-count">{{ stale_count }}</span>&nbsp;new on disk
+      </button>
       <button class="btn-refresh" id="btn-refresh" type="button" onclick="refreshData()"
               title="Re-aggregate the showcase to pick up newly pulled sessions (~60–90s)">
         <span class="ico">↻</span><span class="lbl">Refresh</span>
@@ -181,6 +201,8 @@
       if (!btn || btn.disabled) return;
       btn.disabled = true;
       btn.classList.add("busy");
+      const stale = document.getElementById("stale-badge");
+      if (stale) stale.hidden = true;  // being addressed
       note.classList.remove("err");
       const started = Date.now();
       const render = () => {
@@ -203,6 +225,31 @@
         btn.classList.remove("busy");
       }
     }
+
+    // Poll for newer/re-enriched sessions landing on disk (e.g. a control-panel
+    // pull or enrich finishing) and surface the "N new on disk" badge without a
+    // reload. Skipped while a refresh is running (the badge is hidden then).
+    async function pollStatus() {
+      const btn = document.getElementById("btn-refresh");
+      if (btn && btn.disabled) return;
+      try {
+        const r = await fetch("/api/status", { cache: "no-store" });
+        if (!r.ok) return;
+        const s = await r.json();
+        const badge = document.getElementById("stale-badge");
+        if (!badge) return;
+        if (s.stale) {
+          document.getElementById("stale-count").textContent = s.stale_count;
+          badge.hidden = false;
+        } else {
+          badge.hidden = true;
+        }
+      } catch (e) { /* transient: leave the current badge state */ }
+    }
+    setInterval(pollStatus, 45000);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") pollStatus();
+    });
   </script>
   {% block scripts %}{% endblock %}
 </body>

@@ -297,6 +297,30 @@ async def test_header_shows_data_freshness_and_refresh(client: TestClient) -> No
         assert "refreshData" in html
 
 
+async def test_status_and_stale_indicator(client: TestClient, output_root: Path) -> None:
+    # Freshly aggregated -> nothing newer on disk, badge hidden.
+    s = await (await client.get("/api/status")).json()
+    assert s["stale"] is False
+    assert s["stale_count"] == 0
+    html = await (await client.get("/")).text()
+    assert 'id="stale-badge"' in html  # present, rendered hidden
+
+    # A newly pulled session lands on disk...
+    new = "session_20260527_130000"
+    d = output_root / new
+    d.mkdir()
+    (d / f"{new}_data.json").write_text(json.dumps([]))
+    s2 = await (await client.get("/api/status")).json()
+    assert s2["stale"] is True
+    assert s2["stale_count"] == 1
+    assert new in s2["sessions"]
+
+    # ...and a refresh folds it in, clearing the indicator.
+    await client.post("/api/refresh")
+    s3 = await (await client.get("/api/status")).json()
+    assert s3["stale"] is False
+
+
 # ----------------------------------------------------------------------
 # Bundled brand SVGs (/brand/{slug}.svg)
 
