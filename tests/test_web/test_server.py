@@ -286,6 +286,17 @@ async def test_refresh(client: TestClient) -> None:
     assert (await r.json())["cars"] == 1
 
 
+async def test_header_shows_data_freshness_and_refresh(client: TestClient) -> None:
+    # The base header carries the "data through" date (from the newest track,
+    # 2026-05-26 in the fixture) and the refresh button/handler -- on every page.
+    for path in ("/", "/stats", "/people", "/schedule"):
+        html = await (await client.get(path)).text()
+        assert "Data through" in html
+        assert "26 May 2026" in html
+        assert 'id="btn-refresh"' in html
+        assert "refreshData" in html
+
+
 # ----------------------------------------------------------------------
 # Bundled brand SVGs (/brand/{slug}.svg)
 

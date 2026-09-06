@@ -183,6 +183,16 @@ def _fmt_dt(iso: str) -> str:
         return iso
 
 
+def _fmt_date(iso: str) -> str:
+    """ISO date or timestamp -> human 'Sat 05 Sep 2026' (passthrough on junk)."""
+    if not iso:
+        return "—"
+    try:
+        return datetime.fromisoformat(iso).strftime("%a %d %b %Y")
+    except ValueError:
+        return iso
+
+
 def _join_counts(counts: dict[str, int]) -> str:
     """{'right to left': 3, 'left to right': 1} -> 'right to left ×3, left to right ×1'."""
     if not counts:
@@ -196,6 +206,7 @@ def _make_jinja() -> jinja2.Environment:
         autoescape=jinja2.select_autoescape(["html", "xml"]),
     )
     env.filters["fmt_dt"] = _fmt_dt
+    env.filters["fmt_date"] = _fmt_date
     env.filters["join_counts"] = _join_counts
     return env
 
@@ -302,7 +313,25 @@ def _stats(cars: list[dict[str, Any]]) -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 
+def _data_through(state: _State) -> str | None:
+    """ISO date of the most recent data on show, for the header freshness flag.
+
+    Prefers the stats date range (bucketed over *all* vehicle tracks, so it
+    reflects the newest session regardless of whether its cars were plate-read);
+    falls back to the latest plated-car sighting if stats are absent."""
+    if state.stats is not None:
+        date_to = state.stats.overall.get("date_to")
+        if date_to:
+            return str(date_to)
+    seens = [c.last_seen for c in state.cars if c.last_seen]
+    return max(seens)[:10] if seens else None
+
+
 def _render(request: web.Request, template: str, **ctx: Any) -> web.Response:
+    # The header (base.html) shows a data-freshness flag + refresh button on
+    # every page, so inject the "data through" date into every render unless a
+    # handler set it explicitly.
+    ctx.setdefault("data_through", _data_through(request.app[STATE]))
     tmpl = request.app[JINJA].get_template(template)
     # ``no-store`` keeps browsers from serving a stale HTML page across server
     # restarts -- a real wart after a code change, since the embedded JS (e.g.
