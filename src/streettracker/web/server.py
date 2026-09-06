@@ -9,11 +9,17 @@ Runs on the dev box, off-device -- contrast :mod:`streettracker.device.dashboard
 
 Design:
 
-* **Aggregate once, cache in memory.** :func:`build_showcase` reads ~14
-  sessions (~1-2 s); the result is cached in a :class:`_State` holder on the
+* **Aggregate once, cache in memory.** :func:`build_showcase` +
+  :func:`build_stats` read every session under the output root; on the current
+  corpus (~20+ sessions, thousands of cars) a full rebuild is ~60-90 s, not the
+  ~1-2 s this once was. The result is cached in a :class:`_State` holder on the
   app. ``POST /api/refresh`` re-aggregates *in place* (so we never mutate the
   app mapping after start, which aiohttp deprecates) to pick up newly pulled
-  sessions.
+  sessions. Because that rebuild is slow, the refresh handler runs it in a
+  worker thread (:meth:`_State.reaggregate_async`) and publishes the finished
+  view atomically, so the site keeps serving cached pages meanwhile; a lock
+  serialises concurrent refreshes. Startup still rebuilds synchronously (no
+  event loop yet).
 * **Metadata merged per request.** The (small) plate-keyed metadata file is
   read fresh each request and merged onto the cached cars, so edits are
   immediate without re-aggregating.
@@ -81,6 +87,9 @@ class _State:
     cars_by_plate: dict[str, ShowcaseCar] = field(default_factory=dict)
     sessions: set[str] = field(default_factory=set)
     stats: Stats | None = None
+    # Serialises refreshes so two overlapping POSTs can't run duplicate
+    # (~60-90 s) rebuilds or publish over each other.
+    _refresh_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     def _merge_map(self) -> dict[str, str]:
         """Operator plate merges from the metadata store: ``{source -> target}``
@@ -94,11 +103,42 @@ class _State:
             if isinstance(e, dict) and (e.get("merge_into") or "").strip()
         }
 
+    def _compute(
+        self,
+    ) -> tuple[list[ShowcaseCar], dict[str, ShowcaseCar], set[str], Stats | None]:
+        """Heavy, read-only aggregation over the whole output root.
+
+        Touches no shared state, so it's safe to run in a worker thread -- it
+        can't publish a half-built view. Caller applies the result via
+        :meth:`_publish`."""
+        cars = build_showcase(self.output_root, merge_map=self._merge_map())
+        return (
+            cars,
+            {c.plate: c for c in cars},
+            {d.name for d in discover_sessions(self.output_root)},
+            build_stats(self.output_root, m_per_px=self.m_per_px),
+        )
+
+    def _publish(
+        self,
+        result: tuple[list[ShowcaseCar], dict[str, ShowcaseCar], set[str], Stats | None],
+    ) -> None:
+        """Swap a freshly computed view in atomically (single-threaded on the
+        event loop, or synchronously at startup)."""
+        self.cars, self.cars_by_plate, self.sessions, self.stats = result
+
     def reaggregate(self) -> None:
-        self.cars = build_showcase(self.output_root, merge_map=self._merge_map())
-        self.cars_by_plate = {c.plate: c for c in self.cars}
-        self.sessions = {d.name for d in discover_sessions(self.output_root)}
-        self.stats = build_stats(self.output_root, m_per_px=self.m_per_px)
+        """Synchronous full rebuild. Used at startup, before the event loop
+        exists; blocks the caller. For the running server use
+        :meth:`reaggregate_async`."""
+        self._publish(self._compute())
+
+    async def reaggregate_async(self) -> None:
+        """Rebuild off the event loop so the site stays responsive during the
+        ~60-90 s aggregation: compute in a worker thread, then publish on the
+        loop. Serialised so overlapping refreshes don't duplicate the work."""
+        async with self._refresh_lock:
+            self._publish(await asyncio.to_thread(self._compute))
 
     @property
     def n_regulars(self) -> int:
@@ -356,8 +396,9 @@ async def _api_stats(request: web.Request) -> web.Response:
 
 
 async def _api_refresh(request: web.Request) -> web.Response:
-    request.app[STATE].reaggregate()
-    return web.json_response({"cars": len(request.app[STATE].cars)})
+    state = request.app[STATE]
+    await state.reaggregate_async()
+    return web.json_response({"cars": len(state.cars)})
 
 
 async def _serve_image(request: web.Request) -> web.StreamResponse:
