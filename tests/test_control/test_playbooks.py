@@ -202,8 +202,15 @@ def test_build_playbook_build_train_generates_dated_dirs(tmp_path: Path) -> None
     assert [s.job.kind for s in steps] == [  # type: ignore[union-attr]
         "makemodel-build-uk",
         "makemodel-train-uk",
+        "makemodel-compare",
     ]
     assert "uk_crops_" in steps[0].job.args[0]  # type: ignore[union-attr]
+    # The head-to-head scores the run just trained, on the corpus just built.
+    cmp_args = steps[2].job.args  # type: ignore[union-attr]
+    assert cmp_args[0] == steps[0].job.args[0]  # type: ignore[union-attr]
+    out_dir = steps[1].job.args[steps[1].job.args.index("--out") + 1]  # type: ignore[union-attr]
+    assert cmp_args[cmp_args.index("--candidate") + 1] == str(Path(out_dir) / "best.pt")
+    assert cmp_args[cmp_args.index("--output-root") + 1] == str(tmp_path / "output")
     # The --backbone value must be a real arch the CLI accepts (choices=
     # SUPPORTED_ARCHS), not the "b6" shorthand from the docs -- argparse
     # rejects an unknown choice with exit code 2 before training starts.
@@ -284,6 +291,76 @@ def test_promote_model_swaps_backs_up_and_writes_sidecar(tmp_path: Path) -> None
     # the prior model was preserved under a timestamped backup
     backups = list(model_path.parent.glob("makemodel_b0.*.pt"))
     assert any(b.read_bytes() == b"OLD-MODEL" for b in backups)
+
+
+def _plate_run_dir(runs: Path, *, compare: dict | None = None) -> Path:
+    d = runs / "uk_make_0924_b6"
+    d.mkdir(parents=True)
+    (d / "history.json").write_text(
+        json.dumps(
+            {
+                "best_epoch": 18,
+                "best_val_make_top1": 0.62,
+                "makes": ["FORD"],
+                "history": [{}],
+                "crop_mode": "plate",
+                "crop_pad_frac": 0.1,
+            }
+        )
+    )
+    (d / "best.pt").write_bytes(b"PLATE-CANDIDATE")
+    if compare is not None:
+        (d / "compare.json").write_text(json.dumps(compare))
+    return d
+
+
+def test_one_click_promote_refuses_incomparable_run(tmp_path: Path) -> None:
+    """ "Promote best model" must not swap in a plate-trained run on the
+    strength of a val make@1 that isn't comparable with production's."""
+    runs = tmp_path / "runs"
+    _plate_run_dir(runs)
+    model_path = tmp_path / "models" / "makemodel_b0.pt"
+    model_path.parent.mkdir(parents=True)
+    model_path.write_bytes(b"OLD-MODEL")
+    ctx = PlaybookContext(output_root=tmp_path / "output", runs_dir=runs, model_path=model_path)
+
+    def reader(p: Path) -> ModelInfo:
+        return ModelInfo(path=str(p), mtime=0.0, source="sidecar", val_make_top1=0.451, size=9)
+
+    res = promote_model(ctx, reader=reader)
+    assert res.ok is False
+    assert "makemodel-compare" in res.message
+    assert model_path.read_bytes() == b"OLD-MODEL"  # untouched
+
+
+def test_promote_records_crop_mode_and_head_to_head(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    model_path = tmp_path / "models" / "makemodel_b0.pt"
+    model_path.parent.mkdir(parents=True)
+    model_path.write_bytes(b"OLD-MODEL")
+    st = model_path.stat()
+    report = {
+        "production": {"size": st.st_size, "mtime": st.st_mtime},
+        "n_cars": 800,
+        "n_tracks": 1900,
+        "delta": {"candidate_minus_production": 0.08, "ci95": [0.05, 0.11]},
+    }
+    _plate_run_dir(runs, compare=report)
+    ctx = PlaybookContext(output_root=tmp_path / "output", runs_dir=runs, model_path=model_path)
+
+    def reader(p: Path) -> ModelInfo:
+        s = p.stat()
+        return ModelInfo(
+            path=str(p), mtime=s.st_mtime, source="checkpoint", val_make_top1=0.6, size=s.st_size
+        )
+
+    res = promote_model(ctx, reader=reader)
+    assert res.ok, res.message
+    assert model_path.read_bytes() == b"PLATE-CANDIDATE"
+    sidecar = json.loads(model_path.with_suffix(".meta.json").read_text())
+    assert sidecar["crop_mode"] == "plate"
+    assert sidecar["crop_pad_frac"] == 0.1
+    assert sidecar["head_to_head"]["delta"]["candidate_minus_production"] == 0.08
 
 
 def test_promote_model_no_runs_is_graceful(tmp_path: Path) -> None:

@@ -276,6 +276,124 @@ def test_promote_unknown_without_runs_or_prod_acc() -> None:
     assert promote_recommendation(_model(None, None), runs).verdict == "unknown"
 
 
+# ---- crop-mode guard + head-to-head (2026-09-24) ----
+
+
+def _prod(*, crop_mode: str | None = None, size: int = 100, mtime: float = 10.0) -> ModelInfo:
+    return ModelInfo(
+        path="m.pt",
+        mtime=mtime,
+        source="sidecar",
+        val_make_top1=0.451,
+        crop_mode=crop_mode,
+        size=size,
+    )
+
+
+def _report(delta: float, ci: list[float], *, size: int = 100, mtime: float = 10.0) -> dict:
+    return {
+        "production": {"size": size, "mtime": mtime},
+        "n_cars": 800,
+        "n_tracks": 1900,
+        "delta": {"candidate_minus_production": delta, "ci95": ci},
+        "candidate_track_acc": 0.5,
+        "production_track_acc": 0.5 - delta,
+    }
+
+
+def _plate_run(*, mtime: float = 20.0, compare: dict | None = None) -> TrainingRunInfo:
+    return TrainingRunInfo(
+        "uk_make_0924_b6", "p", mtime, 18, 0.62, 58, 20, crop_mode="plate", compare=compare
+    )
+
+
+def test_promote_unknown_for_new_cross_mode_run_without_head_to_head() -> None:
+    """A plate-trained run's val make@1 (0.62 here) must NOT be compared with
+    production's hint-crop 0.451 -- the verdict asks for the head-to-head."""
+    rec = promote_recommendation(_prod(), [_plate_run()])
+    assert rec.verdict == "unknown"
+    assert rec.evidence["needs"] == "makemodel-compare"
+    assert "not comparable" in rec.reason or "aren't comparable" in rec.reason
+
+
+def test_promote_recommends_on_clear_head_to_head_win() -> None:
+    rec = promote_recommendation(_prod(), [_plate_run(compare=_report(0.08, [0.05, 0.11]))])
+    assert rec.verdict == "recommend"
+    assert rec.evidence["candidate"]["name"] == "uk_make_0924_b6"
+    assert "+8.0 pp" in rec.reason
+
+
+def test_promote_holds_when_head_to_head_ci_crosses_zero() -> None:
+    rec = promote_recommendation(_prod(), [_plate_run(compare=_report(0.02, [-0.01, 0.05]))])
+    assert rec.verdict == "hold"
+
+
+def test_stale_head_to_head_is_ignored() -> None:
+    """A report made against a model that has since been replaced (different
+    checkpoint size) doesn't count -- back to 'run the head-to-head'."""
+    run = _plate_run(compare=_report(0.08, [0.05, 0.11], size=999))
+    rec = promote_recommendation(_prod(), [run])
+    assert rec.verdict == "unknown"
+
+
+def test_old_cross_mode_runs_dont_block_legacy_comparison() -> None:
+    """After a plate model is promoted, older hint runs (trained before it
+    was installed) are history, not candidates needing a head-to-head."""
+    old_hint = TrainingRunInfo("uk_make_0707_b6", "p", 5.0, 20, 0.451, 45, 20)
+    new_plate = TrainingRunInfo("uk_make_1001_b6", "p", 30.0, 18, 0.60, 58, 20, crop_mode="plate")
+    rec = promote_recommendation(_prod(crop_mode="plate", mtime=10.0), [new_plate, old_hint])
+    assert rec.verdict in ("recommend", "hold")  # the legacy val comparison
+    assert rec.evidence["candidate"]["name"] == "uk_make_1001_b6"
+
+
+def test_promote_candidate_refuses_incomparable_run() -> None:
+    run, why = introspect.promote_candidate(_prod(), [_plate_run()])
+    assert run is None and "makemodel-compare" in why
+    run, _why = introspect.promote_candidate(
+        _prod(), [_plate_run(compare=_report(0.08, [0.05, 0.11]))]
+    )
+    assert run is not None and run.name == "uk_make_0924_b6"
+
+
+def test_training_runs_reads_crop_mode_and_compare_report(tmp_path: Path) -> None:
+    d = tmp_path / "runs" / "uk_make_0924_b6"
+    d.mkdir(parents=True)
+    (d / "history.json").write_text(
+        json.dumps(
+            {
+                "best_epoch": 3,
+                "best_val_make_top1": 0.6,
+                "makes": ["FORD"],
+                "history": [{}],
+                "crop_mode": "plate",
+                "crop_pad_frac": 0.1,
+            }
+        )
+    )
+    [run] = introspect.training_runs(tmp_path / "runs")
+    assert (run.crop_mode, run.crop_pad_frac, run.compare) == ("plate", 0.1, None)
+
+    # A report landing later is picked up (the cache keys on it too).
+    report = _report(0.05, [0.02, 0.08])
+    report["rows"] = [{"name": "production_clean_crops", "track_acc": 0.47}]
+    time.sleep(0.01)
+    (d / "compare.json").write_text(json.dumps(report))
+    [run] = introspect.training_runs(tmp_path / "runs")
+    assert run.compare is not None
+    assert run.compare["delta"]["candidate_minus_production"] == 0.05
+    assert run.compare["production_clean_track_acc"] == 0.47
+
+
+def test_legacy_history_defaults_to_hint(tmp_path: Path) -> None:
+    d = tmp_path / "runs" / "uk_make_0707_b6"
+    d.mkdir(parents=True)
+    (d / "history.json").write_text(
+        json.dumps({"best_epoch": 20, "best_val_make_top1": 0.451, "makes": [], "history": []})
+    )
+    [run] = introspect.training_runs(tmp_path / "runs")
+    assert run.crop_mode == "hint"
+
+
 def test_local_snapshot_composes(tmp_path: Path) -> None:
     out = tmp_path / "output"
     _make_session(out)

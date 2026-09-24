@@ -303,8 +303,21 @@ def build_train_steps(
     # epoch completes. num_workers=0 (synchronous, single-process loading) is
     # reliable; the per-epoch cost is acceptable since crops cache in RAM.
     num_workers: str = "0",
+    output_root: str | None = None,
 ) -> list[Step]:
-    """Rebuild the UK crop corpus, then train the make classifier on it."""
+    """Rebuild the UK crop corpus, train the make classifier on it, then run
+    the head-to-head against production (``makemodel-compare``) -- the
+    candidate's val make@1 isn't comparable with production's once the crop
+    mode differs, so the promote recommendation needs the report."""
+    compare_args = [
+        corpus_dir,
+        "--candidate",
+        str(Path(out_dir) / "best.pt"),
+        "--runs-dir",
+        str(Path(out_dir).parent),
+    ]
+    if output_root is not None:
+        compare_args += ["--output-root", output_root]
     return [
         Step(
             "Build UK crop corpus",
@@ -330,6 +343,10 @@ def build_train_steps(
                     num_workers,
                 ],
             ),
+        ),
+        Step(
+            "Head-to-head vs production",
+            job=JobSpec("makemodel-compare", compare_args),
         ),
     ]
 
@@ -417,11 +434,16 @@ def promote_model(
     runs = introspect.training_runs(ctx.runs_dir)
     if run_name:
         run = next((r for r in runs if r.name == run_name), None)
+        if run is None:
+            return StepResult(False, f"no training run named {run_name}")
     else:
-        scored = [r for r in runs if r.best_val_make_top1 is not None]
-        run = max(scored, key=lambda r: r.best_val_make_top1 or 0.0, default=None)
-    if run is None:
-        return StepResult(False, "no scored training run available to promote")
+        # One-click "promote best": only what the recommendation vouches for
+        # (head-to-head win, or a same-crop val gain) -- never a model whose
+        # score isn't comparable with production's. A named run stays the
+        # operator's explicit, confirm-gated call.
+        run, why = introspect.promote_candidate(reader(ctx.model_path), runs)
+        if run is None:
+            return StepResult(False, f"nothing to promote: {why}")
     cand = Path(run.path) / "best.pt"
     if not cand.is_file():
         return StepResult(False, f"{run.name} has no best.pt")
@@ -447,6 +469,12 @@ def promote_model(
         "val_make_top1": meta.val_make_top1,
         "promoted_at": when.strftime("%Y-%m-%d"),
         "source_run": run.name,
+        # How its training crops were made: inference follows the checkpoint
+        # (vehicle_locator.resolve_crop_settings); the panel uses this to tell
+        # comparable runs from incomparable ones.
+        "crop_mode": run.crop_mode,
+        "crop_pad_frac": run.crop_pad_frac,
+        "head_to_head": run.compare,
         "trained_corpus": (
             {
                 "name": corpus.name,
@@ -570,7 +598,9 @@ def build_playbook(
         mmdd = datetime.now().strftime("%m%d")
         corpus_dir = str(ctx.runs_dir / f"uk_crops_{mmdd}_576")
         out_dir = str(ctx.runs_dir / f"uk_make_{mmdd}_b6")
-        return f"Build + train -> {out_dir}", build_train_steps(corpus_dir, out_dir)
+        return f"Build + train -> {out_dir}", build_train_steps(
+            corpus_dir, out_dir, output_root=str(ctx.output_root)
+        )
     if name == "roll":
         if not old_session:
             raise ValueError("roll requires the current live session")

@@ -79,6 +79,7 @@ __all__ = [
     "body_type_for",
     "colour_class_for",
     "extract_crops",
+    "split_val_cars",
     "normalize_make",
     "train_uk_make",
 ]
@@ -322,6 +323,35 @@ def extract_crops(
     }
 
 
+def split_val_cars(
+    samples: list[dict[str, Any]],
+    *,
+    label_field: str = "make",
+    val_frac: float = 0.2,
+    seed: int = 0,
+) -> set[str]:
+    """The by-car validation split: deterministic, stratified by the target
+    label, so every class with >= 2 cars contributes at least one val car.
+    Shared by :class:`UKMakeDataset` and ``makemodel-compare`` so the
+    head-to-head scores exactly the cars the trainer held out."""
+    car_label: dict[str, str] = {}
+    for s in samples:
+        if s.get(label_field):
+            car_label.setdefault(s["car"], s[label_field])
+    cars_by_label: dict[str, list[str]] = defaultdict(list)
+    for car, lab in car_label.items():
+        cars_by_label[lab].append(car)
+
+    val_cars: set[str] = set()
+    for lab, cars in cars_by_label.items():
+        cars = sorted(cars)
+        # str seed -> stable across runs (not salted like hash()).
+        random.Random(f"{seed}:{lab}").shuffle(cars)
+        n_val = max(1, round(val_frac * len(cars))) if len(cars) > 1 else 0
+        val_cars.update(cars[:n_val])
+    return val_cars
+
+
 @dataclasses.dataclass(slots=True)
 class _Sample:
     path: str
@@ -378,20 +408,7 @@ class UKMakeDataset(Dataset):
         self._transform = transform
 
         labelled = [s for s in manifest["samples"] if s.get(label_field)]
-        car_label: dict[str, str] = {}
-        for s in labelled:
-            car_label.setdefault(s["car"], s[label_field])
-        cars_by_label: dict[str, list[str]] = defaultdict(list)
-        for car, lab in car_label.items():
-            cars_by_label[lab].append(car)
-
-        val_cars: set[str] = set()
-        for lab, cars in cars_by_label.items():
-            cars = sorted(cars)
-            # str seed -> stable across runs (not salted like hash()).
-            random.Random(f"{seed}:{lab}").shuffle(cars)
-            n_val = max(1, round(val_frac * len(cars))) if len(cars) > 1 else 0
-            val_cars.update(cars[:n_val])
+        val_cars = split_val_cars(labelled, label_field=label_field, val_frac=val_frac, seed=seed)
 
         want_val = split == "val"
         self._samples = [
@@ -431,9 +448,11 @@ def train_uk_make(
     Reuses the (head-agnostic) train/eval loop with one head +
     inverse-frequency class weighting, checkpointing the best epoch by val
     top-1 to ``<out>/best.pt``. All ``target``-keyed strings interpolate,
-    so with ``target="make"`` the checkpoint metadata, history keys and
-    stdout format are byte-identical to the pre-body-type trainer (the
-    control panel + inference readers are unaffected).
+    so with ``target="make"`` the per-epoch history keys and stdout rows
+    match the pre-body-type trainer. Since 2026-09-24 the preamble line
+    ends ``crop=<mode>`` and ``history.json`` records the corpus + its crop
+    mode, which the control panel uses to tell comparable runs from
+    incomparable ones (both parsers accept the older format).
     """
     from torch.utils.data import DataLoader
 
@@ -501,7 +520,8 @@ def train_uk_make(
 
     print(
         f"[makemodel-uk] target={target} device={device.type} amp={amp} "
-        f"classes={len(class_names)} train_crops={len(train_ds)} val_crops={len(val_ds)}",
+        f"classes={len(class_names)} train_crops={len(train_ds)} val_crops={len(val_ds)}"
+        f" crop={crop_meta.get('crop_mode', 'hint')}",
         flush=True,
     )
 
@@ -563,6 +583,13 @@ def train_uk_make(
         f"best_val_{target}_top1": round(best, 4),
         f"{target}s" if target == "make" else f"{target}_names": list(class_names),
         "history": history,
+        # The corpus + its crop mode let the panel tell whether this run's
+        # val score is comparable with production's (and find the corpus for
+        # makemodel-compare). Legacy corpora record no crop mode -> "hint".
+        "corpus": str(dataset_dir),
+        "crop_mode": crop_meta.get("crop_mode", "hint"),
+        "crop_pad_frac": crop_meta.get("crop_pad_frac"),
+        "seed": config.seed,
     }
     (out_path / "history.json").write_text(json.dumps(summary, indent=2))
     print(
