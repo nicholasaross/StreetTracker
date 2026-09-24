@@ -252,6 +252,17 @@ def test_build_parser_sessions_and_totals() -> None:
     assert p.phase == "done"
 
 
+def test_build_parser_cropping_progress() -> None:
+    p = _feed(
+        BuildParser(),
+        "[makemodel-build-uk] 44 session(s) -> runs/uk_crops_0924_576 (crop mode plate)",
+        "[makemodel-build-uk] 1500/52000 cropped",
+    )
+    assert p.metrics["sessions"] == 44
+    assert (p.current, p.total) == (1500, 52000)
+    assert p.phase == "cropping"
+
+
 # ----------------------------------------------------------------------
 # Generic fallback + finish()
 # ----------------------------------------------------------------------

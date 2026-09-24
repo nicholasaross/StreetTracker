@@ -37,14 +37,12 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from streettracker.analysis.alpr.base import atomic_write_text
+from streettracker.analysis.alpr.fullframe import load_road_polygon
 from streettracker.analysis.makemodel.cropper import VehicleCropper
 from streettracker.analysis.makemodel.dataset import IMAGENET_MEAN, IMAGENET_STD
 from streettracker.analysis.makemodel.model import load_checkpoint
-from streettracker.analysis.snap_assets import (
-    discover_vehicle_snaps,
-    load_bbox_index,
-    resolve_bbox_hint,
-)
+from streettracker.analysis.snap_assets import discover_vehicle_snaps
+from streettracker.analysis.vehicle_locator import SnapVehicleLocator, resolve_crop_settings
 
 if TYPE_CHECKING:
     import numpy as np
@@ -71,8 +69,9 @@ class BodyTypeClassifier:
         checkpoint: str | Path,
         *,
         device: str = "cpu",
-        pad_frac: float = DEFAULT_PAD_FRAC,
+        pad_frac: float | None = None,
         input_size: int | None = None,
+        crop_mode: str = "auto",
     ) -> None:
         self.device = torch.device(device)
         self.model, meta = load_checkpoint(checkpoint, map_location=self.device)
@@ -85,7 +84,12 @@ class BodyTypeClassifier:
         if not self.body_types:
             raise ValueError("body-type checkpoint is missing 'body_type_names' metadata")
         self.input_size: int = input_size or int(meta.get("input_size") or 224)
-        self._cropper = VehicleCropper(pad_frac=pad_frac, output_size=self.input_size)
+        # Crop mode + pad follow the checkpoint's training corpus when it
+        # recorded them; legacy checkpoints keep hint crops at DEFAULT_PAD_FRAC.
+        self.crop_mode, self.pad_frac = resolve_crop_settings(
+            meta, crop_mode, pad_frac, self.DEFAULT_PAD_FRAC
+        )
+        self._cropper = VehicleCropper(pad_frac=self.pad_frac, output_size=self.input_size)
         self._mean = _MEAN.to(self.device)
         self._std = _STD.to(self.device)
 
@@ -163,11 +167,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--pad-frac",
         type=float,
-        default=BodyTypeClassifier.DEFAULT_PAD_FRAC,
-        help="crop context pad; MUST match the training corpus (0.1) — a looser "
+        default=None,
+        help="crop context pad (default: the checkpoint's training pad, else 0.1); "
+        "MUST match the training corpus — a looser "
         "pad skews the shape classifier toward van (see class docstring)",
     )
     parser.add_argument("--input-size", type=int, default=None)
+    parser.add_argument(
+        "--crop-mode",
+        choices=("auto", "hint", "fullframe"),
+        default="auto",
+        help="where to crop the car: auto (default) = what the checkpoint was trained "
+        "on (fullframe for plate-anchored corpora, legacy hint otherwise); fullframe = "
+        "plate-anchored / nearest on-road vehicle; hint = stale fire-time bbox",
+    )
+    parser.add_argument(
+        "--road-polygon",
+        type=Path,
+        default=Path(".claude/triggers_proposal.json"),
+        help="road outline (vertices_frac) for the fullframe on-road filter",
+    )
     parser.add_argument("--limit", type=int, default=0, help="first N snaps only (0=all)")
     parser.add_argument("--cpu", action="store_true")
     args = parser.parse_args(argv)
@@ -187,7 +206,11 @@ def main(argv: list[str] | None = None) -> int:
 
     device = "cuda" if (torch.cuda.is_available() and not args.cpu) else "cpu"
     clf = BodyTypeClassifier(
-        args.model, device=device, pad_frac=args.pad_frac, input_size=args.input_size
+        args.model,
+        device=device,
+        pad_frac=args.pad_frac,
+        input_size=args.input_size,
+        crop_mode=args.crop_mode,
     )
 
     snaps = discover_vehicle_snaps(args.session_dir)
@@ -196,26 +219,36 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.limit > 0:
         snaps = snaps[: args.limit]
-    bbox_index, sub_size = load_bbox_index(args.session_dir)
+    locator = SnapVehicleLocator(
+        args.session_dir,
+        clf.crop_mode,
+        road_polygon_frac=(
+            load_road_polygon(args.road_polygon, log_prefix="[bodytype]")
+            if clf.crop_mode == "fullframe"
+            else None
+        ),
+    )
     print(
-        f"[bodytype] {len(snaps)} snaps; {len(bbox_index)} per-snap bboxes; device={device}; "
-        f"{len(clf.body_types)} classes; input={clf.input_size}px"
+        f"[bodytype] {len(snaps)} snaps; {locator.n_bboxes} per-snap bboxes; device={device}; "
+        f"{len(clf.body_types)} classes; input={clf.input_size}px; "
+        f"crop={clf.crop_mode} pad={clf.pad_frac}"
     )
 
     per_image: list[dict[str, Any]] = []
     n_no_hint = 0
     for i, (path, tid, snap_index, _cls) in enumerate(snaps, 1):
-        hint = resolve_bbox_hint(path, tid, snap_index, bbox_index, sub_size)
-        if hint is None:
-            n_no_hint += 1
         image = cv2.imread(str(path))
-        pred = clf.classify(image, hint) if image is not None else None
+        box, source = locator.locate(path, tid, snap_index, image)
+        if box is None:
+            n_no_hint += 1
+        pred = clf.classify(image, box) if image is not None else None
         per_image.append(
             {
                 "track_id": tid,
                 "snap_index": snap_index,
                 "image": path.name,
-                "has_bbox": hint is not None,
+                "has_bbox": box is not None,
+                "crop_source": source,
                 "body_type": pred[0] if pred else None,
                 "conf": round(pred[1], 4) if pred else None,
             }
@@ -223,6 +256,7 @@ def main(argv: list[str] | None = None) -> int:
         if i % 200 == 0 or i == len(snaps):
             print(f"  {i}/{len(snaps)} classified")
 
+    locator.close()
     by_track = aggregate_by_track(per_image, args.conf_threshold)
 
     label = args.session_dir.name

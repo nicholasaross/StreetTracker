@@ -428,29 +428,11 @@ def _load_ghost_mask(
 
 
 def _load_road_polygon(path: Path | None) -> list[tuple[float, float]] | None:
-    """Fractional road-outline vertices for the fullframe crop path.
+    """Fractional road-outline vertices for the fullframe crop path
+    (see :func:`streettracker.analysis.alpr.fullframe.load_road_polygon`)."""
+    from streettracker.analysis.alpr.fullframe import load_road_polygon
 
-    Reads the ``vertices_frac`` field of a triggers_proposal-schema
-    JSON. Missing/unreadable file returns ``None`` (no on-road filter)
-    with a notice rather than an error -- the fullframe path still
-    works, it just can't reject driveway/forecourt vehicles.
-    """
-    if path is None or not path.exists():
-        if path is not None:
-            print(
-                f"[alpr] --road-polygon {path}: not found; fullframe crop "
-                f"runs without the on-road filter",
-                file=sys.stderr,
-            )
-        return None
-    try:
-        spec = json.loads(path.read_text())
-        verts = spec.get("vertices_frac") or []
-        out = [(float(x), float(y)) for x, y in verts]
-        return out if len(out) >= 3 else None
-    except (OSError, json.JSONDecodeError, TypeError, ValueError) as e:
-        print(f"[alpr] --road-polygon {path}: parse error ({e}), ignoring", file=sys.stderr)
-        return None
+    return load_road_polygon(path, log_prefix="[alpr]")
 
 
 def _build_pipelines(args: argparse.Namespace) -> list[PipelineRunner]:

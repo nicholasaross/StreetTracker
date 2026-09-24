@@ -368,14 +368,15 @@ class DvsaLabelParser(ProgressParser):
 # ----------------------------------------------------------------------
 
 _BUILD_SESSIONS_RE = re.compile(r"\[makemodel-build-uk\]\s+(\d+)\s+session")
+_BUILD_CROPPED_RE = re.compile(r"\[makemodel-build-uk\]\s+(\d+)/(\d+)\s+cropped")
 _BUILD_DONE_RE = re.compile(r"(\d+)\s+makes,\s+(\d+)\s+cars,\s+(\d+)\s+crops")
 
 
 class BuildParser(ProgressParser):
-    """``makemodel-build-uk``: session count + final makes/cars/crops totals.
-
-    Extraction is I/O-bound and largely silent mid-run, so progress is coarse;
-    the final line carries the corpus size the retrain decision turns on."""
+    """``makemodel-build-uk``: session count, ``N/total cropped`` progress
+    (every 500 snaps -- the plate-anchored build runs full-frame YOLO per
+    snap, so it's long enough to need a bar) + final makes/cars/crops totals,
+    the corpus size the retrain decision turns on."""
 
     kind = "makemodel-build-uk"
 
@@ -385,6 +386,12 @@ class BuildParser(ProgressParser):
         if m:
             self.progress.metrics["sessions"] = int(m.group(1))
             self.progress.phase = "extracting"
+            return
+        m = _BUILD_CROPPED_RE.search(text)
+        if m:
+            self.progress.current = int(m.group(1))
+            self.progress.total = int(m.group(2))
+            self.progress.phase = "cropping"
             return
         m = _BUILD_DONE_RE.search(text)
         if m:

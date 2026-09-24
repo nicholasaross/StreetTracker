@@ -195,3 +195,67 @@ def test_cli_main_make_only_writes_null_model(tmp_path: Path) -> None:
     t = by_track["tracks"][0]
     assert t["track_id"] == 1
     assert t["model"] is None  # make-only: model stays null whatever the confidence
+
+
+# ----------------------------------------------------------------------
+# Crop mode follows the checkpoint's training corpus (2026-09-24).
+
+
+def _plate_trained_checkpoint(tmp_path: Path) -> Path:
+    net = MakeModelNet({"make": len(_UK_MAKES)}, pretrained=False)
+    ckpt = tmp_path / "uk_plate.pt"
+    meta = {
+        "kind": "uk_make",
+        "input_size": 224,
+        "make_names": list(_UK_MAKES),
+        "crop_mode": "plate",
+        "crop_pad_frac": 0.1,
+    }
+    save_checkpoint(net, ckpt, metadata=meta)
+    return ckpt
+
+
+def test_legacy_checkpoint_keeps_hint_crops(tmp_path: Path) -> None:
+    clf = MakeModelClassifier(_uk_checkpoint(tmp_path), device="cpu")
+    assert (clf.crop_mode, clf.pad_frac) == ("hint", 0.25)
+    rc = main([str(_session(tmp_path)), "--model", str(_uk_checkpoint(tmp_path)), "--cpu"])
+    assert rc == 0
+    per_image = json.loads((tmp_path / "session_x" / "session_x_makemodel.json").read_text())
+    assert per_image[0]["crop_source"] == "hint"
+
+
+def test_plate_trained_checkpoint_infers_fullframe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import streettracker.analysis.vehicle_locator as vl
+
+    monkeypatch.setattr(
+        vl,
+        "yolo_vehicle_detector",
+        lambda *a, **k: lambda image: [(200.0, 100.0, 320.0, 200.0, 0.9)],
+    )
+    ckpt = _plate_trained_checkpoint(tmp_path)
+    clf = MakeModelClassifier(ckpt, device="cpu")
+    assert (clf.crop_mode, clf.pad_frac) == ("fullframe", 0.1)
+
+    sess = _session(tmp_path)
+    read = {
+        "track_id": 1,
+        "snap_index": 1,
+        "det_bbox": [250, 180, 280, 190],
+        "ocr_text": "AB12CDE",
+        "ocr_conf": 0.97,
+        "canonical_uk_shape": True,
+        "static_suspect": False,
+    }
+    sess.joinpath("session_x_alpr.json").write_text(json.dumps([read]))
+    no_poly = str(tmp_path / "no_polygon.json")
+    assert main([str(sess), "--model", str(ckpt), "--cpu", "--road-polygon", no_poly]) == 0
+    per_image = json.loads((sess / "session_x_makemodel.json").read_text())
+    assert per_image[0]["crop_source"] == "plate"
+    assert per_image[0]["has_bbox"] is True
+    assert (sess / "session_x_vehicle_boxes.json").exists()
+    # --crop-mode hint overrides the checkpoint.
+    assert main([str(sess), "--model", str(ckpt), "--cpu", "--crop-mode", "hint"]) == 0
+    per_image = json.loads((sess / "session_x_makemodel.json").read_text())
+    assert per_image[0]["crop_source"] == "hint"

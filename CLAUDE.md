@@ -323,6 +323,12 @@ Session files:
   **enrich** playbook runs `colour` after `bodytype`; and the sessions
   table shows a **Colour** enrichment badge (`has_colour` =
   `_colour_by_track.json` present). All existing sessions backfilled.
+- `{session}_vehicle_boxes.json` — cache of full-frame YOLOv8m@1920
+  vehicle boxes (car/moto/bus/truck) per 4K snap, written by
+  `makemodel-build-uk --crop-mode plate` and the `makemodel`/`bodytype`/
+  `colour` commands in fullframe crop mode, so one YOLO pass per session
+  is shared by all of them. Disposable — rebuilt if deleted or if the
+  detector params change (see `analysis/vehicle_locator.py`).
 - `{session}_people.json` — per-person-track activity enrichment
   (after `people`): kind walker/jogger/cyclist + `dog_walker` flag via
   temporal+direction pairing with dog/bicycle tracks. Jogger split
@@ -383,7 +389,7 @@ uv run streettracker bodytype output/<session>           # CNN body-type inferen
 uv run streettracker colour output/<session>             # CNN vehicle-colour inference -> _colour_by_track.json (pad_frac 0.1); beats HSV 42%->87% grouped vs DVSA
 # Mine the Orin -> grow the UK make-classifier corpus (run pull from PowerShell):
 uv run streettracker pull --session <S> --only-main      # pull a session's 4K snaps from the Orin
-uv run streettracker makemodel-build-uk runs/uk_crops --output-size 512  # DVSA-labelled UK make crops @512 (auto-discovers sessions)
+uv run streettracker makemodel-build-uk runs/uk_crops --output-size 512  # DVSA-labelled UK make crops @512 (auto-discovers sessions); --crop-mode plate (default) = plate-anchored crops, needs alpr-run output
 uv run streettracker makemodel-train-uk runs/uk_crops --input-size 512   # train the UK make classifier (B0@512; +--backbone b4/b5). honest make@1 ~28% on 1229 cars (old "37.6%" was small-val optimism)
 ```
 
@@ -691,6 +697,26 @@ artifact of the hint window. **Honest reality: per-snapped-car canonical ~48 %
   longer needs a 2nd camera — see Next-steps item 5.
 
 ### Make/model classification
+
+**⮕ CROP CONTAMINATION (2026-09-24 — read before trusting any make/colour/
+body-type number below):** the corpus builder AND all three CNN inference
+commands cropped each 4K snap around the stale FIRE-TIME bbox
+(`resolve_bbox_hint`); the snap lands ~0.7 s later, so the car has moved
+on. Audit of 799 plate-anchored snaps of `uk_crops_0730_576`
+(`.claude/makemodel_crop_audit.py`): only **7.6 %** of training crops
+held ≥80 % of the labelled car, **66.5 %** held <30 % (empty road / a
+parked car); the hint sat a median 701 px (0.85 car-widths) off the car.
+Same root cause as the R→L "geometry cap" (fixed for ALPR only, 07-28).
+Every make@1 / colour / body-type figure to date was trained AND
+validated on these crops. **Fix:** `analysis/vehicle_locator.py` —
+`makemodel-build-uk --crop-mode plate` (default) crops the vehicle box
+holding the car's own plate read on that snap (65 % of snaps, ~all
+cars); inference `--crop-mode auto` follows the checkpoint (the trainer
+now records `crop_mode` + `crop_pad_frac`): plate-trained models infer
+`fullframe` (plate anchor, else nearest on-road vehicle to the hint —
+~7 % estimated wrong-pick on snaps without a plate read,
+`.claude/fullframe_crop_spotcheck.py`); legacy checkpoints keep `hint`
+unchanged. Compare old vs new models only on one clean-cropped val set.
 
 The dataset-level enrichment pivot. Two prongs:
 

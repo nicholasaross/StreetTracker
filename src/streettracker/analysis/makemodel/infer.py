@@ -54,6 +54,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from streettracker.analysis.alpr.base import atomic_write_text
+from streettracker.analysis.alpr.fullframe import load_road_polygon
 from streettracker.analysis.makemodel.cropper import VehicleCropper
 from streettracker.analysis.makemodel.dataset import (
     IMAGENET_MEAN,
@@ -61,11 +62,8 @@ from streettracker.analysis.makemodel.dataset import (
     SurveillanceLabels,
 )
 from streettracker.analysis.makemodel.model import load_checkpoint
-from streettracker.analysis.snap_assets import (
-    discover_vehicle_snaps,
-    load_bbox_index,
-    resolve_bbox_hint,
-)
+from streettracker.analysis.snap_assets import discover_vehicle_snaps
+from streettracker.analysis.vehicle_locator import SnapVehicleLocator, resolve_crop_settings
 
 if TYPE_CHECKING:
     import numpy as np
@@ -73,6 +71,10 @@ if TYPE_CHECKING:
 # Conventional bundled-checkpoint location (gitignored via *.pt), mirroring
 # alpr's DEFAULT_BESPOKE_MODEL. Copy a trained best.pt here, or pass --model.
 DEFAULT_MODEL = Path(__file__).resolve().parent / "models" / "makemodel_b0.pt"
+
+# Inference pad for checkpoints that don't record their training pad (every
+# model before 2026-09). Kept as-is so their predictions don't shift.
+LEGACY_PAD_FRAC = 0.25
 
 _MEAN = torch.tensor(IMAGENET_MEAN).view(3, 1, 1)
 _STD = torch.tensor(IMAGENET_STD).view(3, 1, 1)
@@ -108,8 +110,9 @@ class MakeModelClassifier:
         *,
         device: str = "cpu",
         top_k: int = 5,
-        pad_frac: float = 0.25,
+        pad_frac: float | None = None,
         input_size: int | None = None,
+        crop_mode: str = "auto",
     ) -> None:
         self.device = torch.device(device)
         self.model, meta = load_checkpoint(checkpoint, map_location=self.device)
@@ -130,7 +133,12 @@ class MakeModelClassifier:
         # checkpoint records "input_size"; fall back to the explicit arg, then
         # the 224 default (CompCars / older checkpoints).
         self.input_size: int = input_size or int(meta.get("input_size") or 224)
-        self._cropper = VehicleCropper(pad_frac=pad_frac, output_size=self.input_size)
+        # Crop mode + pad follow the checkpoint's training corpus when it
+        # recorded them; legacy checkpoints keep hint crops at pad 0.25.
+        self.crop_mode, self.pad_frac = resolve_crop_settings(
+            meta, crop_mode, pad_frac, LEGACY_PAD_FRAC
+        )
+        self._cropper = VehicleCropper(pad_frac=self.pad_frac, output_size=self.input_size)
         self._mean = _MEAN.to(self.device)
         self._std = _STD.to(self.device)
 
@@ -234,7 +242,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL, help="checkpoint .pt")
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--conf-threshold", type=float, default=0.4)
-    parser.add_argument("--pad-frac", type=float, default=0.25)
+    parser.add_argument(
+        "--pad-frac",
+        type=float,
+        default=None,
+        help="crop context pad (default: the checkpoint's training pad, else 0.25)",
+    )
+    parser.add_argument(
+        "--crop-mode",
+        choices=("auto", "hint", "fullframe"),
+        default="auto",
+        help="where to crop the car: auto (default) = what the checkpoint was trained "
+        "on (fullframe for plate-anchored corpora, legacy hint otherwise); fullframe = "
+        "plate-anchored / nearest on-road vehicle; hint = stale fire-time bbox",
+    )
+    parser.add_argument(
+        "--road-polygon",
+        type=Path,
+        default=Path(".claude/triggers_proposal.json"),
+        help="road outline (vertices_frac) for the fullframe on-road filter",
+    )
     parser.add_argument(
         "--input-size",
         type=int,
@@ -266,6 +293,7 @@ def main(argv: list[str] | None = None) -> int:
         top_k=args.top_k,
         pad_frac=args.pad_frac,
         input_size=args.input_size,
+        crop_mode=args.crop_mode,
     )
 
     snaps = discover_vehicle_snaps(args.session_dir)
@@ -274,37 +302,48 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.limit > 0:
         snaps = snaps[: args.limit]
-    bbox_index, sub_size = load_bbox_index(args.session_dir)
+    locator = SnapVehicleLocator(
+        args.session_dir,
+        clf.crop_mode,
+        road_polygon_frac=(
+            load_road_polygon(args.road_polygon, log_prefix="[makemodel]")
+            if clf.crop_mode == "fullframe"
+            else None
+        ),
+    )
     head_desc = (
         f"{len(clf.make_names)} makes (make-only)"
         if clf.make_only
         else f"{clf.labels.n_makes} makes / {clf.labels.n_models} models"  # type: ignore[union-attr]
     )
     print(
-        f"[makemodel] {len(snaps)} snaps; {len(bbox_index)} per-snap bboxes; "
-        f"device={device}; {head_desc}; input={clf.input_size}px"
+        f"[makemodel] {len(snaps)} snaps; {locator.n_bboxes} per-snap bboxes; "
+        f"device={device}; {head_desc}; input={clf.input_size}px; "
+        f"crop={clf.crop_mode} pad={clf.pad_frac}"
     )
 
     per_image: list[dict[str, Any]] = []
     n_no_hint = 0
     for i, (path, tid, snap_index, _cls) in enumerate(snaps, 1):
-        hint = resolve_bbox_hint(path, tid, snap_index, bbox_index, sub_size)
-        if hint is None:
-            n_no_hint += 1
         image = cv2.imread(str(path))
-        cands = clf.classify(image, hint) if image is not None else []
+        box, source = locator.locate(path, tid, snap_index, image)
+        if box is None:
+            n_no_hint += 1
+        cands = clf.classify(image, box) if image is not None else []
         per_image.append(
             {
                 "track_id": tid,
                 "snap_index": snap_index,
                 "image": path.name,
-                "has_bbox": hint is not None,
+                "has_bbox": box is not None,
+                "crop_source": source,
                 "top_k": [dataclasses.asdict(c) for c in cands],
             }
         )
         if i % 100 == 0 or i == len(snaps):
             print(f"  {i}/{len(snaps)} classified")
 
+    locator.close()
     by_track = aggregate_by_track(per_image, args.conf_threshold)
 
     label = args.session_dir.name
@@ -318,7 +357,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[makemodel] wrote {track_path}")
     print(
         f"[makemodel] {len(by_track)} tracks classified, {n_conf} above conf "
-        f"{args.conf_threshold} ({n_no_hint} snaps had no bbox hint)"
+        f"{args.conf_threshold} ({n_no_hint} snaps had no vehicle box; crop sources "
+        f"{dict(locator.source_counts)})"
     )
     return 0
 

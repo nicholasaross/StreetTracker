@@ -38,3 +38,22 @@ def test_rows_without_bbox_are_dropped() -> None:
     rows = [_row(1, None, 0.0), _row(2, "hatchback", 0.8)]
     tracks = aggregate_by_track(rows, conf_threshold=0.5)
     assert [t["track_id"] for t in tracks] == [2]
+
+
+@pytest.mark.parametrize(
+    ("extra_meta", "expected"),
+    [
+        ({}, ("hint", 0.1)),  # legacy checkpoint: unchanged crops
+        ({"crop_mode": "plate", "crop_pad_frac": 0.1}, ("fullframe", 0.1)),
+    ],
+)
+def test_crop_settings_follow_checkpoint(tmp_path, extra_meta, expected) -> None:  # noqa: ANN001
+    from streettracker.analysis.makemodel.bodytype_infer import BodyTypeClassifier
+    from streettracker.analysis.makemodel.model import MakeModelNet, save_checkpoint
+
+    names = ["hatchback", "suv"]
+    net = MakeModelNet({"body_type": len(names)}, pretrained=False)
+    ckpt = tmp_path / "m.pt"
+    save_checkpoint(net, ckpt, metadata={"body_type_names": names, "input_size": 224, **extra_meta})
+    clf = BodyTypeClassifier(ckpt, device="cpu")
+    assert (clf.crop_mode, clf.pad_frac) == expected
