@@ -87,11 +87,18 @@
     </section>`;
 
     // Live curve. The production make@1 reference/delta only makes sense for
-    // make runs — a body_type@1 vs production-make comparison is meaningless.
+    // make runs — a body_type@1 vs production-make comparison is meaningless —
+    // trained on the SAME crop family: production's number from stale-hint
+    // crops isn't comparable with a plate-anchored run's (different crops, val
+    // cars and makes; the head-to-head step settles it after training).
+    const normMode = x => (x === "plate" || x === "fullframe") ? "plate" : "hint";
+    const prodMode = normMode(model && model.crop_mode);
+    const runMode = normMode(m.crop_mode);
+    const comparable = runMode === prodMode;
     if (epochs.length){
       const last = epochs[epochs.length - 1];
       const best = (m.best_make1 != null) ? (m.best_make1 * 100).toFixed(1) + "%" : "—";
-      const prodRef = isMake ? prodAcc : null;
+      const prodRef = (isMake && comparable) ? prodAcc : null;
       const delta = (m.best_make1 != null && prodRef != null) ? (m.best_make1 - prodRef) : null;
       h += `<section class="panel" style="margin-top:16px">
         <h2>Loss &amp; ${esc(metric)} per epoch</h2>
@@ -103,6 +110,10 @@
           ${prodRef != null ? ` · production ${(prodRef * 100).toFixed(1)}%` : ""}
           ${delta != null ? ` · <b style="color:${delta >= 0 ? "var(--ok)" : "var(--bad)"}">${delta >= 0 ? "+" : ""}${(delta * 100).toFixed(1)} pp</b>` : ""}
         </div>
+        ${(isMake && !comparable) ? `<div class="muted" style="margin-top:6px;font-size:12px">
+          This run trains on <b>${esc(runMode)}</b>-anchored crops; production was scored on
+          <b>${esc(prodMode)}</b> crops, so its make@1 isn't a valid reference here. The
+          head-to-head step compares both on the same held-out cars after training.</div>` : ""}
       </section>`;
 
       const rows = epochs.slice().reverse().map(e =>
@@ -139,10 +150,19 @@
     } else if (job.status === "succeeded" && m.checkpoint){
       const parts = String(m.checkpoint).replace(/\\/g, "/").split("/").filter(Boolean);
       const run = parts.length >= 2 ? parts[parts.length - 2] : null;
-      const beats = (m.best_make1 != null && prodAcc != null) ? m.best_make1 > prodAcc : null;
-      const verdict = beats === true
-        ? `beats production by ${((m.best_make1 - prodAcc) * 100).toFixed(1)} pp`
-        : beats === false ? `does not beat production (${(prodAcc * 100).toFixed(1)}%)` : "compare against production";
+      // Prefer the server's promote recommendation when it's about this run
+      // (it carries the head-to-head); fall back to the val comparison only
+      // when the crop modes match.
+      const rec = (local.recommendations || {}).promote || null;
+      const recRun = rec && rec.evidence && rec.evidence.candidate ? rec.evidence.candidate.name : null;
+      const beats = (comparable && m.best_make1 != null && prodAcc != null) ? m.best_make1 > prodAcc : null;
+      const verdict = (rec && recRun === run && rec.evidence.head_to_head)
+        ? rec.reason.replace(/\.$/, "")
+        : !comparable
+          ? `trained on ${runMode}-anchored crops vs production's ${prodMode} crops — make@1 not comparable; see the head-to-head step before promoting`
+          : beats === true
+            ? `beats production by ${((m.best_make1 - prodAcc) * 100).toFixed(1)} pp`
+            : beats === false ? `does not beat production (${(prodAcc * 100).toFixed(1)}%)` : "compare against production";
       h += `<section class="panel" style="margin-top:16px"><h2>Promote</h2>
         <div class="muted">${esc(run || "this run")} — make@1 ${m.best_make1 != null ? (m.best_make1 * 100).toFixed(1) + "%" : "?"}; ${verdict}.</div>`;
       if (IS_LOCAL && run){

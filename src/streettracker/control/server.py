@@ -123,6 +123,7 @@ ALLOWED_JOB_KINDS = frozenset(
         "colour",
         "makemodel-build-uk",
         "makemodel-train-uk",
+        "makemodel-compare",
         "export-engine",
     }
 )

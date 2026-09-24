@@ -252,6 +252,22 @@ def test_build_parser_sessions_and_totals() -> None:
     assert p.phase == "done"
 
 
+def test_train_parser_reads_crop_mode() -> None:
+    line = (
+        "[makemodel-uk] target=make device=cuda amp=True classes=58 "
+        "train_crops=70000 val_crops=17000 crop=plate"
+    )
+    assert _feed(TrainParser(), line).metrics["crop_mode"] == "plate"
+    legacy = line.rsplit(" crop=", 1)[0]  # pre-2026-09-24 trainer output
+    assert _feed(TrainParser(), legacy).metrics["crop_mode"] == "hint"
+
+
+def test_compare_uses_batch_progress() -> None:
+    p = make_parser("makemodel-compare")
+    p.feed("[batch] 400/5000 done (61s)")
+    assert (p.progress.current, p.progress.total) == (400, 5000)
+
+
 def test_build_parser_cropping_progress() -> None:
     p = _feed(
         BuildParser(),

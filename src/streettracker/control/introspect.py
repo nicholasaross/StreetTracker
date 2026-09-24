@@ -432,9 +432,19 @@ class ModelInfo:
     val_make_top1: float | None = None
     promoted_at: str | None = None
     trained_corpus: dict[str, Any] | None = None  # {n_cars, n_makes, n_crops, name}
+    # How the model's training crops were made ("hint" | "plate"); None = not
+    # recorded, i.e. every model before 2026-09 = the stale-hint crops.
+    crop_mode: str | None = None
+    size: int | None = None  # file size: with mtime, fingerprints the checkpoint
 
     def to_json_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def normalize_crop_mode(mode: str | None) -> str:
+    """Training-crop family: "plate" for plate-anchored / fullframe corpora,
+    else "hint" (the legacy stale-bbox crop, incl. unrecorded)."""
+    return "plate" if mode in ("plate", "fullframe") else "hint"
 
 
 def production_model_path() -> Path:
@@ -470,14 +480,17 @@ def _model_from_checkpoint(model_path: Path) -> ModelInfo:
         n_makes = head_sizes.get("make")
         if n_makes is None and isinstance(meta.get("make_names"), list):
             n_makes = len(meta["make_names"])
+        st = model_path.stat()
         return ModelInfo(
             path=str(model_path),
-            mtime=model_path.stat().st_mtime,
+            mtime=st.st_mtime,
             source="checkpoint",
             arch=ckpt.get("arch") if isinstance(ckpt, dict) else None,
             input_size=meta.get("input_size"),
             n_makes=n_makes,
             val_make_top1=meta.get("val_make_top1"),
+            crop_mode=meta.get("crop_mode"),
+            size=st.st_size,
         )
     except Exception:
         # The radiator must survive any torch import / IO / format error.
@@ -501,9 +514,10 @@ def model_info(model_path: Path | None = None, *, allow_torch: bool = True) -> M
     if sidecar.is_file():
         data = _by_mtime(sidecar, "modelsidecar", lambda: _read_json(sidecar))
         if isinstance(data, dict):
+            st = path.stat()
             return ModelInfo(
                 path=str(path),
-                mtime=path.stat().st_mtime,
+                mtime=st.st_mtime,
                 source="sidecar",
                 arch=data.get("arch"),
                 input_size=data.get("input_size"),
@@ -511,6 +525,8 @@ def model_info(model_path: Path | None = None, *, allow_torch: bool = True) -> M
                 val_make_top1=data.get("val_make_top1"),
                 promoted_at=data.get("promoted_at"),
                 trained_corpus=data.get("trained_corpus"),
+                crop_mode=data.get("crop_mode"),
+                size=st.st_size,
             )
 
     if not allow_torch:
@@ -527,9 +543,33 @@ class TrainingRunInfo:
     best_val_make_top1: float | None
     n_makes: int | None
     n_epochs: int
+    crop_mode: str = "hint"  # the training corpus's crop mode (legacy = hint)
+    crop_pad_frac: float | None = None
+    # makemodel-compare's head-to-head report (compare.json), or None.
+    compare: dict[str, Any] | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def _compare_summary(path: Path) -> dict[str, Any] | None:
+    """The fields of a ``compare.json`` the panel needs (not the per-row
+    detail it doesn't render)."""
+    data = _read_json(path)
+    if not isinstance(data, dict) or not isinstance(data.get("delta"), dict):
+        return None
+    rows = {r.get("name"): r for r in data.get("rows") or [] if isinstance(r, dict)}
+    return {
+        "created_at": data.get("created_at"),
+        "production": data.get("production"),
+        "n_cars": data.get("n_cars"),
+        "n_tracks": data.get("n_tracks"),
+        "delta": data.get("delta"),
+        "candidate_track_acc": (rows.get("candidate") or {}).get("track_acc"),
+        "production_track_acc": (rows.get("production") or {}).get("track_acc"),
+        "production_clean_track_acc": (rows.get("production_clean_crops") or {}).get("track_acc"),
+        "production_clean_crop_delta": data.get("production_clean_crop_delta"),
+    }
 
 
 def _run_from_history(d: Path) -> TrainingRunInfo | None:
@@ -537,6 +577,7 @@ def _run_from_history(d: Path) -> TrainingRunInfo | None:
     if not isinstance(summary, dict):
         return None
     makes = summary.get("makes")
+    cmp_path = d / "compare.json"
     return TrainingRunInfo(
         name=d.name,
         path=str(d),
@@ -545,6 +586,9 @@ def _run_from_history(d: Path) -> TrainingRunInfo | None:
         best_val_make_top1=summary.get("best_val_make_top1"),
         n_makes=len(makes) if isinstance(makes, list) else None,
         n_epochs=len(summary.get("history") or []),
+        crop_mode=normalize_crop_mode(summary.get("crop_mode")),
+        crop_pad_frac=summary.get("crop_pad_frac"),
+        compare=_compare_summary(cmp_path) if cmp_path.is_file() else None,
     )
 
 
@@ -557,7 +601,13 @@ def training_runs(runs_dir: Path) -> list[TrainingRunInfo]:
     for d in runs_dir.glob("uk_make_*"):
         if not d.is_dir() or not (d / "history.json").is_file():
             continue
-        info = _by_mtime(d / "history.json", "run", functools.partial(_run_from_history, d))
+        # compare.json lands after history.json: fold its mtime into the tag so
+        # a new head-to-head report re-reads the run.
+        cmp_path = d / "compare.json"
+        cmp_mt = cmp_path.stat().st_mtime_ns if cmp_path.is_file() else 0
+        info = _by_mtime(
+            d / "history.json", f"run:{cmp_mt}", functools.partial(_run_from_history, d)
+        )
         if info is not None:
             out.append(info)
     out.sort(key=lambda r: r.mtime, reverse=True)
@@ -651,16 +701,94 @@ def retrain_recommendation(
     )
 
 
+def fresh_compare(run: TrainingRunInfo, model: ModelInfo | None) -> dict[str, Any] | None:
+    """``run``'s head-to-head report, if it was made against the CURRENT
+    production checkpoint (same size + mtime); a report against a model
+    that has since been replaced is stale."""
+    report = run.compare
+    if not report or model is None:
+        return None
+    prod = report.get("production") or {}
+    if prod.get("size") != model.size or abs(float(prod.get("mtime") or 0) - model.mtime) > 1.0:
+        return None
+    return report
+
+
+def _is_new_run(run: TrainingRunInfo, model: ModelInfo | None) -> bool:
+    """Trained after the current production model was installed."""
+    return model is None or run.mtime > model.mtime
+
+
 def promote_recommendation(
     model: ModelInfo | None,
     runs: list[TrainingRunInfo],
     *,
     margin: float = PROMOTE_MARGIN,
 ) -> Recommendation:
-    """Should the best training run replace the production model?"""
+    """Should the best training run replace the production model?
+
+    Precedence: (1) a fresh ``makemodel-compare`` head-to-head decides --
+    same held-out cars, each model with its own crops; recommend only if the
+    per-track gain clears ``margin`` AND its 95 % CI excludes zero. (2) A new
+    run trained on a different crop family than production can't be judged
+    by val make@1 (different crops, val cars and makes -- the 2026-09-24
+    stale-crop finding), so the verdict is "unknown: run the head-to-head".
+    (3) Otherwise the legacy val make@1 comparison among same-crop runs.
+    """
     scored = [r for r in runs if r.best_val_make_top1 is not None]
     if not scored:
         return Recommendation("promote", "unknown", "No scored training runs under runs/.", {})
+
+    compared = [(r, rep) for r in scored if (rep := fresh_compare(r, model)) is not None]
+    if compared:
+        run, rep = max(compared, key=lambda x: x[1]["delta"]["candidate_minus_production"])
+        d = rep["delta"]["candidate_minus_production"]
+        lo, hi = rep["delta"].get("ci95") or [None, None]
+        cand, prod = rep.get("candidate_track_acc"), rep.get("production_track_acc")
+        evidence = {
+            "candidate": {"name": run.name, "crop_mode": run.crop_mode},
+            "head_to_head": rep,
+            "margin": margin,
+        }
+        head = (
+            f"{run.name} vs production on {rep.get('n_cars')} held-out cars "
+            f"({rep.get('n_tracks')} tracks): per-track make@1 "
+            f"{_pct(cand)} vs {_pct(prod)} ({100 * d:+.1f} pp, 95% CI "
+            f"{_pp(lo)}..{_pp(hi)})"
+        )
+        if d >= margin and lo is not None and lo > 0:
+            return Recommendation("promote", "recommend", head + " — a clear win.", evidence)
+        return Recommendation(
+            "promote", "hold", head + " — not a clear win over production.", evidence
+        )
+
+    prod_mode = normalize_crop_mode(model.crop_mode if model else None)
+    cross = [r for r in scored if r.crop_mode != prod_mode and _is_new_run(r, model)]
+    if cross:
+        run = cross[0]  # runs are newest-first
+        return Recommendation(
+            "promote",
+            "unknown",
+            f"{run.name} was trained on {run.crop_mode}-anchored crops but production on "
+            f"{prod_mode} crops, so their val make@1 scores aren't comparable (different "
+            f"crops, val cars and makes). Run the head-to-head (makemodel-compare) before "
+            f"promoting.",
+            {
+                "candidate": {
+                    "name": run.name,
+                    "val_make_top1": run.best_val_make_top1,
+                    "crop_mode": run.crop_mode,
+                },
+                "production": {"crop_mode": prod_mode},
+                "needs": "makemodel-compare",
+            },
+        )
+
+    scored = [r for r in scored if r.crop_mode == prod_mode]
+    if not scored:
+        return Recommendation(
+            "promote", "unknown", "No training run shares production's crop mode.", {}
+        )
     best = max(scored, key=lambda r: r.best_val_make_top1 or 0.0)
     cand_acc = best.best_val_make_top1 or 0.0
     prod_acc = model.val_make_top1 if model else None
@@ -697,6 +825,34 @@ def promote_recommendation(
         f"{prod_acc:.3f} by ≥ {margin:.3f}.",
         evidence,
     )
+
+
+def _pct(v: float | None) -> str:
+    return f"{100 * v:.1f}%" if v is not None else "?"
+
+
+def _pp(v: float | None) -> str:
+    return f"{100 * v:+.1f}" if v is not None else "?"
+
+
+def promote_candidate(
+    model: ModelInfo | None, runs: list[TrainingRunInfo]
+) -> tuple[TrainingRunInfo | None, str]:
+    """The run the no-argument "Promote best model" action should promote:
+    the recommendation's candidate (the head-to-head winner, else the best
+    same-crop run by val make@1) -- or ``(None, reason)`` when the only new
+    run can't be compared with production yet, so a one-click promote never
+    swaps in a model on an incomparable score. A "hold" verdict still
+    returns its candidate: the confirm-gated click is the operator's call,
+    as before. (Promoting a NAMED run is always the operator's call.)"""
+    rec = promote_recommendation(model, runs)
+    if rec.evidence.get("needs") == "makemodel-compare":
+        return None, rec.reason
+    name = (rec.evidence.get("candidate") or {}).get("name")
+    if name is None:
+        return None, rec.reason
+    run = next((r for r in runs if r.name == name), None)
+    return (run, rec.reason) if run is not None else (None, f"run {name} not found")
 
 
 # ----------------------------------------------------------------------

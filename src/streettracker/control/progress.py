@@ -161,6 +161,8 @@ class BatchParser(ProgressParser):
 _TRAIN_PREAMBLE_RE = re.compile(
     r"(?:target=(\S+)\s+)?device=(\S+)\s+amp=(\S+)\s+"
     r"(?:makes|classes)=(\d+)\s+train_crops=(\d+)\s+val_crops=(\d+)"
+    # The corpus crop mode (plate | hint) since 2026-09-24; absent = hint.
+    r"(?:\s+crop=(\S+))?"
 )
 # The metric name follows --target: ``make@1``/``make@5`` or ``body_type@1``/
 # ``body_type@5``. The captured name feeds metrics["target"] so the UI can
@@ -204,6 +206,7 @@ class TrainParser(ProgressParser):
                 makes=int(m.group(4)),
                 train_crops=int(m.group(5)),
                 val_crops=int(m.group(6)),
+                crop_mode=m.group(7) or "hint",
             )
             self.progress.phase = "starting"
             return
@@ -409,6 +412,8 @@ _PARSERS: dict[str, type[ProgressParser]] = {
     "pull": PullParser,
     "dvsa-label": DvsaLabelParser,
     "makemodel-build-uk": BuildParser,
+    # makemodel-compare prints "[batch] N/total done" -- the batch format.
+    "makemodel-compare": BatchParser,
 }
 
 

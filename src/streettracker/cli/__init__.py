@@ -20,6 +20,7 @@ Subcommands:
 - ``streettracker bodytype <session>`` — classify coarse body type on a session's snaps
 - ``streettracker makemodel-build-uk <out>`` — extract DVSA-labelled UK make crops
 - ``streettracker makemodel-train-uk <crops>`` — train the UK make classifier
+- ``streettracker makemodel-compare <crops> --candidate <best.pt>`` — head-to-head vs production
 - ``streettracker showcase`` — local website showcasing enriched + recurring vehicles
 - ``streettracker control`` — operator control panel (live radiator + process control)
 
@@ -57,7 +58,8 @@ commands:
   colour          classify vehicle colour (white/silver/black/...) on a session's snaps
   makemodel-build-uk  extract DVSA-labelled UK make crops from sessions
   makemodel-train-uk  train the UK make classifier on extracted crops
-  showcase        local website: enriched + recurring vehicles, with tagging
+  makemodel-compare   head-to-head: candidate vs production make model on shared held-out cars
+  showcase       local website: enriched + recurring vehicles, with tagging
   control         operator control panel: live radiator + process control
 
 Run ``streettracker <command> --help`` for per-command options.
@@ -163,6 +165,10 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         return makemodel_train_uk_main(rest)
+    if head == "makemodel-compare":
+        from streettracker.analysis.makemodel.compare import main as makemodel_compare_main
+
+        return makemodel_compare_main(rest)
 
     if head == "showcase":
         from streettracker.web.server import main as showcase_main

@@ -390,6 +390,7 @@ uv run streettracker colour output/<session>             # CNN vehicle-colour in
 # Mine the Orin -> grow the UK make-classifier corpus (run pull from PowerShell):
 uv run streettracker pull --session <S> --only-main      # pull a session's 4K snaps from the Orin
 uv run streettracker makemodel-build-uk runs/uk_crops --output-size 512  # DVSA-labelled UK make crops @512 (auto-discovers sessions); --crop-mode plate (default) = plate-anchored crops, needs alpr-run output
+uv run streettracker makemodel-compare runs/uk_crops --candidate runs/uk_make_X/best.pt  # head-to-head vs production on shared held-out cars -> runs/uk_make_X/compare.json
 uv run streettracker makemodel-train-uk runs/uk_crops --input-size 512   # train the UK make classifier (B0@512; +--backbone b4/b5). honest make@1 ~28% on 1229 cars (old "37.6%" was small-val optimism)
 ```
 
@@ -524,8 +525,9 @@ timeout-bounded in `control/orin.py`), `common.output`, and
 ctx, …)` dispatches, `PlaybookContext` carries paths + device config):
   - **enrich** (`alpr-run` → `dvsa-label` → `dvsa-apply` → `vehicles` →
     `makemodel` → `bodytype` → `people`) and **build-train**
-    (`makemodel-build-uk` → `makemodel-train-uk`, dated dirs) — pure
-    job-chains.
+    (`makemodel-build-uk` → `makemodel-train-uk` → `makemodel-compare`,
+    dated dirs; the last step writes the head-to-head `compare.json` the
+    promote recommendation needs) — pure job-chains.
   - **roll** (action: `orin.restart_service` finalises the live session + starts
     a new one, verifies the handover + counts finalised tracks → then a `pull`
     job of the closed session) and **promote** (action: back up `makemodel_b0.pt`
@@ -716,7 +718,22 @@ now records `crop_mode` + `crop_pad_frac`): plate-trained models infer
 `fullframe` (plate anchor, else nearest on-road vehicle to the hint —
 ~7 % estimated wrong-pick on snaps without a plate read,
 `.claude/fullframe_crop_spotcheck.py`); legacy checkpoints keep `hint`
-unchanged. Compare old vs new models only on one clean-cropped val set.
+unchanged. **Compare old vs new models only head-to-head:**
+`makemodel-compare <corpus> --candidate runs/<run>/best.pt` scores
+production (as deployed + on clean crops) and the candidate on the SAME
+held-out cars (the candidate corpus's val split minus every car in
+production's training corpus), per track, with a by-car bootstrap CI →
+`runs/<run>/compare.json`. The build-train playbook runs it as step 3, and
+the panel's promote recommendation uses it; a run on a different crop
+family with no fresh report is "can't compare" (never judged on raw val
+make@1), and one-click "Promote best model" refuses it. **First
+head-to-head (2026-09-24, `uk_crops_0730_576` val minus 0707 cars = 430
+cars / 572 tracks):** production B6 as deployed (hint@0.25) **35.1 %**
+per-track → the SAME model on clean crops (fullframe@0.1) **42.1 %
+(+7.0 pp, 95 % CI +3.9..+10.2)**; the 0730 B6 retrain on ~25 % more
+hint-crop data tied production (+0.0, CI −3.3..+3.2) — the crops, not
+data volume, were the bottleneck. Held-out cars are plated (plate-anchor
+crops), so the gain on unplated tracks (trajectory rule) will be smaller.
 
 The dataset-level enrichment pivot. Two prongs:
 
