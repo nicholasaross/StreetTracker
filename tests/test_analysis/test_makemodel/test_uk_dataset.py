@@ -447,3 +447,151 @@ def test_train_main_colour_rejects_legacy_corpus(tmp_path: Path) -> None:
     root.mkdir()
     (root / "manifest.json").write_text(json.dumps({"makes": ["FORD"], "samples": []}))
     assert train_main([str(root), "--target", "colour", "--cpu"]) == 1
+
+
+# ----------------------------------------------------------------------
+# Plate-anchored crop mode (the default since 2026-09-24).
+
+
+class _StubDetector:
+    def __init__(self, boxes: list[tuple[float, float, float, float, float]]) -> None:
+        self.boxes = boxes
+
+    def __call__(self, image: np.ndarray) -> list[tuple[float, float, float, float, float]]:
+        return list(self.boxes)
+
+
+def _plate_session(tmp_path: Path) -> Path:
+    """Track 1 (AB12CDE, a FORD) with 2 snaps; only snap 1 read its plate.
+    The stale hint sits on the left; the car has moved right."""
+    import cv2
+
+    sess = tmp_path / "session_t"
+    sess.mkdir()
+    for n in (1, 2):
+        img = np.full((300, 400, 3), 90, np.uint8)
+        img[100:200, 200:320] = 200  # the car, bright
+        cv2.imwrite(str(sess / f"vehicle_1_main_{n}.jpg"), img)
+    sess.joinpath("session_t_data.json").write_text(
+        json.dumps(
+            [
+                {
+                    "track_id": 1,
+                    "main_snaps": [1, 2],
+                    "main_snap_bboxes": [[60, 40, 200, 180], [60, 40, 200, 180]],
+                }
+            ]
+        )
+    )
+    sess.joinpath("session_t_meta.json").write_text(json.dumps({"frame_size": [640, 360]}))
+    sess.joinpath("session_t_alpr.json").write_text(
+        json.dumps(
+            [
+                {
+                    "track_id": 1,
+                    "snap_index": 1,
+                    "det_bbox": [250, 180, 280, 190],
+                    "ocr_text": "AB12CDE",
+                    "ocr_conf": 0.97,
+                    "canonical_uk_shape": True,
+                    "static_suspect": False,
+                }
+            ]
+        )
+    )
+    sess.joinpath("session_t_dvsa_labels.json").write_text(
+        json.dumps({"labels": {"AB12CDE": {"make": "Ford", "model": "FOCUS", "track_ids": [1]}}})
+    )
+    return sess
+
+
+def test_extract_crops_plate_mode_crops_the_labelled_car(tmp_path: Path) -> None:
+    sess = _plate_session(tmp_path)
+    out = tmp_path / "crops"
+    stats = extract_crops(
+        [sess],
+        out,
+        min_cars_per_make=1,
+        pad_frac=0.0,
+        crop_mode="plate",
+        vehicle_detector=_StubDetector([(200.0, 100.0, 320.0, 200.0, 0.9)]),
+    )
+    # Snap 2 has no read of the car's plate -> skipped, not hint-cropped.
+    assert stats["n_crops"] == 1
+    assert stats["n_snaps_unanchored"] == 1
+    assert stats["n_no_vehicle"] == 0
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["crop_mode"] == "plate"
+    assert manifest["pad_frac"] == 0.0
+    assert manifest["samples"][0]["path"].endswith("_1_1.jpg")
+    # The crop is the car box (all bright), not the stale hint (grey road).
+    with Image.open(out / manifest["samples"][0]["path"]) as im:
+        arr = np.asarray(im.convert("L"), dtype=np.float32)
+    assert arr[arr > 20].mean() > 180  # ignore the black letterbox bars
+    # Vehicle boxes were cached for the inference commands to reuse.
+    assert (sess / "session_t_vehicle_boxes.json").exists()
+
+
+def test_extract_crops_plate_mode_skips_plate_outside_any_vehicle(tmp_path: Path) -> None:
+    sess = _plate_session(tmp_path)
+    stats = extract_crops(
+        [sess],
+        tmp_path / "crops",
+        min_cars_per_make=1,
+        crop_mode="plate",
+        vehicle_detector=_StubDetector([(0.0, 0.0, 50.0, 50.0, 0.9)]),
+    )
+    assert stats["n_crops"] == 0
+    assert stats["n_no_vehicle"] == 1
+
+
+def test_extract_crops_rejects_unknown_crop_mode(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="crop_mode"):
+        extract_crops([], tmp_path / "c", crop_mode="fullframe")
+
+
+def test_build_main_defaults_to_plate_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import streettracker.analysis.makemodel.uk_dataset as uk
+
+    seen: dict[str, str] = {}
+    real = uk.extract_crops
+
+    def _spy(*args: object, **kwargs: object) -> dict:
+        seen["crop_mode"] = kwargs["crop_mode"]  # type: ignore[assignment]
+        kwargs["vehicle_detector"] = _StubDetector([(200.0, 100.0, 320.0, 200.0, 0.9)])
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(uk, "extract_crops", _spy)
+    sess = _plate_session(tmp_path)
+    rc = build_main([str(tmp_path / "crops"), "--sessions", str(sess), "--min-cars-per-make", "1"])
+    assert rc == 0
+    assert seen["crop_mode"] == "plate"
+
+
+def test_trainer_records_corpus_crop_settings_in_checkpoint(tmp_path: Path) -> None:
+    """The checkpoint carries the corpus crop mode + pad so inference can
+    reproduce the training crop (vehicle_locator.resolve_crop_settings)."""
+    from streettracker.analysis.makemodel.model import load_checkpoint
+
+    crops = tmp_path / "crops"
+    _write_dataset(crops)
+    manifest = json.loads((crops / "manifest.json").read_text())
+    manifest.update({"crop_mode": "plate", "pad_frac": 0.1})
+    (crops / "manifest.json").write_text(json.dumps(manifest))
+    out = tmp_path / "run"
+    args = [str(crops), "--out", str(out), "--epochs", "1", "--batch-size", "2"]
+    assert train_main([*args, "--num-workers", "0", "--no-pretrained", "--cpu"]) == 0
+    _model, meta = load_checkpoint(out / "best.pt")
+    assert meta["crop_mode"] == "plate"
+    assert meta["crop_pad_frac"] == 0.1
+
+
+def test_trainer_legacy_corpus_has_no_crop_metadata(tmp_path: Path) -> None:
+    from streettracker.analysis.makemodel.model import load_checkpoint
+
+    _write_dataset(tmp_path / "crops")  # no crop_mode / pad_frac keys
+    out = tmp_path / "run"
+    args = [str(tmp_path / "crops"), "--out", str(out), "--epochs", "1", "--batch-size", "2"]
+    assert train_main([*args, "--num-workers", "0", "--no-pretrained", "--cpu"]) == 0
+    _model, meta = load_checkpoint(out / "best.pt")
+    assert "crop_mode" not in meta and "crop_pad_frac" not in meta

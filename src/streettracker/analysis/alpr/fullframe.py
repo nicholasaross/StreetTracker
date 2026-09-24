@@ -26,12 +26,17 @@ rollup stage, exactly as it does for hint crops.
 
 from __future__ import annotations
 
+import json
+import sys
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from streettracker.analysis.alpr.base import PlateDetection
 
 if TYPE_CHECKING:
     import numpy as np
+
+Box = tuple[float, float, float, float]
 
 # Vehicles smaller than this (px height in the snap) can't carry a
 # readable plate at this scene's resolution -- the canonical-read p25
@@ -64,6 +69,73 @@ def _point_in_polygon(x: float, y: float, poly: list[tuple[float, float]]) -> bo
             if xi > x:
                 inside = not inside
     return inside
+
+
+def load_road_polygon(
+    path: Path | None, *, log_prefix: str = "[alpr]"
+) -> list[tuple[float, float]] | None:
+    """Fractional road-outline vertices for the fullframe crop path.
+
+    Reads the ``vertices_frac`` field of a triggers_proposal-schema
+    JSON. Missing/unreadable file returns ``None`` (no on-road filter)
+    with a notice rather than an error -- the fullframe path still
+    works, it just can't reject driveway/forecourt vehicles.
+    """
+    if path is None or not path.exists():
+        if path is not None:
+            print(
+                f"{log_prefix} --road-polygon {path}: not found; fullframe crop "
+                f"runs without the on-road filter",
+                file=sys.stderr,
+            )
+        return None
+    try:
+        spec = json.loads(path.read_text())
+        verts = spec.get("vertices_frac") or []
+        out = [(float(x), float(y)) for x, y in verts]
+        return out if len(out) >= 3 else None
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as e:
+        print(f"{log_prefix} --road-polygon {path}: parse error ({e}), ignoring", file=sys.stderr)
+        return None
+
+
+def rank_vehicle_candidates(
+    boxes: list[Box],
+    image_w: int,
+    image_h: int,
+    *,
+    bbox_hint: tuple[int, int, int, int] | None,
+    road_polygon_frac: list[tuple[float, float]] | None,
+    min_vehicle_h_px: int = DEFAULT_MIN_VEHICLE_H_PX,
+) -> list[Box]:
+    """On-road, plate-sized vehicle boxes ranked by likelihood of being the
+    tracked one: nearest centre to the (stale) hint first, or largest first
+    when there is no hint. The rule :class:`TrajectoryCropDetector` uses to
+    pick crop candidates, shared with the make/colour/body-type locator."""
+    poly = (
+        [(px * image_w, py * image_h) for px, py in road_polygon_frac]
+        if road_polygon_frac
+        else None
+    )
+    hint_c = (
+        ((bbox_hint[0] + bbox_hint[2]) / 2.0, (bbox_hint[1] + bbox_hint[3]) / 2.0)
+        if bbox_hint is not None
+        else None
+    )
+    candidates: list[tuple[float, Box]] = []
+    for x1, y1, x2, y2 in boxes:
+        if y2 - y1 < min_vehicle_h_px:
+            continue
+        cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+        if poly is not None and not _point_in_polygon(cx, cy, poly):
+            continue
+        if hint_c is not None:
+            rank = ((cx - hint_c[0]) ** 2 + (cy - hint_c[1]) ** 2) ** 0.5
+        else:
+            rank = -(x2 - x1) * (y2 - y1)  # no anchor: biggest first
+        candidates.append((rank, (x1, y1, x2, y2)))
+    candidates.sort(key=lambda c: c[0])
+    return [box for _rank, box in candidates]
 
 
 class TrajectoryCropDetector:
@@ -123,31 +195,18 @@ class TrajectoryCropDetector:
             verbose=False,
         )[0]
         xy = result.boxes.xyxy.cpu().numpy()
-
-        poly = [(px * w, py * h) for px, py in self._poly_frac] if self._poly_frac else None
-        hint_c = (
-            ((bbox_hint[0] + bbox_hint[2]) / 2.0, (bbox_hint[1] + bbox_hint[3]) / 2.0)
-            if bbox_hint is not None
-            else None
+        boxes: list[Box] = [(float(r[0]), float(r[1]), float(r[2]), float(r[3])) for r in xy]
+        candidates = rank_vehicle_candidates(
+            boxes,
+            w,
+            h,
+            bbox_hint=bbox_hint,
+            road_polygon_frac=self._poly_frac,
+            min_vehicle_h_px=self._min_h,
         )
 
-        candidates: list[tuple[float, tuple[float, float, float, float]]] = []
-        for row in xy:
-            x1, y1, x2, y2 = (float(v) for v in row[:4])
-            if y2 - y1 < self._min_h:
-                continue
-            cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
-            if poly is not None and not _point_in_polygon(cx, cy, poly):
-                continue
-            if hint_c is not None:
-                rank = ((cx - hint_c[0]) ** 2 + (cy - hint_c[1]) ** 2) ** 0.5
-            else:
-                rank = -(x2 - x1) * (y2 - y1)  # no anchor: biggest first
-            candidates.append((rank, (x1, y1, x2, y2)))
-        candidates.sort(key=lambda c: c[0])
-
         best: PlateDetection | None = None
-        for _rank, (x1, y1, x2, y2) in candidates[: self._max_candidates]:
+        for x1, y1, x2, y2 in candidates[: self._max_candidates]:
             cx1 = max(0, int(x1 - self._pad))
             cy1 = max(0, int(y1 - self._pad))
             cx2 = min(w, int(x2 + self._pad))

@@ -11,8 +11,14 @@ set straight from the sessions we already capture:
 
 Crops are made with the SAME :class:`VehicleCropper` the inference path
 uses, so there's no train/inference framing skew (the CompCars failure
-mode). Splits are **by car** (plate), never by crop -- a car's frames
-are near-duplicates, so mixing them across train/val inflates val.
+mode). WHERE to crop is the ``crop_mode``: ``"plate"`` (the CLI default
+since 2026-09-24) crops the vehicle box holding the car's own plate read
+on that snap -- certain identity; the legacy ``"hint"`` crop used the
+stale fire-time bbox and missed the labelled car on ~2/3 of snaps (see
+:mod:`streettracker.analysis.vehicle_locator`).
+
+Splits are **by car** (plate), never by crop -- a car's frames are
+near-duplicates, so mixing them across train/val inflates val.
 
 Make-only for now: model-level labels are too sparse per class. The
 trainer reuses :func:`...training.train_one_epoch` / ``evaluate`` (made
@@ -59,6 +65,12 @@ from streettracker.analysis.snap_assets import (
     load_bbox_index,
     resolve_bbox_hint,
 )
+from streettracker.analysis.vehicle_locator import (
+    VehicleBoxCache,
+    anchor_plate_bbox,
+    load_alpr_reads,
+    plate_anchored_box,
+)
 
 __all__ = [
     "BODY_TYPES",
@@ -90,14 +102,17 @@ def _load_session_labels(session_dir: Path) -> dict[str, dict[str, Any]]:
 
 @dataclasses.dataclass(slots=True)
 class _Cand:
-    """A candidate snap for a car, ranked by bbox area before cropping."""
+    """A candidate snap for a car, ranked by area before cropping (the hint
+    bbox in ``hint`` mode, the plate bbox -- a closeness proxy -- in
+    ``plate`` mode)."""
 
-    area: int
+    area: float
     sess_name: str
     tid: int
     snap_index: int
-    hint: tuple[int, int, int, int]
+    hint: tuple[int, int, int, int] | None
     src_path: str
+    plate_bbox: tuple[float, float, float, float] | None = None
 
 
 def extract_crops(
@@ -109,6 +124,8 @@ def extract_crops(
     max_per_car: int | None = None,
     select_top_by_area: int | None = None,
     output_size: int = 224,
+    crop_mode: str = "hint",
+    vehicle_detector: Any = None,
 ) -> dict[str, Any]:
     """Crop DVSA-labelled cars from their snaps into ``out_dir/<MAKE>/``.
 
@@ -127,8 +144,16 @@ def extract_crops(
     default). Raise to 384 to keep more of the 4K source detail -- only
     useful while source bboxes exceed it (typically 400-800 px here), so
     re-extract from the snaps rather than upscaling an existing 224 set.
+
+    ``crop_mode`` picks where to crop: ``"hint"`` (legacy stale fire-time
+    bbox) or ``"plate"`` (the full-frame vehicle box containing the car's
+    own plate read on that snap; snaps without such a read are skipped).
+    ``vehicle_detector`` overrides the full-frame YOLO detector (tests).
     """
     import cv2  # type: ignore[import-untyped]
+
+    if crop_mode not in ("hint", "plate"):
+        raise ValueError(f"crop_mode must be 'hint' or 'plate', got {crop_mode!r}")
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -170,7 +195,25 @@ def extract_crops(
     # keep the top-N largest-bbox snaps before cropping -- cv2.imread only
     # runs for kept snaps.
     candidates: dict[str, list[_Cand]] = defaultdict(list)
+    n_unanchored = 0
     for sess, tid_plate in sess_tid_plate.items():
+        if crop_mode == "plate":
+            # Resolve plate anchors per session (no decode) and keep only the
+            # bbox -- holding every session's _alpr.json at once costs GBs.
+            reads = load_alpr_reads(sess)
+            for path, tid, snap_index, _cls in discover_vehicle_snaps(sess):
+                car = tid_plate.get(tid)
+                if car is None:
+                    continue
+                pb = anchor_plate_bbox(reads.get((tid, snap_index), []), car)
+                if pb is None:
+                    n_unanchored += 1
+                    continue
+                area = (pb[2] - pb[0]) * (pb[3] - pb[1])  # bigger plate = closer car
+                candidates[car].append(
+                    _Cand(area, sess.name, tid, snap_index, None, str(path), plate_bbox=pb)
+                )
+            continue
         bbox_index, sub_size = load_bbox_index(sess)
         for path, tid, snap_index, _cls in discover_vehicle_snaps(sess):
             car = tid_plate.get(tid)
@@ -183,18 +226,48 @@ def extract_crops(
             area = max(0, x2 - x1) * max(0, y2 - y1)
             candidates[car].append(_Cand(area, sess.name, tid, snap_index, hint, str(path)))
 
+    sess_dirs = {s.name: s for s in sess_tid_plate}
+    box_caches: dict[str, VehicleBoxCache] = {}
     cropper = VehicleCropper(pad_frac=pad_frac, output_size=output_size)
     samples: list[dict[str, str]] = []
     cap = select_top_by_area if select_top_by_area is not None else max_per_car
+    selected: dict[str, list[_Cand]] = {}
     for car, cands in candidates.items():
-        cands.sort(key=lambda c: -c.area)  # largest bbox (closest) first
+        cands.sort(key=lambda c: -c.area)  # largest (closest) first
+        selected[car] = cands[:cap] if cap is not None else cands
+    total = sum(len(c) for c in selected.values())
+    done = 0
+    n_no_vehicle = 0
+    for car, cands in selected.items():
         mk = car_make[car]
         (out_dir / mk).mkdir(exist_ok=True)
-        for cand in cands[:cap] if cap is not None else cands:
+        for cand in cands:
+            done += 1
+            if done % 500 == 0 or done == total:
+                print(f"[makemodel-build-uk] {done}/{total} cropped", flush=True)
             image = cv2.imread(cand.src_path)
             if image is None:
                 continue
-            crop = cropper.crop(image, cand.hint)
+            crop_box: tuple[int, int, int, int] | None = cand.hint
+            if crop_mode == "plate":
+                assert cand.plate_bbox is not None  # noqa: S101 - set in plate mode
+                cache = box_caches.get(cand.sess_name)
+                if cache is None:
+                    cache = VehicleBoxCache(sess_dirs[cand.sess_name], detector=vehicle_detector)
+                    box_caches[cand.sess_name] = cache
+                vbox = plate_anchored_box(
+                    cache.boxes(Path(cand.src_path).name, image), cand.plate_bbox
+                )
+                if vbox is None:
+                    n_no_vehicle += 1
+                    continue
+                crop_box = (
+                    int(round(vbox[0])),
+                    int(round(vbox[1])),
+                    int(round(vbox[2])),
+                    int(round(vbox[3])),
+                )
+            crop = cropper.crop(image, crop_box)
             if crop is None:
                 continue
             rel = f"{mk}/{car}_{cand.sess_name}_{cand.tid}_{cand.snap_index}.jpg"
@@ -217,11 +290,16 @@ def extract_crops(
     colour_car_counts = Counter(
         car_colour[c] for c in car_make if car_make[c] in kept and car_colour.get(c)
     )
+    for cache in box_caches.values():
+        cache.save()
     manifest = {
         "makes": sorted(kept),
         "body_types": body_present,
         "colours": colour_present,
         "min_cars_per_make": min_cars_per_make,
+        "crop_mode": crop_mode,
+        "pad_frac": pad_frac,
+        "output_size": output_size,
         "samples": samples,
     }
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
@@ -235,7 +313,11 @@ def extract_crops(
         "n_cars_colour_labelled": sum(1 for c in kept_cars if car_colour.get(c)),
         "colour_car_counts": dict(colour_car_counts),
         "n_cars": sum(1 for m in car_make.values() if m in kept),
+        "n_cars_cropped": len({s["car"] for s in samples}),
         "n_crops": len(samples),
+        "crop_mode": crop_mode,
+        "n_snaps_unanchored": n_unanchored,
+        "n_no_vehicle": n_no_vehicle,
         "make_car_counts": {m: make_car_counts[m] for m in sorted(kept)},
     }
 
@@ -377,6 +459,15 @@ def train_uk_make(
         transform=build_eval_transform(config.input_size),
         seed=config.seed,
     )
+    # Record how the corpus was cropped so inference can reproduce it
+    # (vehicle_locator.resolve_crop_settings). Legacy corpora carry neither
+    # key, which keeps their checkpoint metadata byte-identical.
+    manifest = json.loads((Path(dataset_dir) / "manifest.json").read_text())
+    crop_meta = {
+        k_out: manifest[k_in]
+        for k_in, k_out in (("crop_mode", "crop_mode"), ("pad_frac", "crop_pad_frac"))
+        if k_in in manifest
+    }
     pin = device.type == "cuda"
     train_loader = DataLoader(
         train_ds,
@@ -458,6 +549,7 @@ def train_uk_make(
                     "input_size": config.input_size,
                     "epoch": epoch,
                     f"val_{target}_top1": round(m1, 4),
+                    **crop_meta,
                 },
             )
         else:
@@ -516,13 +608,24 @@ def build_main(argv: list[str] | None = None) -> int:
         default=224,
         help="square crop edge (px); 384 keeps more 4K detail than the 224 default",
     )
+    parser.add_argument(
+        "--crop-mode",
+        choices=("plate", "hint"),
+        default="plate",
+        help="plate (default) = crop the vehicle holding the car's own plate read on "
+        "that snap (certain identity; needs alpr-run output); hint = legacy stale "
+        "fire-time bbox, which misses the labelled car on ~2/3 of snaps",
+    )
     args = parser.parse_args(argv)
 
     sessions = list(args.sessions) if args.sessions else _discover_labelled_sessions()
     if not sessions:
         print("[makemodel-build-uk] no DVSA-labelled sessions found")
         return 1
-    print(f"[makemodel-build-uk] {len(sessions)} session(s) -> {args.out_dir}")
+    print(
+        f"[makemodel-build-uk] {len(sessions)} session(s) -> {args.out_dir} "
+        f"(crop mode {args.crop_mode})"
+    )
     stats = extract_crops(
         sessions,
         args.out_dir,
@@ -531,7 +634,14 @@ def build_main(argv: list[str] | None = None) -> int:
         max_per_car=args.max_per_car,
         select_top_by_area=args.top_by_area,
         output_size=args.output_size,
+        crop_mode=args.crop_mode,
     )
+    if args.crop_mode == "plate":
+        print(
+            f"[makemodel-build-uk] plate-anchored: {stats['n_cars_cropped']} cars have crops; "
+            f"skipped {stats['n_snaps_unanchored']} snaps without their plate read, "
+            f"{stats['n_no_vehicle']} with no vehicle box at the plate"
+        )
     print(
         f"[makemodel-build-uk] {stats['n_makes']} makes, {stats['n_cars']} cars, "
         f"{stats['n_crops']} crops"
