@@ -93,7 +93,16 @@ no person-specific snap gate needed. Both ancestor repos archived
    (b) same-session walk dedup — BotSORT splits inflate walk counts;
    within-session appearance matching only (reuse `vote_color` infra),
    deliberately NO cross-session person re-id (privacy line).
-4. **Make classifier — B6 SHIPPED, VLM FALSIFIED (2026-07-08):**
+4. **⮕ SUPERSEDED 2026-09-25 — clean-crop B6 promoted.** Every make@1
+   below was trained and validated on stale-bbox crops (~2/3 missed the
+   car; see [Make/model classification](#makemodel-classification)).
+   Production is now **`uk_make_0924_b6`** (B6@528, plate-anchored
+   `uk_crops_0924_576`, 62 makes / 7,319 cars / 81,933 crops), promoted on
+   a head-to-head: **60.4 % vs 37.9 % per-track make@1 (+22.5 pp, 95 % CI
+   +19.6..+25.4)** on 883 held-out cars. Colour + body-type heads still
+   run the legacy hint crops — retrain them on the same corpus next.
+   History as it stood before the crop fix:
+   **Make classifier — B6 SHIPPED, VLM FALSIFIED (2026-07-08):**
    B6@528 trained on `uk_crops_0707_576` (45 makes / 3,942 cars /
    47,881 crops) → **make@1 0.451**, promoted over B5's 0.441. VLM
    bake-off DONE — **Qwen3-VL 8B loses decisively** (0.15-0.18 vs B6's
@@ -735,6 +744,34 @@ hint-crop data tied production (+0.0, CI −3.3..+3.2) — the crops, not
 data volume, were the bottleneck. Held-out cars are plated (plate-anchor
 crops), so the gain on unplated tracks (trajectory rule) will be smaller.
 
+**Clean-crop retrain — PROMOTED 2026-09-25.** `runs/uk_make_0924_b6`:
+B6@528 b8, 20-epoch cosine / patience 5, on `uk_crops_0924_576` (plate
+mode, pad 0.1: **62 makes / 7,319 cars / 81,933 crops**; 1,671 further
+DVSA-labelled cars had no plate-anchored snap). Val make@1 (plate-anchored
+crops — the easiest views, not comparable with anything earlier) peaked
+**0.868 at epoch 2**, then drifted 0.83-0.85 while train loss kept falling
+(memorising) → early-stopped at epoch 7. Head-to-head (`compare.json`,
+883 held-out cars / 1,319 tracks / 4,223 snaps, minus all 0707 cars):
+
+| model                            | crops         | per-track | per-car | shared-makes per-track |
+| -------------------------------- | ------------- | --------- | ------- | ---------------------- |
+| old production (0707 B6, 45 mk)  | hint@0.25     | 37.9 %    | 35.7 %  | 38.9 %                 |
+| old production, clean crops      | fullframe@0.1 | 43.9 %    | 38.8 %  | 45.0 %                 |
+| **uk_make_0924_b6 (62 makes)**   | fullframe@0.1 | **60.4 %**| **50.2 %** | **61.2 %**          |
+
+**+22.5 pp per-track (95 % CI +19.6..+25.4)** — the panel recommended,
+the operator promoted (prior model backed up as
+`makemodel_b0.20260925T174701.pt`); `makemodel` now infers
+`crop=fullframe pad=0.1` automatically, and the reinfer playbook
+(started 2026-09-25) re-runs every session with it. Caveats: plated held-out cars (unplated tracks use the
+trajectory rule, so their gain is smaller) and the val cars also picked
+the best epoch (mild optimism). **Ops:** at `--batch-size 8`, B6@528
+spilled ~1.06 GB into WDDM system memory (desktop compositor held
+1.2-1.4 GB) and every epoch ran ~200 min instead of ~85 — train at
+`--batch-size 6`, or free VRAM first, next time. Per-car crop dominance
+(top 500 of 7,319 cars hold 47.6 % of crops; residents LA68CWY 668 /
+FD61PVX 589) is an untested lever (`--max-per-car`).
+
 The dataset-level enrichment pivot. Two prongs:
 
 - **DVSA-first (shipped, PRs #41/#42/#43).** The DVSA MOT API returns
@@ -1020,14 +1057,16 @@ imagery are deliberately kept out):
 | Operator-traced **scene geometry** (`.claude/{ghost_mask,snap_gate,triggers_proposal,road_polygon_user,road_zones,road_polygon,reolink_isp_current}.json` + `sketch_me_done.png`) | **In repo** (gitignore negations)                                    | Irreplaceable without the physical camera + operator re-sketch + weeks of band re-tuning |
 | **Analysis / measurement scripts** (`.claude/*.py` — verdict/band/eval/bakeoff/coverage)                                                                                          | **In repo**                                                          | Re-derive methodology from scratch                                                       |
 | **Small inference models** (`bodytype_b0.pt` 16 MB, ALPR `license_plate_detector.pt` 6 MB) + all `*.meta.json` sidecars                                                           | **In repo**                                                          | 12 h train / hard to reacquire                                                           |
-| **Production make model** `makemodel_b0.pt` (164 MB, B6)                                                                                                                          | **GitHub Release `models-2026-07-09`** (too big for the public repo) | 12 h train on a months-built corpus                                                      |
+| **Production make model** `makemodel_b0.pt` (164 MB, B6)                                                                                                                          | **GitHub Release `models-2026-07-09`** holds the OLD 0707 B6; the promoted clean-crop `uk_make_0924_b6` (2026-09-25) is **not yet uploaded** — add a new release | ~1.5 days train on a months-built corpus                                                 |
 
 Still **NOT** in GitHub — keep a private/external backup (too big, or
 PII, or secret):
 
-- **Training corpora** `runs/uk_crops_0707_576` (make) + `runs/uk_crops_0708_bt_384`
-  (body-type) — the distilled datasets; source Orin sessions prune at 7 d,
-  so these can't be re-mined once the box dies.
+- **Training corpora** `runs/uk_crops_0924_576` (make — the plate-anchored
+  corpus the production model trained on; also carries body-type + colour
+  labels) + the legacy `runs/uk_crops_0707_576` / `runs/uk_crops_0708_bt_384`
+  — the distilled datasets; source Orin sessions prune at 7 d, so these
+  can't be re-mined once the box dies.
 - **Per-session derived JSON** `output/*_{data,alpr,dvsa_labels,vehicles,makemodel,bodytype,people}.json`
   — all the ANPR/DVSA/people labels (plate PII); tar the non-image files.
 - **Secrets**: `configs/dvsa.json` (DVSA API key), any `camera.json`
