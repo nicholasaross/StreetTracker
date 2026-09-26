@@ -133,6 +133,36 @@ async def test_cancel_playbook_stops_and_skips_rest() -> None:
     assert pr.snapshot(pb)["steps"][1]["status"] == "skipped"
 
 
+async def test_playbook_holds_wakelock_across_steps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A playbook keeps the box awake from its first step to its last,
+    including the gaps between jobs and action steps -- the reinfer playbook
+    slept the PC between two jobs on 2026-09-25. Grace is 0 here so only the
+    playbook's own hold can bridge the gaps."""
+    import streettracker.control.jobs as jobs_mod
+
+    calls: list[bool] = []
+    monkeypatch.setattr(jobs_mod, "_set_wakelock", calls.append)
+    pr = _runner()
+    pr.jobs.wake_release_grace_s = 0
+
+    async def pause() -> StepResult:
+        await asyncio.sleep(0.05)
+        return StepResult(True, "ok")
+
+    pb = pr.submit(
+        "t",
+        [
+            Step("a", job=JobSpec(kind="print('a')")),
+            Step("wait", action=pause),
+            Step("b", job=JobSpec(kind="print('b')")),
+        ],
+    )
+    await pr.wait(pb.id)
+    await asyncio.sleep(0.05)
+    assert pb.status == "succeeded"
+    assert calls == [True, False]  # held once for the whole playbook
+
+
 async def test_refresh_showcase_timeout_message(monkeypatch: pytest.MonkeyPatch) -> None:
     """A slow re-aggregation (TimeoutError has an empty str) must still produce a
     clear, non-empty message — this was the '(  )' bug."""
