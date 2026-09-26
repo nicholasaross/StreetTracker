@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import sys
 
+import pytest
+
 from streettracker.control.jobs import DEFAULT_BASE_ARGV, JobRunner, JobSpec, _lane_for
 
 PY = sys.executable
@@ -220,3 +222,39 @@ def test_default_base_argv_skips_the_env_sync() -> None:
     assert "--no-sync" in DEFAULT_BASE_ARGV
     # Order matters: uv's own flags must precede the command name.
     assert DEFAULT_BASE_ARGV.index("--no-sync") < DEFAULT_BASE_ARGV.index("streettracker")
+
+
+# ---- wake-lock: no gaps between back-to-back work (2026-09-26 sleep bug) ----
+
+
+def _record_wakelock(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    import streettracker.control.jobs as jobs_mod
+
+    calls: list[bool] = []
+    monkeypatch.setattr(jobs_mod, "_set_wakelock", calls.append)
+    return calls
+
+
+async def test_wakelock_bridges_back_to_back_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The lock outlives a finished job by the grace period, so the next job
+    starting a moment later never leaves the box free to sleep."""
+    calls = _record_wakelock(monkeypatch)
+    r = _runner()
+    r.wake_release_grace_s = 0.5
+    a = r.submit(JobSpec(kind="print('a')"))
+    await r.wait(a.id)
+    assert calls == [True]  # still held during the grace period
+    b = r.submit(JobSpec(kind="print('b')"))
+    await r.wait(b.id)
+    await asyncio.sleep(0.8)
+    assert calls == [True, False]  # one acquire, one release: no gap
+
+
+async def test_wakelock_released_after_grace(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _record_wakelock(monkeypatch)
+    r = _runner()
+    r.wake_release_grace_s = 0.05
+    j = r.submit(JobSpec(kind="print('x')"))
+    await r.wait(j.id)
+    await asyncio.sleep(0.2)
+    assert calls == [True, False]

@@ -17,7 +17,9 @@ Scope of this slice:
   kind-derived lane.
 * **Wake-lock while busy** — the dev box idle-sleeps and has killed overnight
   jobs; an in-process ``SetThreadExecutionState`` keeps the system awake for as
-  long as any job runs (Windows; a no-op elsewhere).
+  long as any job *or playbook* runs, and for ``WAKE_RELEASE_GRACE_S`` after,
+  so there is never a gap between back-to-back jobs (Windows; a no-op
+  elsewhere).
 * **Process-tree cancel** — ``uv run`` spawns a child python, so cancelling
   uses ``taskkill /T`` on Windows to reap the whole tree.
 
@@ -71,6 +73,9 @@ DEFAULT_BASE_ARGV = ["uv", "run", "--no-sync", "streettracker"]
 _LOG_MAXLEN = 500  # ring-buffer of recent output lines kept per job
 _TAIL = 40  # lines embedded in the help prompt / surfaced in the snapshot
 _WATCH_INTERVAL = 1.5  # seconds between local-dir size samples (pull byte-ETA)
+# How long the wake-lock outlives its last holder, so back-to-back jobs never
+# leave a gap in which an idle Windows box can fall asleep.
+WAKE_RELEASE_GRACE_S = 120.0
 
 # Jobs that contend for the one GPU share a lane and run one-at-a-time;
 # everything else runs in the "net" lane, which may overlap the GPU lane.
@@ -207,6 +212,9 @@ class JobRunner:
         self._order: list[str] = []
         self._locks: dict[str, asyncio.Lock] = {}  # one per lane
         self._wake_refs = 0
+        self._wake_held = False
+        self._wake_release: asyncio.TimerHandle | None = None
+        self.wake_release_grace_s = WAKE_RELEASE_GRACE_S
 
     def snapshots(self, limit: int = 50) -> list[dict[str, Any]]:
         """Persisted (prior-run) snapshots + live jobs, most recent ``limit``.
@@ -268,7 +276,7 @@ class JobRunner:
                 return
             job.status = "running"
             job.started_at = time.time()
-            self._acquire_wake()
+            self.acquire_wake()
             watcher: asyncio.Task[None] | None = None
             try:
                 job.proc = await asyncio.create_subprocess_exec(
@@ -322,7 +330,7 @@ class JobRunner:
                     watcher.cancel()
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await watcher
-                self._release_wake()
+                self.release_wake()
         self._persist(job)
 
     async def _watch(self, job: Job) -> None:
@@ -337,17 +345,42 @@ class JobRunner:
         except Exception:
             logger.debug("[control] watcher error for job %s", job.id, exc_info=True)
 
-    # -- wake-lock (reference-counted across concurrent submissions) --
+    # -- wake-lock (reference-counted; released only after a grace period) --
+    #
+    # Each running job holds a reference, and so does each running playbook
+    # (PlaybookRunner), so a multi-step playbook stays awake across the gaps
+    # between its steps. When the last reference goes, the lock is dropped
+    # only after WAKE_RELEASE_GRACE_S with nothing re-acquiring it: Windows
+    # sleeps the instant the lock is released if the user has been idle past
+    # the sleep timeout, and on 2026-09-25 it did exactly that in the few
+    # seconds between two reinfer jobs, losing 13 h. SetThreadExecutionState
+    # is per-thread, so every call here happens on the event-loop thread.
 
-    def _acquire_wake(self) -> None:
+    def acquire_wake(self) -> None:
         self._wake_refs += 1
-        if self._wake_refs == 1:
+        if self._wake_release is not None:
+            self._wake_release.cancel()
+            self._wake_release = None
+        if not self._wake_held:
             _set_wakelock(True)
+            self._wake_held = True
 
-    def _release_wake(self) -> None:
+    def release_wake(self) -> None:
         self._wake_refs = max(0, self._wake_refs - 1)
-        if self._wake_refs == 0:
+        if self._wake_refs or not self._wake_held or self._wake_release is not None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # no loop (sync caller): release now
+            self._drop_wake()
+            return
+        self._wake_release = loop.call_later(self.wake_release_grace_s, self._drop_wake)
+
+    def _drop_wake(self) -> None:
+        self._wake_release = None
+        if self._wake_refs == 0 and self._wake_held:
             _set_wakelock(False)
+            self._wake_held = False
 
 
 def _child_env() -> dict[str, str]:

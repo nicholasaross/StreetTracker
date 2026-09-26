@@ -196,6 +196,10 @@ class PlaybookRunner:
     async def _run(self, pb: Playbook) -> None:
         pb.status = "running"
         pb.started_at = time.time()
+        # Hold the machine awake for the WHOLE playbook, not just while each
+        # step's job runs: the gaps between steps (and action steps) are where
+        # an idle box used to fall asleep mid-reinfer.
+        self.jobs.acquire_wake()
         try:
             for i, step in enumerate(pb.steps):
                 if pb.cancelled:
@@ -218,6 +222,7 @@ class PlaybookRunner:
             pb.status = "failed"
             logger.exception("[control] playbook %s crashed", pb.id)
         finally:
+            self.jobs.release_wake()
             pb.ended_at = time.time()
             if pb.status == "running":  # safety net
                 pb.status = "failed"
