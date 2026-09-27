@@ -20,8 +20,10 @@ pytest.importorskip("cv2")
 
 from streettracker.analysis.makemodel.compare import (  # noqa: E402
     HeldOutCar,
+    _colour_group,
     compare,
     held_out_cars,
+    load_contender,
     main,
     paired_delta,
     score_rows,
@@ -32,13 +34,23 @@ from streettracker.analysis.makemodel.uk_dataset import split_val_cars  # noqa: 
 SESS = "session_20260901_120000"
 # 4 FORD + 4 AUDI cars, one track each (track id = index + 1).
 _CARS = [(f"FD{i}", "FORD") for i in range(4)] + [(f"AU{i}", "AUDI") for i in range(4)]
+_COLOUR = {"FD0": "white", "FD1": "silver", "FD2": "white", "FD3": "silver"} | {
+    f"AU{i}": "black" for i in range(4)
+}
 
 
 def _corpus(root: Path) -> Path:
     corpus = root / "uk_crops_test"
     corpus.mkdir(parents=True)
     samples = [
-        {"path": f"{mk}/{car}_{SESS}_{i + 1}_1.jpg", "make": mk, "car": car}
+        {
+            "path": f"{mk}/{car}_{SESS}_{i + 1}_1.jpg",
+            "make": mk,
+            "car": car,
+            "colour": _COLOUR[car],
+            # AU3's model has no body-type mapping: dropped like the trainer drops it.
+            "body_type": "" if car == "AU3" else ("hatchback" if mk == "FORD" else "suv"),
+        }
         for i, (car, mk) in enumerate(_CARS)
     ]
     (corpus / "manifest.json").write_text(
@@ -90,7 +102,7 @@ def test_held_out_cars_match_trainer_split_and_exclusions(tmp_path: Path) -> Non
     excluded = sorted(val)[0]
     cars2 = held_out_cars(corpus, val_frac=0.5, exclude_cars={excluded})
     assert {c.car for c in cars2} == val - {excluded}
-    assert all(c.tracks == [(SESS, int(c.car[-1]) + (1 if c.make == "FORD" else 5))] for c in cars)
+    assert all(c.tracks == [(SESS, int(c.car[-1]) + (1 if c.label == "FORD" else 5))] for c in cars)
 
 
 def test_score_rows_per_track_and_shared_makes() -> None:
@@ -109,8 +121,8 @@ def test_score_rows_per_track_and_shared_makes() -> None:
     assert rows["production"]["coverage"] == round(2 / 3, 4)  # track 3 unpredicted = wrong
     assert rows["candidate"]["track_acc"] == 1.0
     # Shared-makes view drops KIA (production can't name it).
-    assert rows["production"]["track_acc_shared_makes"] == 0.5
-    assert rows["candidate"]["track_acc_shared_makes"] == 1.0
+    assert rows["production"]["track_acc_shared_classes"] == 0.5
+    assert rows["candidate"]["track_acc_shared_classes"] == 1.0
 
 
 def test_paired_delta_bootstraps_by_car() -> None:
@@ -188,3 +200,82 @@ def test_main_requires_leakage_guard_then_writes_report(
     report = json.loads((tmp_path / "run" / "compare.json").read_text())
     assert report["n_cars"] == 4
     assert report["excluded_corpora"] == [str(other)]
+
+
+# ----------------------------------------------------------------------
+# Colour + body-type heads (--target).
+
+_COLOURS = ["white", "silver", "black"]
+
+
+def _head_ckpt(path: Path, head: str, names: list[str], **meta: object) -> Path:
+    net = MakeModelNet({head: len(names)}, pretrained=False)
+    save_checkpoint(net, path, metadata={f"{head}_names": names, "input_size": 64, **meta})
+    return path
+
+
+def test_held_out_cars_by_colour_use_the_colour_split(tmp_path: Path) -> None:
+    corpus = _corpus(tmp_path)
+    samples = json.loads((corpus / "manifest.json").read_text())["samples"]
+    val = split_val_cars(samples, label_field="colour", val_frac=0.5)
+    cars = held_out_cars(corpus, val_frac=0.5, target="colour")
+    assert {c.car for c in cars} == val  # the colour trainer's val cars
+    assert {c.label for c in cars} <= set(_COLOURS)
+
+
+def test_held_out_cars_drop_cars_without_the_target_label(tmp_path: Path) -> None:
+    corpus = _corpus(tmp_path)
+    cars = held_out_cars(corpus, val_frac=0.5, target="body_type")
+    assert "AU3" not in {c.car for c in cars}  # no body-type mapping
+    assert {c.label for c in cars} <= {"hatchback", "suv"}
+
+
+def test_score_rows_grouped_colour() -> None:
+    """Grouped colour counts a near-miss inside one family (silver for a
+    white car) as right, but not a different family (blue for black)."""
+    cars = [HeldOutCar("A", "white", [("s", 1)]), HeldOutCar("B", "black", [("s", 2)])]
+    preds = {"production": {("s", 1): [("silver", 0.9)], ("s", 2): [("blue", 0.8)]}}
+    rows = score_rows(cars, preds, {"production": set(_COLOURS)}, group=_colour_group)
+    assert rows["production"]["track_acc"] == 0.0
+    assert rows["production"]["track_acc_grouped"] == 0.5
+    assert rows["production"]["_track_hits_grouped"] == {"A": [1], "B": [0]}
+
+
+def test_compare_colour_end_to_end(tmp_path: Path) -> None:
+    corpus = _corpus(tmp_path)
+    out = tmp_path / "output"
+    _session(out)
+    prod = _head_ckpt(tmp_path / "colour_prod.pt", "colour", _COLOURS)  # legacy: hint crops
+    (tmp_path / "run").mkdir()
+    cand = _head_ckpt(
+        tmp_path / "run" / "best.pt", "colour", _COLOURS, crop_mode="plate", crop_pad_frac=0.1
+    )
+    report = compare(
+        corpus,
+        cand,
+        prod,
+        output_root=out,
+        val_frac=0.5,
+        vehicle_detector=_stub_detector,
+        target="colour",
+    )
+    assert report["target"] == "colour"
+    rows = {r["name"]: r for r in report["rows"]}
+    assert set(rows) == {"production", "production_clean_crops", "candidate"}
+    assert rows["production"]["crop_mode"] == "hint" and rows["production"]["pad_frac"] == 0.1
+    assert rows["candidate"]["crop_mode"] == "fullframe"
+    assert all("track_acc_grouped" in r for r in rows.values())
+    g = report["grouped_delta"]
+    assert g["ci95"][0] <= g["candidate_minus_production"] <= g["ci95"][1]
+    assert report["production"]["n_classes"] == 3 and "n_makes" not in report["production"]
+
+
+def test_load_contender_body_type(tmp_path: Path) -> None:
+    ckpt = _head_ckpt(tmp_path / "bt.pt", "body_type", ["hatchback", "suv"])
+    c = load_contender("body_type", ckpt, device="cpu")
+    assert c.classes == {"hatchback", "suv"}
+    assert (c.crop_mode, c.pad_frac) == ("hint", 0.1)
+    pred = c.predict(np.zeros((300, 400, 3), np.uint8), (50, 40, 200, 180))
+    assert pred is not None and pred[0] in {"hatchback", "suv"}
+    with pytest.raises(ValueError, match="target"):
+        load_contender("wheels", ckpt, device="cpu")

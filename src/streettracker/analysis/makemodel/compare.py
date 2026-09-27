@@ -1,4 +1,7 @@
-"""Head-to-head make-classifier comparison on shared held-out cars.
+"""Head-to-head comparison of a candidate vs production CNN on shared held-out cars.
+
+Works for all three heads (``--target make | colour | body_type``); the text
+below uses make, the original case.
 
 A training run's val make@1 is only comparable with production's when both
 were scored on the same cars, with the same makes, from the same kind of
@@ -21,6 +24,10 @@ The headline metric is per-track make@1 (a track = one pass; a track with no
 prediction counts as wrong), with the candidate-minus-production delta and a
 95 % bootstrap CI resampled BY CAR (tracks of one car aren't independent).
 Per-car accuracy and a shared-makes-only view are reported alongside.
+
+For colour, a second "grouped" score also counts near-misses inside one
+colour family as right (``vehicles._colour_group``: white/silver/grey ->
+light, ...), the metric the colour head was first judged on.
 
 Caveat: held-out cars are plated (DVSA-labelled) cars, which skew nearer /
 daylit / sharper than the unplated majority the classifier mostly serves.
@@ -51,8 +58,74 @@ _LEGACY_TRAIN_PAD = 0.1
 @dataclasses.dataclass(slots=True)
 class HeldOutCar:
     car: str
-    make: str
+    label: str  # the DVSA-derived truth for the target (make / colour / body type)
     tracks: list[tuple[str, int]]  # (session name, track id)
+
+
+TARGETS = ("make", "colour", "body_type")
+_NOUN = {"make": "make", "colour": "colour", "body_type": "body_type"}
+
+
+@dataclasses.dataclass(slots=True)
+class Contender:
+    """One model + its crop settings, behind a uniform (label, conf) predict."""
+
+    crop_mode: str
+    pad_frac: float
+    classes: set[str]
+    predict: Any  # Callable[[np.ndarray, box | None], tuple[str, float] | None]
+
+
+def load_contender(
+    target: str,
+    checkpoint: Path,
+    *,
+    device: str,
+    crop_mode: str = "auto",
+    pad_frac: float | None = None,
+) -> Contender:
+    """Load ``checkpoint`` as the ``target`` head's classifier (each head's
+    own inference class, so crop mode + pad follow its checkpoint)."""
+    if target == "make":
+        from streettracker.analysis.makemodel.infer import MakeModelClassifier
+
+        mm = MakeModelClassifier(checkpoint, device=device, crop_mode=crop_mode, pad_frac=pad_frac)
+        if not mm.make_only:
+            raise ValueError(f"{checkpoint} is not a UK make-only model")
+
+        def predict_make(image: Any, box: Any) -> tuple[str, float] | None:
+            cands = mm.classify(image, box)
+            return (cands[0].make, cands[0].conf) if cands else None
+
+        return Contender(mm.crop_mode, mm.pad_frac, set(mm.make_names), predict_make)
+    if target == "colour":
+        from streettracker.analysis.makemodel.colour_infer import ColourClassifier
+
+        cc = ColourClassifier(checkpoint, device=device, crop_mode=crop_mode, pad_frac=pad_frac)
+        return Contender(cc.crop_mode, cc.pad_frac, set(cc.colours), cc.classify)
+    if target == "body_type":
+        from streettracker.analysis.makemodel.bodytype_infer import BodyTypeClassifier
+
+        bc = BodyTypeClassifier(checkpoint, device=device, crop_mode=crop_mode, pad_frac=pad_frac)
+        return Contender(bc.crop_mode, bc.pad_frac, set(bc.body_types), bc.classify)
+    raise ValueError(f"target must be one of {TARGETS}, got {target!r}")
+
+
+def default_production(target: str) -> Path:
+    """The production checkpoint each head's inference command uses."""
+    if target == "colour":
+        from streettracker.analysis.makemodel.colour_infer import DEFAULT_MODEL
+    elif target == "body_type":
+        from streettracker.analysis.makemodel.bodytype_infer import DEFAULT_MODEL
+    else:
+        from streettracker.analysis.makemodel.infer import DEFAULT_MODEL
+    return DEFAULT_MODEL
+
+
+def _colour_group(colour: str) -> str:
+    from streettracker.analysis.vehicles import _colour_group as group
+
+    return group(colour) or ""
 
 
 def _manifest(corpus_dir: Path) -> dict[str, Any]:
@@ -72,15 +145,19 @@ def held_out_cars(
     seed: int = 0,
     max_tracks_per_car: int = DEFAULT_MAX_TRACKS_PER_CAR,
     max_cars: int = 0,
+    target: str = "make",
 ) -> list[HeldOutCar]:
-    """The candidate corpus's val cars (same split as the trainer), minus
-    ``exclude_cars``, each with up to ``max_tracks_per_car`` tracks."""
+    """The candidate corpus's val cars for ``target`` (the same by-car split,
+    stratified by the same label, as the trainer used), minus
+    ``exclude_cars``, each with up to ``max_tracks_per_car`` tracks. Cars
+    with no label for the target (e.g. an uncovered body-type model) are
+    dropped, exactly as the trainer drops them."""
     from streettracker.analysis.makemodel.uk_dataset import split_val_cars
 
-    samples = _manifest(corpus_dir)["samples"]
-    val = split_val_cars(samples, label_field="make", val_frac=val_frac, seed=seed)
+    samples = [s for s in _manifest(corpus_dir)["samples"] if s.get(target)]
+    val = split_val_cars(samples, label_field=target, val_frac=val_frac, seed=seed)
     exclude = exclude_cars or set()
-    make_of: dict[str, str] = {}
+    label_of: dict[str, str] = {}
     tracks_of: dict[str, set[tuple[str, int]]] = defaultdict(set)
     for s in samples:
         car = s["car"]
@@ -89,16 +166,16 @@ def held_out_cars(
         m = _SAMPLE_NAME_RE.match(Path(s["path"]).name)
         if not m:
             continue
-        make_of[car] = s["make"]
+        label_of[car] = s[target]
         tracks_of[car].add((m["session"], int(m["tid"])))
 
     rng = random.Random(f"compare:{seed}")
     out = []
-    for car in sorted(make_of):
+    for car in sorted(label_of):
         tracks = sorted(tracks_of[car])
         if max_tracks_per_car and len(tracks) > max_tracks_per_car:
             tracks = sorted(rng.sample(tracks, max_tracks_per_car))
-        out.append(HeldOutCar(car, make_of[car], tracks))
+        out.append(HeldOutCar(car, label_of[car], tracks))
     if max_cars and len(out) > max_cars:
         out = sorted(rng.sample(out, max_cars), key=lambda c: c.car)
     return out
@@ -115,51 +192,67 @@ def _vote(preds: list[tuple[str, float]]) -> str | None:
 def score_rows(
     cars: list[HeldOutCar],
     preds: dict[str, dict[tuple[str, int], list[tuple[str, float]]]],
-    known_makes: dict[str, set[str]],
+    known_classes: dict[str, set[str]],
+    group: Any = None,
 ) -> dict[str, dict[str, Any]]:
     """Per-contender accuracy from per-track snap predictions.
 
-    ``preds[name][(session, tid)]`` holds that contender's (make, conf) per
+    ``preds[name][(session, tid)]`` holds that contender's (label, conf) per
     classified snap. Returns per-contender metrics plus per-car correctness
-    vectors (``_track_hits``) used for the paired bootstrap.
+    vectors (``_track_hits``, and ``_track_hits_grouped`` when ``group``
+    maps a label to its family) used for the paired bootstrap.
     """
-    shared = set.intersection(*known_makes.values()) if known_makes else set()
+    shared = set.intersection(*known_classes.values()) if known_classes else set()
     out: dict[str, dict[str, Any]] = {}
     for name, by_track in preds.items():
-        n_tr = n_tr_ok = n_tr_pred = 0
+        n_tr = n_tr_ok = n_tr_pred = n_tr_gok = 0
         n_sh = n_sh_ok = 0
-        n_car_ok = n_car_sh = n_car_sh_ok = 0
+        n_car_ok = n_car_sh = n_car_sh_ok = n_car_gok = 0
         track_hits: dict[str, list[int]] = {}
+        track_hits_g: dict[str, list[int]] = {}
         for c in cars:
-            hits = []
+            hits, hits_g = [], []
             car_preds: list[tuple[str, float]] = []
             for key in c.tracks:
                 p = by_track.get(key, [])
                 car_preds.extend(p)
                 guess = _vote(p)
-                ok = int(guess == c.make)
+                ok = int(guess == c.label)
                 hits.append(ok)
                 n_tr += 1
                 n_tr_ok += ok
                 n_tr_pred += guess is not None
-                if c.make in shared:
+                if group is not None:
+                    gok = int(guess is not None and group(guess) == group(c.label) != "")
+                    hits_g.append(gok)
+                    n_tr_gok += gok
+                if c.label in shared:
                     n_sh += 1
                     n_sh_ok += ok
             track_hits[c.car] = hits
-            car_ok = int(_vote(car_preds) == c.make)
+            track_hits_g[c.car] = hits_g
+            car_guess = _vote(car_preds)
+            car_ok = int(car_guess == c.label)
             n_car_ok += car_ok
-            if c.make in shared:
+            if group is not None:
+                n_car_gok += int(car_guess is not None and group(car_guess) == group(c.label) != "")
+            if c.label in shared:
                 n_car_sh += 1
                 n_car_sh_ok += car_ok
-        out[name] = {
+        row: dict[str, Any] = {
             "n_tracks": n_tr,
             "track_acc": round(n_tr_ok / n_tr, 4) if n_tr else None,
-            "track_acc_shared_makes": round(n_sh_ok / n_sh, 4) if n_sh else None,
+            "track_acc_shared_classes": round(n_sh_ok / n_sh, 4) if n_sh else None,
             "car_acc": round(n_car_ok / len(cars), 4) if cars else None,
-            "car_acc_shared_makes": round(n_car_sh_ok / n_car_sh, 4) if n_car_sh else None,
+            "car_acc_shared_classes": round(n_car_sh_ok / n_car_sh, 4) if n_car_sh else None,
             "coverage": round(n_tr_pred / n_tr, 4) if n_tr else None,
             "_track_hits": track_hits,
         }
+        if group is not None:
+            row["track_acc_grouped"] = round(n_tr_gok / n_tr, 4) if n_tr else None
+            row["car_acc_grouped"] = round(n_car_gok / len(cars), 4) if cars else None
+            row["_track_hits_grouped"] = track_hits_g
+        out[name] = row
     return out
 
 
@@ -220,11 +313,11 @@ def compare(
     max_cars: int = 0,
     device: str = "cpu",
     vehicle_detector: Any = None,
+    target: str = "make",
 ) -> dict[str, Any]:
     """Run the head-to-head and return the report dict (see module doc)."""
     import cv2  # type: ignore[import-untyped]
 
-    from streettracker.analysis.makemodel.infer import MakeModelClassifier
     from streettracker.analysis.snap_assets import discover_vehicle_snaps
     from streettracker.analysis.vehicle_locator import SnapVehicleLocator, VehicleBoxCache
 
@@ -238,21 +331,19 @@ def compare(
         seed=seed,
         max_tracks_per_car=max_tracks_per_car,
         max_cars=max_cars,
+        target=target,
     )
 
-    prod_auto = MakeModelClassifier(production, device=device)
-    contenders: dict[str, MakeModelClassifier] = {"production": prod_auto}
+    prod_auto = load_contender(target, production, device=device)
+    contenders: dict[str, Contender] = {"production": prod_auto}
     if prod_auto.crop_mode != "fullframe":
         # Production on clean crops at its TRAINING pad: every legacy corpus
         # was built at 0.1 (recomputed crops match the saved ones, 2026-09-24
-        # audit); only its inference default was the looser 0.25.
-        contenders["production_clean_crops"] = MakeModelClassifier(
-            production, device=device, crop_mode="fullframe", pad_frac=_LEGACY_TRAIN_PAD
+        # audit); only the make head's inference default was the looser 0.25.
+        contenders["production_clean_crops"] = load_contender(
+            target, production, device=device, crop_mode="fullframe", pad_frac=_LEGACY_TRAIN_PAD
         )
-    contenders["candidate"] = MakeModelClassifier(candidate, device=device)
-    for name, clf in contenders.items():
-        if not clf.make_only:
-            raise ValueError(f"{name} checkpoint is not a UK make-only model")
+    contenders["candidate"] = load_contender(target, candidate, device=device)
 
     # Work list grouped by session: each snap decoded once, located once per
     # crop mode, then classified by every contender.
@@ -300,19 +391,32 @@ def compare(
         if image is not None:
             boxes = {mode: loc.locate(path, tid, n, image)[0] for mode, loc in locs.items()}
             for name, clf in contenders.items():
-                cands = clf.classify(image, boxes[clf.crop_mode])
-                if cands:
-                    preds[name][(sess, tid)].append((cands[0].make, cands[0].conf))
+                pred = clf.predict(image, boxes[clf.crop_mode])
+                if pred:
+                    preds[name][(sess, tid)].append((pred[0], float(pred[1])))
         if i % 200 == 0 or i == total:
             print(f"[batch] {i}/{total} done ({time.time() - t0:.0f}s)", flush=True)
     for loc in locs.values():
         loc.close()
 
-    known = {name: set(clf.make_names) for name, clf in contenders.items()}
-    scores = score_rows(cars, preds, known)
+    known = {name: clf.classes for name, clf in contenders.items()}
+    group = _colour_group if target == "colour" else None
+    scores = score_rows(cars, preds, known, group=group)
     point, lo, hi = paired_delta(
         scores["candidate"]["_track_hits"], scores["production"]["_track_hits"], seed=seed
     )
+    grouped_delta = None
+    if group is not None:
+        g_pt, g_lo, g_hi = paired_delta(
+            scores["candidate"]["_track_hits_grouped"],
+            scores["production"]["_track_hits_grouped"],
+            seed=seed,
+        )
+        grouped_delta = {
+            "metric": "track_acc_grouped",
+            "candidate_minus_production": round(g_pt, 4),
+            "ci95": [round(g_lo, 4), round(g_hi, 4)],
+        }
     rows = []
     for name, clf in contenders.items():
         row = {k: v for k, v in scores[name].items() if not k.startswith("_")}
@@ -332,11 +436,17 @@ def compare(
             "clean_minus_deployed": round(c_pt, 4),
             "ci95": [round(c_lo, 4), round(c_hi, 4)],
         }
+
+    def n_classes(name: str) -> dict[str, int]:
+        n = len(known[name])
+        return {"n_classes": n, **({"n_makes": n} if target == "make" else {})}
+
     return {
         "created_at": datetime.now().isoformat(timespec="seconds"),
+        "target": target,
         "corpus": str(corpus_dir),
-        "candidate": {**_file_fingerprint(candidate), "n_makes": len(known["candidate"])},
-        "production": {**_file_fingerprint(production), "n_makes": len(known["production"])},
+        "candidate": {**_file_fingerprint(candidate), **n_classes("candidate")},
+        "production": {**_file_fingerprint(production), **n_classes("production")},
         "excluded_corpora": [str(d) for d in exclude_corpora or []],
         "n_cars": len(cars),
         "n_tracks": sum(len(c.tracks) for c in cars),
@@ -348,6 +458,7 @@ def compare(
             "candidate_minus_production": round(point, 4),
             "ci95": [round(lo, 4), round(hi, 4)],
         },
+        "grouped_delta": grouped_delta,
         "production_clean_crop_delta": clean_delta,
     }
 
@@ -361,20 +472,32 @@ def _print_report(report: dict[str, Any]) -> None:
     def pct(v: float | None) -> str:
         return f"{100 * v:.1f}%" if v is not None else "-"
 
-    print(f"  {'model':<24}{'crops':<15}{'track@1':>9}{'shared':>9}{'car@1':>8}{'cover':>8}")
+    noun = _NOUN.get(report.get("target", "make"), "make")
+    grouped = report.get("grouped_delta") is not None
+    head = f"  {'model':<24}{'crops':<15}{'track@1':>9}{'shared':>9}{'car@1':>8}{'cover':>8}"
+    print(head + (f"{'grouped':>9}" if grouped else ""))
     for r in report["rows"]:
         crops = f"{r['crop_mode']}@{r['pad_frac']}"
         print(
             f"  {r['name']:<24}{crops:<15}"
-            f"{pct(r['track_acc']):>9}{pct(r['track_acc_shared_makes']):>9}"
+            f"{pct(r['track_acc']):>9}{pct(r['track_acc_shared_classes']):>9}"
             f"{pct(r['car_acc']):>8}{pct(r['coverage']):>8}"
+            + (f"{pct(r.get('track_acc_grouped')):>9}" if grouped else "")
         )
     d = report["delta"]
     lo, hi = d["ci95"]
     print(
-        f"[makemodel-compare] candidate - production per-track make@1: "
+        f"[makemodel-compare] candidate - production per-track {noun}@1: "
         f"{100 * d['candidate_minus_production']:+.1f} pp (95% CI {100 * lo:+.1f}..{100 * hi:+.1f})"
     )
+    g = report.get("grouped_delta")
+    if g:
+        glo, ghi = g["ci95"]
+        print(
+            f"[makemodel-compare] candidate - production per-track grouped {noun}: "
+            f"{100 * g['candidate_minus_production']:+.1f} pp "
+            f"(95% CI {100 * glo:+.1f}..{100 * ghi:+.1f})"
+        )
     c = report.get("production_clean_crop_delta")
     if c:
         clo, chi = c["ci95"]
@@ -391,12 +514,22 @@ def main(argv: list[str] | None = None) -> int:
     import torch
 
     from streettracker.analysis.alpr.fullframe import load_road_polygon
-    from streettracker.analysis.makemodel.infer import DEFAULT_MODEL
 
     ap = argparse.ArgumentParser(prog="streettracker makemodel-compare")
     ap.add_argument("corpus_dir", type=Path, help="the candidate's training corpus")
     ap.add_argument("--candidate", type=Path, required=True, help="candidate best.pt")
-    ap.add_argument("--production", type=Path, default=DEFAULT_MODEL)
+    ap.add_argument(
+        "--target",
+        choices=TARGETS,
+        default="make",
+        help="which head: make (default), colour or body_type",
+    )
+    ap.add_argument(
+        "--production",
+        type=Path,
+        default=None,
+        help="production checkpoint (default: the target's installed model)",
+    )
     ap.add_argument("--runs-dir", type=Path, default=Path("runs"))
     ap.add_argument(
         "--exclude-corpus",
@@ -415,6 +548,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", type=Path, default=None, help="default: <candidate dir>/compare.json")
     ap.add_argument("--cpu", action="store_true")
     args = ap.parse_args(argv)
+    if args.production is None:
+        args.production = default_production(args.target)
 
     for p in (args.corpus_dir / "manifest.json", args.candidate, args.production):
         if not p.exists():
@@ -445,6 +580,7 @@ def main(argv: list[str] | None = None) -> int:
         max_tracks_per_car=args.max_tracks_per_car,
         max_cars=args.max_cars,
         device=device,
+        target=args.target,
     )
     if not report["n_cars"]:
         print("[makemodel-compare] no held-out cars left after exclusions")
