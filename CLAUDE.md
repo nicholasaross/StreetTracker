@@ -8,6 +8,15 @@ Everything from the last sprint is **merged (#57–#64) and on `main`** (clean
 tree). The detailed history lives in the sections below; this block is the
 "resume from cold" summary.
 
+**⮕ READ FIRST (2026-09-27): [`docs/data_integrity_review.md`](docs/data_integrity_review.md)**
+— the follow-up to the crop-contamination finding. **Confirmed:** `ocr_conf` is
+always ~1.0 under the locked fast-plate-ocr 1.1.0 (`alpr/preferred.py:168` takes
+the max over slots, and a pad slot is ~1.0), so every `conf ≥ 0.9` plate gate
+(DVSA harvest, `vehicles`, the "canonical read rate" headline) is a no-op. The
+review also covers 14 other unverified-association risks, with a phased
+experiment plan (Phase 0 = read-only checks on existing `output/`). Until those
+land, the ALPR rates below are *canonical-shape* rates, not verified reads.
+
 **Live on the Orin** (#63 runtime bundle deployed 2026-06-13, service active,
 NRestarts=0):
 
