@@ -324,7 +324,12 @@ Session files:
   purple). The colour head reads the 4K snap (same "resolution is the
   lever" fix as make) → **87 % grouped / 74 % fine per-track** on the
   same held-out val cars (`.claude/color_accuracy.py`, shipped
-  2026-08-11, b0@384 `models/colour_b0.pt`). Same `--pad-frac 0.1`
+  2026-08-11, b0@384 `models/colour_b0.pt`). **⮕ 2026-09-27: that 87 %
+  scored confident passes only** — the harness skips passes whose colour
+  is blank (best read < 0.5 conf, 22 % of all passes); the strict
+  head-to-head (every pass counts) put that model at 44.8 % exact / 53.3 %
+  grouped. It was replaced on 2026-09-27 by the clean-crop retrain (see
+  [Make/model classification](#makemodel-classification)). Same `--pad-frac 0.1`
   discipline as bodytype. The HSV `color` field is left untouched
   (offline sidecar, no Orin/schema change). **Wired in 2026-08-11:** the
   `/stats` colour mix prefers DVSA `primary_colour` → this CNN → HSV; the
@@ -771,6 +776,25 @@ spilled ~1.06 GB into WDDM system memory (desktop compositor held
 `--batch-size 6`, or free VRAM first, next time. Per-car crop dominance
 (top 500 of 7,319 cars hold 47.6 % of crops; residents LA68CWY 668 /
 FD61PVX 589) is an untested lever (`--max-per-car`).
+
+**Colour + body type — clean-crop retrains PROMOTED 2026-09-27.** Both
+EfficientNet-B0 @384 on the same plate-anchored `uk_crops_0924_576`
+(`runs/uk_colour_0926_b0`, `runs/uk_body_0926_b0`; batch 32, ~40 min/epoch
+— single-process photo loading, not the GPU, is the bottleneck for B0).
+Both peaked early (colour epoch 1, body epoch 3) then memorised, like
+make. Head-to-head (`makemodel-compare --target colour|body_type`, every
+pass counts, production's training cars excluded):
+
+| head      | held-out            | as deployed      | old model, clean crops | new model            | new − deployed (95 % CI)      |
+| --------- | ------------------- | ---------------- | ---------------------- | -------------------- | ----------------------------- |
+| colour    | 907 cars / 1,359 tr | 44.8 % (53.3 % grouped) | 55.2 % (63.5 %)  | **57.5 % (64.6 %)**  | +12.7 pp (+10.1..+15.2)       |
+| body type | 767 cars / 1,180 tr | 52.0 %           | 65.3 %                 | **68.5 %**           | +16.5 pp (+13.5..+19.6)       |
+
+Most of each gain is the crop fix itself (old model on clean crops: +10.4
+/ +13.4 pp); retraining adds ~2-3 pp. Old models backed up as
+`models/{colour,bodytype}_b0.20260927T094243.pt` (untracked); inference
+now runs `crop=fullframe pad=0.1` automatically, and a re-run of every
+session with both new heads was queued on 2026-09-27.
 
 The dataset-level enrichment pivot. Two prongs:
 
