@@ -65,6 +65,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from streettracker.analysis.alpr.base import resolve_plate_conf_threshold  # noqa: E402
 from streettracker.analysis.dvsa import is_canonical_uk_plate  # noqa: E402
 from streettracker.analysis.makemodel.colour import colour_class_for  # noqa: E402
 from streettracker.analysis.parked import detect_parked  # noqa: E402
@@ -291,7 +292,9 @@ def print_table(header: list[str], rows: list[list[str]]) -> None:
         print("  " + "  ".join(c.rjust(w) for c, w in zip(r, widths, strict=True)))
 
 
-def report(reads: list[TrackRead], *, min_n: int, colour_note: str) -> dict[str, Any]:
+def report(
+    reads: list[TrackRead], *, min_n: int, colour_note: str, current_gate: float
+) -> dict[str, Any]:
     result: dict[str, Any] = {"n_tracks": len(reads), "scorers": {}}
     metric_cols = [METRIC_LABELS[m] for m in METRICS]
     for scorer in SCORERS:
@@ -314,7 +317,7 @@ def report(reads: list[TrackRead], *, min_n: int, colour_note: str) -> dict[str,
 
         print(f"\n== {scorer}: threshold sweep (kept = best read at or above the cut-off) ==")
         rows, sweep_json = [], []
-        for t in SWEEP:
+        for t in sorted({*SWEEP, current_gate}):
             kept = [r for r in reads if r.conf[scorer] >= t]
             dropped = [r for r in reads if r.conf[scorer] < t]
             sk, sd = summarise(kept), summarise(dropped)
@@ -322,7 +325,7 @@ def report(reads: list[TrackRead], *, min_n: int, colour_note: str) -> dict[str,
             pct = f"{100 * len(kept) / len(reads):.0f}%" if reads else "-"
             rows.append(
                 [
-                    f"{t:.2f}",
+                    f"{t:.2f}" + (" (current)" if t == current_gate else ""),
                     f"{len(kept)} ({pct})",
                     fmt_rate(sk["not_on_register"], min_n),
                     fmt_rate(sk["colour_mismatch"], min_n),
@@ -372,7 +375,11 @@ def report(reads: list[TrackRead], *, min_n: int, colour_note: str) -> dict[str,
         "are clearly worse than the kept tracks'; if the dropped tracks look like the kept\n"
         "ones, the cut-off is too strict. The last table shows whether 'another snap agrees'\n"
         "lets a lower bar through safely.\n"
-        f"Colour: {colour_note}"
+        f"Colour: {colour_note}\n"
+        "Apply the chosen value by writing configs/alpr.json as\n"
+        '  {"plate_conf_threshold": X}\n'
+        "(see configs/alpr.example.json); dvsa-label, vehicles, the showcase and\n"
+        "alpr-rescore all read it. Then re-run dvsa-label -> dvsa-apply -> vehicles."
     )
     return result
 
@@ -443,7 +450,14 @@ def main(argv: list[str] | None = None) -> int:
         else:
             reads.extend(got)
 
+    try:
+        current_gate, gate_source = resolve_plate_conf_threshold()
+    except ValueError as exc:
+        print(f"plate gate config: {exc}", file=sys.stderr)
+        return 2
+
     n_used = len(session_dirs) - no_alpr - len(skipped)
+    print(f"current plate gate: {current_gate} ({gate_source})")
     print(f"sessions: {n_used} used, {len(skipped)} not re-scored yet, {no_alpr} without ALPR")
     if skipped:
         print(
@@ -467,7 +481,8 @@ def main(argv: list[str] | None = None) -> int:
         else "the colour model trained on DVSA-labelled cars, some of which may be in this "
         "data; pass --exclude-corpus to check only unseen cars."
     )
-    result = report(reads, min_n=args.min_n, colour_note=colour_note)
+    result = report(reads, min_n=args.min_n, colour_note=colour_note, current_gate=current_gate)
+    result["current_gate"] = {"value": current_gate, "source": gate_source}
 
     if args.json:
         result.update(

@@ -176,7 +176,10 @@ corpus**, including all fullframe re-enrichment, has this behaviour.
   are fixed in minutes. The panel's **Re-score plate confidence** playbook runs
   it, then `dvsa-label` → `dvsa-apply` → `vehicles`, on every session still
   flagged **Plates v2**.
-- **Still open:** the 0.9 gates are now meaningful ("every character ≥ 0.9")
+- The three separate 0.9 gates (dvsa-label, `vehicles`, the stats page's
+  fastest-car plates) are now **one shared setting**: `configs/alpr.json`
+  `{"plate_conf_threshold": X}`, default 0.9 (`analysis/alpr/base.py`).
+- **Still open:** that gate is now meaningful ("every character ≥ 0.9")
   but uncalibrated. `.claude/ocr_conf_calibration.py` gives a label-free first
   answer from data already on disk. The old gate let every read through, so
   nearly every UK-shaped read was already looked up on DVSA. By confidence group

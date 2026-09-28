@@ -147,3 +147,60 @@ class TestPlateResultJson:
     def test_recognizers_without_char_probs_serialise_none(self) -> None:
         read = base.PlateRead(text="ABC", ocr_confidence=0.7, raw_text="ABC")
         assert read.char_probs is None
+
+
+class TestPlateConfThreshold:
+    """The one shared plate-read confidence gate (configs/alpr.json)."""
+
+    def _write(self, path, content) -> None:  # noqa: ANN001
+        import json
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content if isinstance(content, str) else json.dumps(content))
+
+    def test_default_without_a_config(self) -> None:
+        assert base.resolve_plate_conf_threshold() == (0.9, "default")
+        assert base.plate_conf_threshold() == 0.9
+
+    def test_config_value_is_used(self, _isolated_plate_conf_config) -> None:  # noqa: ANN001
+        self._write(_isolated_plate_conf_config, {"plate_conf_threshold": 0.82})
+        value, source = base.resolve_plate_conf_threshold()
+        assert value == 0.82
+        assert source == str(_isolated_plate_conf_config)
+
+    def test_command_line_override_wins(self, _isolated_plate_conf_config) -> None:  # noqa: ANN001
+        self._write(_isolated_plate_conf_config, {"plate_conf_threshold": 0.82})
+        assert base.resolve_plate_conf_threshold(0.7) == (0.7, "command line")
+
+    def test_comment_only_file_falls_back_to_default(
+        self,
+        _isolated_plate_conf_config,  # noqa: ANN001
+    ) -> None:
+        self._write(_isolated_plate_conf_config, {"_comment": "not set yet"})
+        assert base.resolve_plate_conf_threshold() == (0.9, "default")
+
+    @pytest.mark.parametrize(
+        ("content", "match"),
+        [
+            ({"plate_conf_treshold": 0.8}, "unknown key"),  # a typo must not fall back to 0.9
+            ({"plate_conf_threshold": 1.5}, r"\(0, 1\]"),
+            ({"plate_conf_threshold": 0}, r"\(0, 1\]"),
+            ({"plate_conf_threshold": "0.8"}, r"\(0, 1\]"),
+            ({"plate_conf_threshold": True}, r"\(0, 1\]"),
+            ([0.8], "JSON object"),
+            ("{not json", "unreadable"),
+        ],
+    )
+    def test_unusable_config_raises_instead_of_falling_back(
+        self,
+        _isolated_plate_conf_config,  # noqa: ANN001
+        content,  # noqa: ANN001
+        match: str,
+    ) -> None:
+        self._write(_isolated_plate_conf_config, content)
+        with pytest.raises(ValueError, match=match):
+            base.resolve_plate_conf_threshold()
+
+    def test_out_of_range_override_raises(self) -> None:
+        with pytest.raises(ValueError, match="command line"):
+            base.resolve_plate_conf_threshold(1.2)

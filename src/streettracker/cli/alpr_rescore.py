@@ -36,7 +36,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from streettracker.analysis.alpr.base import OCR_CONF_METHOD, PlateRead, atomic_write_text
+from streettracker.analysis.alpr.base import (
+    OCR_CONF_METHOD,
+    PlateRead,
+    atomic_write_text,
+    plate_conf_threshold,
+    resolve_plate_conf_threshold,
+)
 from streettracker.cli.alpr_run import _rollup_by_track
 
 if TYPE_CHECKING:
@@ -47,9 +53,6 @@ if TYPE_CHECKING:
 # left alone.
 FAST_PLATE_OCR_PIPELINES = frozenset({"preferred", "ablation_bespokedet_fastocr"})
 DEFAULT_OCR_MODEL = "global-plates-mobile-vit-v2-model"
-# The default gate of dvsa-label and vehicles; the summary reports how many
-# reads and tracks clear it before and after.
-GATE_CONF = 0.9
 _PROGRESS_EVERY = 500
 
 
@@ -136,9 +139,11 @@ def rescore_records(
     return stats
 
 
-def gated_tracks(rollup: dict[str, Any], *, gate: float = GATE_CONF) -> int:
-    """Tracks whose best preferred read is UK-shaped and clears ``gate`` --
-    the population ``dvsa-label`` looks up (before parked-beacon suppression)."""
+def gated_tracks(rollup: dict[str, Any], *, gate: float | None = None) -> int:
+    """Tracks whose best preferred read is UK-shaped and clears ``gate``
+    (default: the shared plate setting) -- the population ``dvsa-label``
+    looks up (before parked-beacon suppression)."""
+    gate = plate_conf_threshold(gate)
     n = 0
     for t in rollup.get("tracks", []):
         best = t.get("best_preferred")
@@ -238,6 +243,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    # The summary reports against the gate dvsa-label will apply next.
+    try:
+        gate, gate_source = resolve_plate_conf_threshold()
+    except ValueError as exc:
+        print(f"[alpr-rescore] {exc}", file=sys.stderr)
+        return 2
+
     old_rollup = _rollup_by_track(records)
 
     from streettracker.analysis.alpr.preferred import FastPlateOcrRecognizer
@@ -259,13 +271,14 @@ def main(argv: list[str] | None = None) -> int:
     if stats.n_missing:
         print(f"[alpr-rescore] {stats.n_missing} reads had no usable crop: confidence cleared")
     print(
-        f"[alpr-rescore] reads with ocr_conf >= {GATE_CONF}: before "
-        f"{_share_at_least(stats.old_conf, GATE_CONF)} -> after "
-        f"{_share_at_least(stats.new_conf, GATE_CONF)}; new ocr_conf {_quantiles(stats.new_conf)}"
+        f"[alpr-rescore] reads with ocr_conf >= {gate} ({gate_source}): before "
+        f"{_share_at_least(stats.old_conf, gate)} -> after "
+        f"{_share_at_least(stats.new_conf, gate)}; new ocr_conf {_quantiles(stats.new_conf)}"
     )
+    n_old, n_new = gated_tracks(old_rollup, gate=gate), gated_tracks(new_rollup, gate=gate)
     print(
-        f"[alpr-rescore] tracks with a UK-shaped best read at ocr_conf >= {GATE_CONF} "
-        f"(what dvsa-label looks up): {gated_tracks(old_rollup)} -> {gated_tracks(new_rollup)}"
+        f"[alpr-rescore] tracks with a UK-shaped best read at ocr_conf >= {gate} "
+        f"(what dvsa-label looks up): {n_old} -> {n_new}"
     )
 
     if args.dry_run:

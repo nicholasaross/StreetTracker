@@ -326,6 +326,44 @@ def test_main_writes_labels_file_with_session_summary(tmp_path: Path) -> None:
     assert payload["labels"]["AE13SJX"]["year"] == 2013
 
 
+def test_main_uses_and_records_the_shared_plate_gate(
+    tmp_path: Path, _isolated_plate_conf_config: Path
+) -> None:
+    # configs/alpr.json at 0.98: of AE13SJX (0.99) and LD22BMG (0.97)
+    # only the first clears the gate; the harvest records the gate used.
+    session = _write_minimal_session(tmp_path)
+    _isolated_plate_conf_config.parent.mkdir(parents=True)
+    _isolated_plate_conf_config.write_text(json.dumps({"plate_conf_threshold": 0.98}))
+    with patch("streettracker.cli.dvsa_label.DvsaClient") as cls:
+        cls.return_value.lookup_plate.side_effect = lambda plate: _porsche_result(plate)
+        rc = dvsa_label.main([str(session), "--config", str(tmp_path / "dvsa.json")])
+    assert rc == 0
+    payload = json.loads((session / "session_demo_dvsa_labels.json").read_text())
+    assert set(payload["labels"]) == {"AE13SJX"}
+    assert payload["conf_threshold"] == 0.98
+
+    # --conf-threshold overrides the config for one run.
+    with patch("streettracker.cli.dvsa_label.DvsaClient") as cls:
+        cls.return_value.lookup_plate.side_effect = lambda plate: _porsche_result(plate)
+        dvsa_label.main(
+            [str(session), "--config", str(tmp_path / "dvsa.json"), "--conf-threshold", "0.95"]
+        )
+    payload = json.loads((session / "session_demo_dvsa_labels.json").read_text())
+    assert set(payload["labels"]) == {"AE13SJX", "LD22BMG"}
+    assert payload["conf_threshold"] == 0.95
+
+
+def test_main_refuses_a_malformed_plate_gate_config(
+    tmp_path: Path, _isolated_plate_conf_config: Path
+) -> None:
+    session = _write_minimal_session(tmp_path)
+    _isolated_plate_conf_config.parent.mkdir(parents=True)
+    _isolated_plate_conf_config.write_text(json.dumps({"plate_conf_treshold": 0.8}))
+    rc = dvsa_label.main([str(session), "--config", str(tmp_path / "dvsa.json")])
+    assert rc == 2
+    assert not (session / "session_demo_dvsa_labels.json").exists()
+
+
 def test_main_records_unknown_plates_when_dvsa_returns_none(tmp_path: Path) -> None:
     session = _write_minimal_session(tmp_path)
     cfg_path = tmp_path / "dvsa.json"

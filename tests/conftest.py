@@ -2,9 +2,23 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from streettracker.analysis.alpr import base as alpr_base
 from streettracker.common.schema import IRPeriod, SessionMeta, TrackRecord
+
+
+@pytest.fixture(autouse=True)
+def _isolated_plate_conf_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point the shared plate-confidence setting at an (absent) per-test
+    file, so a calibrated ``configs/alpr.json`` on the dev box can't change
+    what the tests see. Tests that need a config write to the path returned
+    (== ``alpr_base.PLATE_CONF_CONFIG``)."""
+    path = tmp_path / "configs" / "alpr.json"
+    monkeypatch.setattr(alpr_base, "PLATE_CONF_CONFIG", path)
+    return path
 
 
 @pytest.fixture

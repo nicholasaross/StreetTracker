@@ -251,6 +251,25 @@ def test_build_vehicles_no_unread_filter(tmp_path: Path, sample_track: TrackReco
     assert vehicles[0].plate == "AA15AAA"
 
 
+def test_build_vehicles_uses_the_shared_plate_gate(
+    tmp_path: Path,
+    sample_track: TrackRecord,
+    _isolated_plate_conf_config: Path,
+) -> None:
+    """With no threshold passed, the anchor gate is the shared setting:
+    0.9 by default, configs/alpr.json when present, an argument over both."""
+    session = _write_session(tmp_path, [sample_track], _alpr_one(42, "AA15AAA", 0.85))
+
+    def plates(**kw: float) -> list[str | None]:
+        return [v.plate for v in build_vehicles(session, **kw)]
+
+    assert plates() == [None]  # 0.85 < default 0.9 -> unread
+    _isolated_plate_conf_config.parent.mkdir(parents=True)
+    _isolated_plate_conf_config.write_text(json.dumps({"plate_conf_threshold": 0.8}))
+    assert plates() == ["AA15AAA"]
+    assert plates(conf_threshold=0.95) == [None]
+
+
 def test_build_vehicles_persons_are_skipped(tmp_path: Path, sample_track: TrackRecord) -> None:
     """class_name == 'person' tracks are excluded from the vehicle
     aggregation -- plate snaps would be anatomically wrong anyway."""
@@ -1089,10 +1108,13 @@ def _image_read(tid: int, snap: int, text: str, conf: float, cx: float, cy: floa
     }
 
 
-def _parked_session(tmp_path: Path, sample_track: TrackRecord) -> Path:
+def _parked_session(
+    tmp_path: Path, sample_track: TrackRecord, *, beacon_conf: float = 0.99
+) -> Path:
     """5 passing cars all 'read' a parked car's plate at one fixed spot
     (one of them, 42, also read its own plate); track 90 is the parked
-    car's slow departure, reading the same plate away from the spot."""
+    car's slow departure, reading the same plate away from the spot.
+    ``beacon_conf`` is the confidence of the passing cars' parked-plate reads."""
     hosts = [
         replace(
             sample_track,
@@ -1120,17 +1142,34 @@ def _parked_session(tmp_path: Path, sample_track: TrackRecord) -> Path:
                     "snap_index": 1,
                     "image": f"vehicle_{tid}_main_1.jpg",
                     "ocr_text": "LX19PXR",
-                    "ocr_conf": 0.99,
+                    "ocr_conf": 0.99 if tid == 90 else beacon_conf,
                     "det_conf": 0.9,
                 },
             }
             for tid in (42, 43, 44, 45, 46, 90)
         ],
     }
-    images = [_image_read(tid, 1, "LX19PXR", 0.99, 2080, 455) for tid in (42, 43, 44, 45, 46)]
+    images = [
+        _image_read(tid, 1, "LX19PXR", beacon_conf, 2080, 455) for tid in (42, 43, 44, 45, 46)
+    ]
     images.append(_image_read(42, 2, "AB12CDE", 0.95, 900, 700))
     images.append(_image_read(90, 1, "LX19PXR", 0.99, 2664, 300))
     return _write_session(tmp_path, hosts + [departure], by_track, alpr_images=images)
+
+
+def test_parked_beacon_caught_when_plate_gate_is_below_the_cluster_floor(
+    tmp_path: Path, sample_track: TrackRecord, _isolated_plate_conf_config: Path
+) -> None:
+    # A plate gate calibrated to 0.4 lets 0.45 reads anchor identities; the
+    # beacon clustering (floor 0.5) must follow it down, or the parked
+    # plate's 0.45 reads mint five phantom visits.
+    _isolated_plate_conf_config.parent.mkdir(parents=True)
+    _isolated_plate_conf_config.write_text(json.dumps({"plate_conf_threshold": 0.4}))
+    session = _parked_session(tmp_path, sample_track, beacon_conf=0.45)
+
+    lx = {v.plate: v for v in build_vehicles(session) if v.plate}["LX19PXR"]
+    assert lx.track_ids == [90]  # only the parked car's own departure
+    assert len(lx.parked_episodes) == 1
 
 
 def test_parked_beacon_suppressed_into_episode(tmp_path: Path, sample_track: TrackRecord) -> None:

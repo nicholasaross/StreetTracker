@@ -225,3 +225,30 @@ class TestRescoreRecords:
             ]
         }
         assert alpr_rescore.gated_tracks(rollup) == 1
+
+
+def test_summary_reports_against_the_shared_plate_gate(
+    tmp_path: Path,
+    capsys,  # noqa: ANN001
+    _isolated_plate_conf_config: Path,
+) -> None:
+    # configs/alpr.json at 0.3: the shaky read (0.30) now clears the gate too.
+    _isolated_plate_conf_config.parent.mkdir(parents=True)
+    _isolated_plate_conf_config.write_text(json.dumps({"plate_conf_threshold": 0.3}))
+    d = _session(tmp_path)
+    assert alpr_rescore.main([str(d)]) == 0
+    out = capsys.readouterr().out
+    assert f"ocr_conf >= 0.3 ({_isolated_plate_conf_config})" in out
+    assert "(what dvsa-label looks up): 2 -> 2" in out
+
+
+def test_malformed_plate_gate_config_stops_before_writing(
+    tmp_path: Path, _isolated_plate_conf_config: Path
+) -> None:
+    _isolated_plate_conf_config.parent.mkdir(parents=True)
+    _isolated_plate_conf_config.write_text("{not json")
+    d = _session(tmp_path)
+    before = (d / f"{SESSION}_alpr.json").read_text()
+    assert alpr_rescore.main([str(d)]) == 2
+    assert (d / f"{SESSION}_alpr.json").read_text() == before
+    assert _FakeRecognizer.constructed == 0

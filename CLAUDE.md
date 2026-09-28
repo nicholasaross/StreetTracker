@@ -24,14 +24,21 @@ everything. It is now the probability of the **weakest decoded character**
 confidence** playbook (sessions badged **Plates v2**): `alpr-rescore` re-OCRs
 the saved plate crops (no detection re-run) → `dvsa-label` → `dvsa-apply` →
 `vehicles` → showcase refresh. Expect fewer DVSA-labelled tracks: reads with
-one uncertain character no longer pass. The 0.9 threshold is now meaningful but
-**uncalibrated**: after re-scoring, run `uv run python .claude/ocr_conf_calibration.py`
-(label-free: DVSA not-found rate on plates old enough to have an MOT, DVSA-vs-CNN
-colour mismatch, and snap agreement, per confidence group and per cut-off) and
-pick the threshold where the rates level off. dvsa-label's track clearing is
-reversible (labels are cached), so re-running it at the chosen `--conf-threshold`
-costs no API calls. Rebuild the make/colour/body corpus afterwards so training
-labels drop the misreads.
+one uncertain character no longer pass. **One shared plate gate** (2026-09-28):
+`configs/alpr.json` `{"plate_conf_threshold": X}` (gitignored; template
+`configs/alpr.example.json`) is read by dvsa-label, `vehicles` + the showcase,
+the stats page's fastest-car plates and alpr-rescore's summary
+(`analysis/alpr/base.resolve_plate_conf_threshold`: `--conf-threshold` /
+`--conf` flag > file > default 0.9; a malformed file is an error, never a silent
+fallback). The default 0.9 is **uncalibrated**: after re-scoring, run
+`uv run python .claude/ocr_conf_calibration.py` (label-free: DVSA not-found rate
+on plates old enough to have an MOT, DVSA-vs-CNN colour mismatch, and snap
+agreement, per confidence group and per cut-off; it marks the current gate) and
+set the value where the rates level off. Then re-run `dvsa-label` →
+`dvsa-apply` → `vehicles` per session and refresh the showcase; dvsa-label's
+track clearing is reversible (labels are cached), so this costs no API calls,
+and `_dvsa_labels.json` records the `conf_threshold` it used. Rebuild the
+make/colour/body corpus afterwards so training labels drop the misreads.
 
 **Live on the Orin** (#63 runtime bundle deployed 2026-06-13, service active,
 NRestarts=0):
@@ -327,7 +334,8 @@ Session files:
   `dvsa-label` has harvested for the session
 - `{session}_dvsa_labels.json` — DVSA MOT `make`/`model`/`year` per
   plate (after `dvsa-label`); `dvsa-apply` folds it onto `data.json` +
-  `events.jsonl` per-track records
+  `events.jsonl` per-track records. `conf_threshold` records the plate gate
+  the track attributions reflect (absent on harvests before 2026-09-28)
 - `cross_session_repeats.json` — repeat vehicles pooled across a cohort
   of sessions (after `vehicles --across`; written to the output root)
 - `{session}_makemodel.json` + `{session}_makemodel_by_track.json` —
@@ -422,7 +430,7 @@ uv run streettracker batch sample.mp4                    # batch dev-box
 uv run streettracker export-engine yolov8m.pt            # build TRT on device
 uv run streettracker alpr-run output/<session>           # offline ALPR
 uv run streettracker alpr-rescore output/<session>       # recompute plate-read confidence from saved crops (2026-09-28 fix); --dry-run to preview
-uv run streettracker dvsa-label output/<session>         # DVSA make/model harvest (needs configs/dvsa.json)
+uv run streettracker dvsa-label output/<session>         # DVSA make/model harvest (needs configs/dvsa.json; plate gate from configs/alpr.json, default 0.9)
 uv run streettracker dvsa-apply output/<session>         # fold DVSA make/model onto per-track records
 uv run streettracker vehicles output/<session>           # per-vehicle aggregation (+ DVSA make/model)
 uv run streettracker vehicles output/<a> --across output/<b> ...  # cross-session repeat vehicles
@@ -633,8 +641,10 @@ complete** — both ancestor repos archived on GitHub 2026-07-07.
 | 6     | (opt) Nano archive role                                                 | not started                                                                                                            |
 | 7     | cutover: enable systemd on Orin + decommission Nano + archive old repos | **done** — Orin live since 2026-05-22; `VehicleTracker` + `NanoTracker` archived 2026-07-07 with superseded-by banners |
 
-Tests at HEAD: **1055 passing on Python 3.10 in the CI environment (8 torch-only
-modules skip there), ruff clean.**
+Tests at HEAD: **1073 passing on Python 3.10 in the CI environment (8 torch-only
+modules skip there), ruff clean.** A `tests/conftest.py` autouse fixture points
+the plate-gate config at a per-test path, so a calibrated `configs/alpr.json` on
+the dev box never changes what the tests see.
 
 All subcommands wired: `run`/`batch` go through the asyncio runtime,
 `pull`/`export-engine` ship sessions and build engines,
