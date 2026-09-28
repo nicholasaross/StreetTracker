@@ -40,6 +40,46 @@ track clearing is reversible (labels are cached), so this costs no API calls,
 and `_dvsa_labels.json` records the `conf_threshold` it used. Rebuild the
 make/colour/body corpus afterwards so training labels drop the misreads.
 
+**⮕ NEXT SESSION — start here (handoff written 2026-09-28).** Branch
+`claude/streettracker-training-data-gaps-lvy6nd` holds 5 unmerged commits:
+the review doc, the R1 OCR-confidence fix + `alpr-rescore` + panel
+**rescore** playbook, `.claude/ocr_conf_calibration.py`, and the shared plate
+gate (`configs/alpr.json`). **No PR yet.** Nothing here touches the Orin; it
+is all dev-box analysis code. In order:
+
+1. **Land the branch.** Open a PR to `main`, get CI green, merge; on the dev
+   box `git pull` + `uv sync --extra alpr --extra dev`.
+2. **Operator, dev box: re-score.** Panel → *Re-score plate confidence (all
+   sessions)*; the badges go Plates v2 → v3. Its DVSA step uses the default
+   0.9 gate. That's fine: it is reversible.
+3. **Operator, dev box: calibrate.** `uv run python .claude/ocr_conf_calibration.py
+   --exclude-corpus runs/uk_crops_0924_576 --json .claude/ocr_calibration.json`,
+   paste the output into the session, pick the gate where the rates level
+   off, then write `configs/alpr.json` (template: `configs/alpr.example.json`).
+4. **Apply the gate.** Per session run `dvsa-label` → `dvsa-apply` →
+   `vehicles`, then refresh the showcase. **Code task:** add a panel
+   "relabel (all sessions)" playbook for this. The rescore playbook skips
+   sessions that are already stamped, so it can't re-apply a new gate.
+5. **Retrain on the cleaner labels.** Run the build-train playbook (make),
+   plus `--target colour|body_type`, head-to-head, and promote only on a
+   clear win.
+6. **Then the review's plan** (`docs/data_integrity_review.md` §4):
+   - Phase 0 read-only checks (E0.2–E0.8), written as one script.
+   - E1.2 audit set (extend `.claude/triage_rl.py`) and the E1.3
+     plate-colour/direction check.
+   - E1.5 sub-stream ↔ 4K registration and timing.
+
+**Cloud sessions have no `output/`**, so they can only do code work there:
+- the step-4 playbook;
+- the Phase 0 script;
+- the E1.3 plate-colour script;
+- the R13 quick fixes: the `/stats` make chart should count only plates
+  with current `track_ids`, and `dvsa-apply` should clear stale labels
+  before writing.
+
+Anything that reads session data runs on the dev box, and the operator
+pastes the output back.
+
 **Live on the Orin** (#63 runtime bundle deployed 2026-06-13, service active,
 NRestarts=0):
 
@@ -112,7 +152,8 @@ YOLOv8m sees dogs here. Coverage soak (`.claude/person_coverage.py`,
 no person-specific snap gate needed. Both ancestor repos archived
 2026-07-07 (migration closed).
 
-**Next steps (updated 2026-07-07), priority order:**
+**Next steps (updated 2026-07-07), priority order** (older list; the
+2026-09-28 handoff above takes priority):
 
 1. **Merge PR #72** (stats-page people kinds; CI green, awaiting operator
    merge) → restart the showcase on :8090 to pick it up.
