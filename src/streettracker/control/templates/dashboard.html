@@ -257,15 +257,18 @@
   function estep(on, label, tip, extra){
     return `<span class="tag ${on?'on':''}" title="${esc(tip)}">${esc(label)}${(on&&extra)?(" "+esc(extra)):""}</span>`;
   }
-  // Plates gets a three-state badge: green "Plates v2" = re-enriched with the
-  // full-frame crop path (2026-07-28, recovers R->L reads), amber "Plates v1" =
-  // ALPR ran with the superseded hint-crop pipeline (re-run to recover R->L),
-  // grey = never run.
+  // Plates gets a four-state badge: green "Plates v3" = full-frame crop path
+  // (2026-07-28) with the corrected read confidence (2026-09-28); amber
+  // "Plates v2" = full-frame, but read confidences are the old always-~1.0
+  // value (run the rescore playbook); amber "Plates v1" = ALPR ran with the
+  // superseded hint-crop pipeline (re-run to recover R->L); grey = never run.
   function platesTag(x){
     if (!x.has_alpr)
       return estep(false, "Plates", "ALPR plate-OCR has not run on this session yet.");
+    if (x.alpr_crop_mode === "fullframe" && x.alpr_ocr_conf === "min_char")
+      return `<span class="tag on" title="ALPR ran with the full-frame crop path (2026-07-28) and the corrected read confidence (2026-09-28). Up to date.">Plates v3</span>`;
     if (x.alpr_crop_mode === "fullframe")
-      return `<span class="tag on" title="ALPR ran with the full-frame trajectory-matched crop path (2026-07-28) — R→L reads recovered. Up to date.">Plates v2</span>`;
+      return `<span class="tag stale" title="Plate reads carry the old confidence score, which was ~1.0 for every read, so the DVSA lookup let misreads through. Run the 'Re-score plate confidence' playbook (fast: no GPU detection) to fix.">Plates v2</span>`;
     return `<span class="tag stale" title="ALPR ran with the superseded hint-crop pipeline — R→L reads are mostly missing and parked-plate contamination is unfiltered. Re-run the enrich playbook (or alpr-run) to upgrade.">Plates v1</span>`;
   }
   function sessionsHtml(local){
@@ -299,6 +302,7 @@
       <div class="legend">
         <span><b>Enrichment pipeline:</b> Plates → DVSA → Vehicles → Make/model → Colour → People</span>
         <span><span class="tag on">done</span> step has run</span>
+        <span><span class="tag stale">Plates v2</span> old read confidence — run the rescore playbook</span>
         <span><span class="tag stale">Plates v1</span> old crop path — re-run to recover R→L reads</span>
         <span><span class="tag">pending</span> not run yet</span>
         <span class="muted">Pending (grey) steps are the to-do — Phase 2 runs them from here.</span>
@@ -307,7 +311,7 @@
 
   // ---------- Processes (jobs) ----------
   const JOB_KINDS = [
-    "pull", "alpr-run", "dvsa-label", "dvsa-apply", "vehicles", "people",
+    "pull", "alpr-run", "alpr-rescore", "dvsa-label", "dvsa-apply", "vehicles", "people",
     "makemodel", "bodytype", "makemodel-build-uk", "makemodel-train-uk", "export-engine",
   ];
   window.__prompts = {};  // id -> full prompt, kept out of inline attributes
@@ -440,6 +444,7 @@
     {name:"roll", label:"Roll session + pull (restarts camera)", destructive:true, needsSession:false},
     {name:"promote", label:"Promote best model", destructive:true, needsSession:false},
     {name:"reinfer", label:"Re-infer all + refresh showcase", destructive:false, needsSession:false},
+    {name:"rescore", label:"Re-score plate confidence (all sessions)", destructive:false, needsSession:false},
   ];
   function ensurePlaybookForm(){
     const host = document.getElementById("pbRunArea");

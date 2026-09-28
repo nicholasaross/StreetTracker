@@ -120,3 +120,30 @@ class TestTimer:
         # Tolerate scheduler noise; just make sure something nonzero landed.
         assert t.ms > 0
         assert t.ms < 1000  # not 1+ second
+
+
+class TestPlateResultJson:
+    def test_carries_per_character_probabilities(self) -> None:
+        result = base.PlateResult(
+            image_path="/s/vehicle_1_main_1.jpg",
+            image_name="vehicle_1_main_1.jpg",
+            track_id=1,
+            snap_index=1,
+            class_name="vehicle",
+            pipeline="preferred",
+            detection=base.PlateDetection(bbox=(1, 2, 3, 4), det_confidence=0.9),
+            read=base.PlateRead(
+                text="AB12CDE", ocr_confidence=0.35, raw_text="AB12CDE",
+                char_probs=[0.99, 0.35, 0.99, 0.98, 0.97, 0.99, 0.96],
+            ),
+            crop_path="/s/alpr_crops/preferred/vehicle_1_main_1.jpg",
+            pipeline_ms=1.0,
+        )
+        d = result.to_json()
+        assert d["ocr_conf"] == 0.35
+        assert d["ocr_char_probs"] == [0.99, 0.35, 0.99, 0.98, 0.97, 0.99, 0.96]
+        assert d["canonical_uk_shape"] is True
+
+    def test_recognizers_without_char_probs_serialise_none(self) -> None:
+        read = base.PlateRead(text="ABC", ocr_confidence=0.7, raw_text="ABC")
+        assert read.char_probs is None

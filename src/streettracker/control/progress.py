@@ -407,6 +407,8 @@ class BuildParser(ProgressParser):
 
 _PARSERS: dict[str, type[ProgressParser]] = {
     "alpr-run": BatchParser,
+    # alpr-rescore prints "[batch] N/total done" -- the batch format.
+    "alpr-rescore": BatchParser,
     "makemodel": BatchParser,
     "makemodel-train-uk": TrainParser,
     "pull": PullParser,

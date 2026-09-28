@@ -27,6 +27,8 @@ from streettracker.control.playbooks import (
     promote_model,
     refresh_showcase,
     reinfer_steps,
+    rescore_steps,
+    sessions_needing_rescore,
 )
 
 PY = sys.executable
@@ -430,3 +432,41 @@ async def test_playbook_history_persists_and_survives_restart(tmp_path: Path) ->
     assert hp.is_file()
     reborn = PlaybookRunner(JobRunner(base_argv=[PY, "-u", "-c"]), history_path=hp)
     assert any(s["status"] == "succeeded" for s in reborn.snapshots())
+
+
+def _alpr_session(out: Path, label: str, stamp: dict | None) -> Path:
+    d = out / label
+    d.mkdir(parents=True)
+    (d / f"{label}_alpr.json").write_text("[]")
+    if stamp is not None:
+        (d / f"{label}_static_plates.json").write_text(json.dumps(stamp))
+    return d
+
+
+def test_rescore_targets_only_sessions_with_the_old_confidence(tmp_path: Path) -> None:
+    out = tmp_path / "output"
+    old = _alpr_session(out, "session_20260101_000000", {"crop_mode": "fullframe"})
+    unstamped = _alpr_session(out, "session_20260102_000000", None)
+    _alpr_session(
+        out, "session_20260103_000000", {"crop_mode": "fullframe", "ocr_conf": "min_char"}
+    )
+    (out / "session_20260104_000000").mkdir()  # never ALPR'd
+    assert sorted(sessions_needing_rescore(out)) == sorted([old, unstamped])
+
+    ctx = PlaybookContext(output_root=out, runs_dir=tmp_path / "runs", model_path=tmp_path / "m.pt")
+    steps = rescore_steps(ctx)
+    kinds = [s.job.kind for s in steps if s.job]
+    # Per session: re-score, then carry it through to the DVSA labels.
+    assert kinds == ["alpr-rescore", "dvsa-label", "dvsa-apply", "vehicles"] * 2
+    assert steps[0].job.args == [str(unstamped)]  # type: ignore[union-attr]  # newest first
+    assert steps[-1].action is not None  # the showcase refresh
+
+
+def test_build_playbook_rescore(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    with pytest.raises(ValueError, match="nothing to re-score"):
+        build_playbook("rescore", ctx)
+    _alpr_session(ctx.output_root, "session_20260101_000000", {"crop_mode": "fullframe"})
+    label, steps = build_playbook("rescore", ctx)
+    assert "Re-score" in label
+    assert steps[0].job.kind == "alpr-rescore"  # type: ignore[union-attr]

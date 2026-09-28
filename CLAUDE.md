@@ -9,13 +9,24 @@ tree). The detailed history lives in the sections below; this block is the
 "resume from cold" summary.
 
 **⮕ READ FIRST (2026-09-27): [`docs/data_integrity_review.md`](docs/data_integrity_review.md)**
-— the follow-up to the crop-contamination finding. **Confirmed:** `ocr_conf` is
-always ~1.0 under the locked fast-plate-ocr 1.1.0 (`alpr/preferred.py:168` takes
-the max over slots, and a pad slot is ~1.0), so every `conf ≥ 0.9` plate gate
-(DVSA harvest, `vehicles`, the "canonical read rate" headline) is a no-op. The
-review also covers 14 other unverified-association risks, with a phased
-experiment plan (Phase 0 = read-only checks on existing `output/`). Until those
-land, the ALPR rates below are *canonical-shape* rates, not verified reads.
+— the follow-up to the crop-contamination finding: 15 unverified-association
+risks with a phased experiment plan (Phase 0 = read-only checks on existing
+`output/`). Until those land, the ALPR rates below are *canonical-shape* rates,
+not verified reads.
+
+**⮕ OCR confidence bug FIXED IN CODE 2026-09-28 (R1) — existing sessions still
+need re-scoring.** Under the locked fast-plate-ocr 1.1.0, `ocr_conf` was the
+most confident OCR slot (0.96–0.998 for every read, garbage included), so every
+`conf ≥ 0.9` gate (DVSA harvest, `vehicles`, the canonical-rate headline) passed
+everything. It is now the probability of the **weakest decoded character**
+(`alpr/preferred._unpack_ocr_output`; per-character probs persisted as
+`ocr_char_probs`). Fix existing sessions with the panel's **Re-score plate
+confidence** playbook (sessions badged **Plates v2**): `alpr-rescore` re-OCRs
+the saved plate crops (no detection re-run) → `dvsa-label` → `dvsa-apply` →
+`vehicles` → showcase refresh. Expect fewer DVSA-labelled tracks: reads with
+one uncertain character no longer pass. The 0.9 threshold is now meaningful but
+**uncalibrated** (review E1.2). Rebuild the make/colour/body corpus afterwards
+so training labels drop the misreads.
 
 **Live on the Orin** (#63 runtime bundle deployed 2026-06-13, service active,
 NRestarts=0):
@@ -301,7 +312,11 @@ Session files:
 - `{session}_hourly.json` — per-hour rollup
 - `{session}_summary.html` + `index.html` — dashboard + auto-redirect
 - `{session}_alpr.json` + `{session}_alpr_by_track.json` — per-image
-  - per-track ALPR rollup (after running `alpr-run`)
+  - per-track ALPR rollup (after running `alpr-run`). `ocr_conf` is the
+    probability of the weakest decoded character, with the per-character
+    probabilities in `ocr_char_probs`, when `_static_plates.json` carries
+    `"ocr_conf": "min_char"`; without that stamp it is the pre-2026-09-28
+    always-~1.0 value (run `alpr-rescore`).
 - `{session}_vehicles.json` — per-vehicle plate-anchored aggregation
   (after running `vehicles`); carries DVSA `make`/`model`/`year` once
   `dvsa-label` has harvested for the session
@@ -401,6 +416,7 @@ uv run mypy src/                                         # type-check
 uv run streettracker batch sample.mp4                    # batch dev-box
 uv run streettracker export-engine yolov8m.pt            # build TRT on device
 uv run streettracker alpr-run output/<session>           # offline ALPR
+uv run streettracker alpr-rescore output/<session>       # recompute plate-read confidence from saved crops (2026-09-28 fix); --dry-run to preview
 uv run streettracker dvsa-label output/<session>         # DVSA make/model harvest (needs configs/dvsa.json)
 uv run streettracker dvsa-apply output/<session>         # fold DVSA make/model onto per-track records
 uv run streettracker vehicles output/<session>           # per-vehicle aggregation (+ DVSA make/model)
@@ -561,6 +577,11 @@ ctx, …)` dispatches, `PlaybookContext` carries paths + device config):
   - **reinfer** (one `makemodel` job per local session → an action that POSTs
     the showcase's `/api/refresh`) — re-runs the classifier everywhere + updates
     the showcase.
+  - **rescore** (`alpr-rescore` → `dvsa-label` → `dvsa-apply` → `vehicles` on
+    every session whose ALPR stamp lacks `"ocr_conf": "min_char"` → showcase
+    refresh) — applies the 2026-09-28 OCR-confidence fix to already-enriched
+    sessions. The sessions table badges them **Plates v2** (amber) until done,
+    **Plates v3** (green) after.
   - `/api/playbooks` routes (localhost submit/cancel; name + session validated,
     destructive-confirm gated) + a **Playbooks** dashboard panel: step list with
     live status, the running/failed step's job **inlined** (progress bar /
@@ -607,7 +628,8 @@ complete** — both ancestor repos archived on GitHub 2026-07-07.
 | 6     | (opt) Nano archive role                                                 | not started                                                                                                            |
 | 7     | cutover: enable systemd on Orin + decommission Nano + archive old repos | **done** — Orin live since 2026-05-22; `VehicleTracker` + `NanoTracker` archived 2026-07-07 with superseded-by banners |
 
-Tests at HEAD: **606 passing on Python 3.10, ruff clean.**
+Tests at HEAD: **1055 passing on Python 3.10 in the CI environment (8 torch-only
+modules skip there), ruff clean.**
 
 All subcommands wired: `run`/`batch` go through the asyncio runtime,
 `pull`/`export-engine` ship sessions and build engines,

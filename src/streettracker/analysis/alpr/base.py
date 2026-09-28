@@ -18,6 +18,13 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 if TYPE_CHECKING:
     import numpy as np
 
+# How fast-plate-ocr reads' ``ocr_conf`` is computed: the probability of
+# the least certain decoded character. Stamped into
+# ``<session>_static_plates.json`` so a session's ALPR output says which
+# confidence it carries; sessions without the stamp predate the
+# 2026-09-28 fix and need ``alpr-rescore``.
+OCR_CONF_METHOD = "min_char"
+
 SNAP_FILENAME_RE = re.compile(
     r"^(?P<cls>person|vehicle)_(?P<tid>\d+)_main_(?P<n>\d+)\.jpg$"
 )
@@ -34,6 +41,11 @@ class PlateRead:
     text: str
     ocr_confidence: float
     raw_text: str
+    # Per-character probabilities of ``raw_text`` (fast-plate-ocr only;
+    # ``None`` for recognizers that don't expose them). ``ocr_confidence``
+    # is their min; persisting them lets a different aggregate be
+    # computed later without re-running the OCR.
+    char_probs: list[float] | None = None
 
 
 @dataclass(slots=True)
@@ -68,12 +80,14 @@ class PlateResult:
             "ocr_text": ocr_text,
             "ocr_raw": self.read.raw_text if self.read else None,
             "ocr_conf": self.read.ocr_confidence if self.read else None,
+            "ocr_char_probs": self.read.char_probs if self.read else None,
             # Annotation only -- doesn't filter or alter `ocr_text`.
             # Downstream consumers (vehicles.py, dvsa-label) read this
             # to skip OCR garbage without each one re-running the regex.
-            # The 2026-05-29 threshold-curve analysis showed the OCR
-            # conf score isn't itself informative below 0.95, so shape
-            # is the cheaper + more reliable signal.
+            # (The 2026-05-29 threshold-curve finding that the conf
+            # score "isn't informative below 0.95" was an artifact of
+            # the max-over-slots confidence bug fixed 2026-09-28; see
+            # preferred._unpack_ocr_output.)
             "canonical_uk_shape": (
                 is_canonical_uk_plate(ocr_text) if ocr_text else None
             ),

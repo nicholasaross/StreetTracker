@@ -268,6 +268,14 @@ def test_compare_uses_batch_progress() -> None:
     assert (p.progress.current, p.progress.total) == (400, 5000)
 
 
+def test_rescore_uses_batch_progress() -> None:
+    p = make_parser("alpr-rescore")
+    p.feed("  [batch] 500/12000 done")
+    assert (p.progress.current, p.progress.total) == (500, 12000)
+    p.feed("[alpr-rescore] wrote session_x_alpr.json + session_x_alpr_by_track.json")
+    assert "wrote" in (p.progress.summary or "")
+
+
 def test_build_parser_cropping_progress() -> None:
     p = _feed(
         BuildParser(),

@@ -14,16 +14,17 @@ every experiment is written to run on the dev box.
 
 ## Summary
 
-1. **Confirmed defect: the OCR confidence is always about 1.0.**
-   `analysis/alpr/preferred.py:168` takes `np.max(char_probs, axis=-1)`. Under
-   the locked fast-plate-ocr 1.1.0, `char_probs` is already the per-slot max
-   (shape `(max_plate_slots,)`), so this returns the single most confident slot.
-   That is a trailing pad slot at about 1.0 on any plate shorter than the model's
-   slot count. Reproduced: a read whose seven characters all score 0.30–0.45
-   gets `ocr_conf = 1.0`. So every `conf ≥ 0.9` gate filters nothing:
-   DVSA lookups, `vehicles`, the "canonical read rate" headline, and the E1
-   re-score. The per-track "best read" is effectively the first read in snap
-   filename order.
+1. **Confirmed defect, fixed in code 2026-09-28: the OCR confidence was
+   always near 1.0.** `analysis/alpr/preferred.py:168` took
+   `np.max(char_probs, axis=-1)`. Under the locked fast-plate-ocr 1.1.0,
+   `char_probs` is already the per-slot max (shape `(max_plate_slots,)`), so
+   this returned the single most confident slot. On the real model that is
+   0.96–0.998 for every read, garbage included: a smeared misread scored 0.998,
+   *higher* than the correct read's 0.983. So every `conf ≥ 0.9` gate filtered
+   nothing: DVSA lookups, `vehicles`, the "canonical read rate" headline, and
+   the E1 re-score. The per-track "best read" was the read with the single
+   most confident slot, which says nothing about the plate. **Existing
+   sessions still carry the old values until re-scored** (see E1.1).
 2. **Hypothesis, high risk: the ALPR headline counts plate-shaped strings, not
    correct plates.** "R→L 69.7 % / L→R 66.8 %" means "the track produced a
    UK-shaped string". Nothing checks that the string is right or that the plate
@@ -84,7 +85,7 @@ the review is that it holds.
 
 | ID | Finding | Severity | Confidence | Contaminates |
 | --- | --- | --- | --- | --- |
-| R1 | `ocr_conf` is always about 1.0 | **Critical** | **Confirmed** | every plate gate, per-track best read, DVSA harvest, ALPR headline, consensus |
+| R1 | `ocr_conf` was always near 1.0 (fixed in code 2026-09-28; existing sessions need re-scoring) | **Critical** | **Confirmed** | every plate gate, per-track best read, DVSA harvest, ALPR headline, consensus |
 | R2 | plate→track attribution never verified; headline = shape rate | **High** | Hypothesis | ALPR headline, R→L verdict, DVSA labels, showcase regulars |
 | R3 | DVSA labels from misreads describe a different real car | **High** | Hypothesis (mechanism confirmed) | make/colour/body corpora + val labels, stats make/colour/body mix |
 | R4 | sub-stream ↔ 4K spatial + temporal registration unmeasured | **High** | Hypothesis (symptom confirmed) | snap gating, hints, fullframe pick, ghost mask, door zone, band tuning |
@@ -104,7 +105,7 @@ the review is that it holds.
 
 ## 3. Findings in detail
 
-### R1 — `ocr_conf` is always about 1.0 (confirmed)
+### R1 — `ocr_conf` was always near 1.0 (confirmed; fixed in code 2026-09-28)
 
 **Code.** `analysis/alpr/preferred.py:168`:
 
@@ -117,16 +118,20 @@ The comment says `char_probs` is `(slots, n_chars)`. `uv.lock` pins
 `char_probs = np.max(predictions, axis=-1)[i]`, which is already the per-slot
 max, shape `(max_plate_slots,)`. Taking `np.max` over its last axis again
 collapses it to **one scalar: the most confident slot**. The decoded plate has
-trailing pad slots stripped, but `char_probs` keeps them, and a pad slot scores
-≈ 1.0. `np.mean` of a scalar is that scalar.
+trailing pad slots stripped, but `char_probs` keeps them. The pad slots and
+the crispest character both score high, so the max sits near 1.0 whatever the
+other characters say. `np.mean` of a scalar is that scalar.
 
-**Reproduced** by running the real `_unpack_ocr_output` on a 1.1.0-shaped
-prediction:
+**Reproduced on the real model** (fast-plate-ocr 1.1.0,
+`global-plates-mobile-vit-v2-model`: 9 slots, pad `_`) on a synthetic yellow
+plate `AB12 CDE` with increasing horizontal motion smear:
 
-| Per-slot probs (7 chars + 3 pad) | `ocr_conf` today | mean real chars | min real char |
+| Smear | Read | Old `ocr_conf` | New `ocr_conf` (weakest character) |
 | --- | --- | --- | --- |
-| `0.99 0.35 0.99 0.98 0.97 0.99 0.96 \| 1 1 1` | **1.0** | 0.89 | 0.35 |
-| `0.30 0.35 0.40 0.30 0.45 0.30 0.40 \| 1 1 1` | **1.0** | 0.36 | 0.30 |
+| none | `AB12CDE` (correct) | 0.983 | 0.936 |
+| 25 px | `AB122OE` (misread) | **0.998** | 0.235 |
+| 45 px | `AE00012` (garbage) | 0.964 | 0.171 |
+| 70 px | `42470E` (garbage) | 0.967 | 0.347 |
 
 There is no test of `_unpack_ocr_output`. The repo history is squashed at
 2026-07-03 with 1.1.0 already locked, so **every `alpr-run` in the current
@@ -141,30 +146,39 @@ corpus**, including all fullframe re-enrichment, has this behaviour.
   garbage analysis found 74 % of them were clipped six-character reads
   (`alpr-run --plate-pad-frac` help).
 
-**What it breaks.**
+**What it breaks** (on every session not yet re-scored).
 
 - `dvsa-label --conf-threshold 0.9` (`cli/dvsa_label.py:181`) passes every read.
 - `vehicles.CONF_THRESHOLD = 0.9` passes every read.
-- The per-track best read, `argmax(ocr_conf)` (`cli/alpr_run.py:555`), ties
-  everywhere, so it resolves to the first read in lexicographic snap order
-  (`_main_1`, `_main_10`…`_main_15`, `_main_2`…). That is arbitrary, not best.
-- Consensus weights are all 1.0.
+- The per-track best read, `argmax(ocr_conf)` (`cli/alpr_run.py:555`), ranks
+  reads by their single most confident slot, which says nothing about the
+  plate: in the table above the misread outranks the correct read. Where the
+  values tie at 1.0 it falls back to lexicographic snap order (`_main_1`,
+  `_main_10`…`_main_15`, `_main_2`…).
+- Consensus weights are all near 1.0.
 - `.claude/rl_rescore_e1.py` `conf >= 0.9` is a no-op.
 - Every "canonical read rate @ conf ≥ 0.9" is really "canonical-shape rate".
 - The only filter actually in force is the UK plate regex. A one-character slip
   that stays UK-shaped goes straight to DVSA (see R3).
 
-**Fix.**
+**Fix (done 2026-09-28, E1.1).**
 
-- Compute confidence over the decoded characters only. Use the minimum, or the
-  product: a plate is only as good as its worst character.
-- Persist the per-character probabilities in `_alpr.json` (`ocr_char_probs`).
-- Pin the library shape with a unit test.
-- Plate crops are already saved (`alpr_crops/`, `crop_path`), so **re-OCR the
-  saved crops** instead of re-running full-frame YOLO. That makes the fix
-  minutes per session, not GPU-hours.
-- Recalibrate the threshold against the E1.2 audit set: pick it for a target
-  precision, don't assume 0.9 means 90 %.
+- `ocr_conf` is now the probability of the weakest decoded character (pad
+  slots excluded): a plate is only as good as its worst character.
+- The per-character probabilities are persisted in `_alpr.json`
+  (`ocr_char_probs`), and the session stamp `_static_plates.json` records
+  `"ocr_conf": "min_char"`.
+- `tests/test_analysis/test_alpr/test_preferred.py` pins the 1.1.0 output
+  shape. An unknown shape now raises, and `FastPlateOcrRecognizer` probes it at
+  start-up, so a library change fails the run immediately instead of silently.
+- `streettracker alpr-rescore <session>` re-OCRs the saved plate crops
+  (`alpr_crops/`) instead of re-running full-frame YOLO, so existing sessions
+  are fixed in minutes. The panel's **Re-score plate confidence** playbook runs
+  it, then `dvsa-label` → `dvsa-apply` → `vehicles`, on every session still
+  flagged **Plates v2**.
+- **Still open:** the 0.9 gates are now meaningful ("every character ≥ 0.9")
+  but uncalibrated. Recalibrate against the E1.2 audit set: pick the threshold
+  for a target precision.
 
 ### R2 — ALPR attribution is unverified; the headline is a shape rate (hypothesis)
 
@@ -439,7 +453,7 @@ These confirm or kill several findings in minutes. They only read `output/` and
 
 | ID | Question | Method | Decision rule |
 | --- | --- | --- | --- |
-| **E0.1** (R1) | Is `ocr_conf` saturated in practice? | Histogram `ocr_conf` across every `*_alpr.json` (preferred pipeline). | ≥ 90 % of reads at exactly 1.0 → R1 confirmed in data. Go straight to E1.1 and caveat every plate-derived number until then. |
+| **E0.1** (R1) | Is `ocr_conf` saturated in practice? | **Superseded:** `alpr-rescore` prints the share of reads at ≥ 0.9 before and after, plus the tracks that pass the DVSA gate before and after. | Use that output to size the impact on DVSA labels; see E1.1. |
 | **E0.2** (R13) | How much of the `/stats` make chart is orphan or stale plates? | Per session: labels with empty `track_ids`, and labels whose plate is no read in the current `_alpr_by_track.json`. Recompute the make chart with and without them. | Any top-12 make shifting > 2 pp → ship the `track_ids` filter (a one-line fix). |
 | **E0.3** (R8) | How much time is actually observed? | Per session: start/end, IR periods (`_meta.json`), gaps > 120 s between consecutive track starts during 07:00–19:00 (outage proxy), `frames_processed / pipe_fps` vs wall duration. Build an hour-by-hour coverage map across all dates. | Any date or weekday-hour cell < 95 % covered → build E3.4 before quoting daily means or heatmaps. IR periods non-empty → count them as unobserved. |
 | **E0.4** (R3, R7) | How much of the corpus is single-read or split across OCR variants? | In the `uk_crops_0924_576` manifest: cluster plates with the `vehicles` fuzzy rule (ratio ≥ 85, same length). Count clusters spanning train and val, and their share of val crops. Count per-plate read support from `_alpr.json`. | Leakage > 2 % of val tracks → re-run `makemodel-compare` with cluster-aware exclusion (cheap). Single-read plates > 10 % of corpus cars → prioritise E1.4. |
@@ -450,7 +464,10 @@ These confirm or kill several findings in minutes. They only read `output/` and
 
 ### Phase 1 — build the instruments (week 1)
 
-**E1.1 — Fix the OCR confidence (R1).**
+**E1.1 — Fix the OCR confidence (R1). Done 2026-09-28**, except the
+threshold calibration, which waits on E1.2. What shipped differs from the
+plan below in one respect: the per-track best read is still the
+highest-confidence read (now meaningful), not "most-supported string".
 
 - Code: compute the per-read confidence over decoded characters (min, and
   product), and persist `ocr_char_probs`.
@@ -658,7 +675,7 @@ walker/jogger boundary and backfill `_people.json`.
 | Quote | Replace with |
 | --- | --- |
 | "R→L 69.7 % / L→R 66.8 % read rate" | "canonical-shape read rate; correctness unverified (see R2)" |
-| "`ocr_conf ≥ 0.9`" | "UK-shaped" (the confidence gate is inert, R1) |
+| "`ocr_conf ≥ 0.9`" on a session flagged **Plates v2** | "UK-shaped" (the old confidence gate was inert, R1). After re-scoring: "every character ≥ 0.9, threshold uncalibrated" |
 | "make@1 60.4 %" | "60.4 % per track on plated held-out cars; unplated accuracy unmeasured (R6); labels unaudited (R3)" |
 | daily means / heatmap | "raw counts; observation time not normalised (R8)" |
 | joggers | "fast-moving person tracks; may be a near-pavement artifact (R10)" |

@@ -19,6 +19,9 @@ Shipped playbooks are pure job-chains:
   ``makemodel`` → ``bodytype`` → ``colour`` → ``people`` on one pulled session
   (the documented enrichment order).
 * **build-train** — ``makemodel-build-uk`` → ``makemodel-train-uk``.
+* **rescore** — ``alpr-rescore`` → ``dvsa-label`` → ``dvsa-apply`` →
+  ``vehicles`` on every session whose plate reads still carry the pre-2026-09-28
+  confidence, then a showcase refresh.
 
 The action-based playbooks (roll-session+pull, promote, re-infer+refresh) build
 on the same engine and land next, behind confirmation gates.
@@ -559,6 +562,46 @@ def reinfer_steps(ctx: PlaybookContext) -> list[Step]:
     return steps
 
 
+def sessions_needing_rescore(output_root: Path) -> list[Path]:
+    """Sessions with ALPR output whose read confidences predate the
+    2026-09-28 fix (no ``ocr_conf`` stamp -- the old value was ~1.0 for
+    every read, so the DVSA gate let misreads through)."""
+    from streettracker.analysis.alpr.base import OCR_CONF_METHOD
+
+    return [
+        d
+        for d in introspect.discover_session_dirs(output_root)
+        if (d / f"{d.name}_alpr.json").is_file()
+        and introspect.alpr_stamp(d, d.name, "ocr_conf") != OCR_CONF_METHOD
+    ]
+
+
+def rescore_steps(ctx: PlaybookContext) -> list[Step]:
+    """Fix the plate-read confidence on every affected session and carry it
+    through to the labels: re-score from the saved plate crops (OCR only,
+    no detection), re-run the DVSA harvest so reads that now fail the
+    confidence gate stop labelling tracks, apply, re-aggregate, then
+    refresh the showcase. Raises ``ValueError`` when nothing needs it."""
+    sessions = sessions_needing_rescore(ctx.output_root)
+    if not sessions:
+        raise ValueError("nothing to re-score: every session already has the corrected confidence")
+    steps: list[Step] = []
+    for d in sessions:
+        sd = str(d)
+        steps += [
+            Step(f"Re-score plate confidence: {d.name}", job=JobSpec("alpr-rescore", [sd])),
+            Step(f"DVSA lookup: {d.name}", job=JobSpec("dvsa-label", [sd])),
+            Step(f"Apply DVSA labels: {d.name}", job=JobSpec("dvsa-apply", [sd])),
+            Step(f"Per-vehicle aggregation: {d.name}", job=JobSpec("vehicles", [sd])),
+        ]
+
+    async def refresh() -> StepResult:
+        return await refresh_showcase(ctx.showcase_url)
+
+    steps.append(Step("Refresh showcase", action=refresh))
+    return steps
+
+
 # name -> metadata for the launcher + the server's validation/gating.
 PLAYBOOKS: dict[str, dict[str, Any]] = {
     "enrich": {"label": "Enrich a session", "needs_session": True, "destructive": False},
@@ -575,6 +618,11 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
     "promote": {"label": "Promote best model", "needs_session": False, "destructive": True},
     "reinfer": {
         "label": "Re-infer all + refresh showcase",
+        "needs_session": False,
+        "destructive": False,
+    },
+    "rescore": {
+        "label": "Re-score plate confidence (all sessions)",
         "needs_session": False,
         "destructive": False,
     },
@@ -615,4 +663,6 @@ def build_playbook(
         return label, promote_steps(ctx, run_name)
     if name == "reinfer":
         return "Re-infer all sessions + refresh showcase", reinfer_steps(ctx)
+    if name == "rescore":
+        return "Re-score plate confidence + DVSA", rescore_steps(ctx)
     raise ValueError(f"unknown playbook: {name!r}")

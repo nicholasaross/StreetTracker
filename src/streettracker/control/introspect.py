@@ -204,6 +204,10 @@ class SessionInfo:
     # None = no stamp: either ALPR never ran, or it ran with the pre-
     # fullframe pipeline and needs a re-run to recover R->L reads.
     alpr_crop_mode: str | None
+    # How the plate reads' confidence was computed, from the same stamp:
+    # "min_char" since the 2026-09-28 fix. None = the read confidences are
+    # the old max-over-slots value (~1.0 for everything); run alpr-rescore.
+    alpr_ocr_conf: str | None
     n_dvsa_labels: int  # 0 if dvsa-label hasn't run
     has_vehicles: bool
     has_makemodel: bool
@@ -296,13 +300,14 @@ def _dvsa_label_count(session_dir: Path, label: str) -> int:
     return _by_mtime(path, "dvsacount", _do) or 0
 
 
-def _alpr_crop_mode(session_dir: Path, label: str) -> str | None:
-    """Crop-path provenance from ``<session>_static_plates.json``.
+def alpr_stamp(session_dir: Path, label: str, key: str) -> str | None:
+    """One provenance stamp from ``<session>_static_plates.json``.
 
     The sidecar (written by alpr-run since the static filter shipped)
-    carries a ``crop_mode`` stamp since 2026-07-28. Returns the stamp
-    string, or ``None`` when the sidecar or stamp is absent -- i.e. the
-    session's ALPR predates the fullframe crop path.
+    carries ``crop_mode`` since 2026-07-28 and ``ocr_conf`` since
+    2026-09-28 (also added by ``alpr-rescore``). Returns the stamp string,
+    or ``None`` when the sidecar or stamp is absent -- i.e. the session's
+    ALPR predates that change.
     """
     path = session_dir / f"{label}_static_plates.json"
     if not path.is_file():
@@ -310,10 +315,10 @@ def _alpr_crop_mode(session_dir: Path, label: str) -> str | None:
 
     def _do() -> str | None:
         data = _read_json(path)
-        mode = data.get("crop_mode") if isinstance(data, dict) else None
-        return mode if isinstance(mode, str) else None
+        value = data.get(key) if isinstance(data, dict) else None
+        return value if isinstance(value, str) else None
 
-    return _by_mtime(path, "cropmode", _do)
+    return _by_mtime(path, f"stamp_{key}", _do)
 
 
 def session_info(session_dir: Path) -> SessionInfo:
@@ -345,7 +350,8 @@ def session_info(session_dir: Path) -> SessionInfo:
         n_vehicle_snaps=_count_snaps(session_dir, "vehicle"),
         n_person_snaps=_count_snaps(session_dir, "person"),
         has_alpr=(session_dir / f"{label}_alpr_by_track.json").is_file(),
-        alpr_crop_mode=_alpr_crop_mode(session_dir, label),
+        alpr_crop_mode=alpr_stamp(session_dir, label, "crop_mode"),
+        alpr_ocr_conf=alpr_stamp(session_dir, label, "ocr_conf"),
         n_dvsa_labels=_dvsa_label_count(session_dir, label),
         has_vehicles=(session_dir / f"{label}_vehicles.json").is_file(),
         has_makemodel=(session_dir / f"{label}_makemodel_by_track.json").is_file(),
