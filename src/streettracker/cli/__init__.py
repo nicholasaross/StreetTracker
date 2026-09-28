@@ -10,6 +10,7 @@ Subcommands:
 - ``streettracker people <session>`` — person-track activity enrichment (dog walkers, joggers)
 - ``streettracker export-engine`` — ``.pt`` → ``.engine``
 - ``streettracker alpr-run <session>`` — run ALPR pipelines on a session
+- ``streettracker alpr-rescore <session>`` — recompute plate-read confidence from saved crops
 - ``streettracker alpr-score <session>`` — score ALPR pipelines vs labels
 - ``streettracker alpr-label <session>`` — interactive plate labeling
 - ``streettracker alpr-report <session>`` — render comparison HTML
@@ -47,6 +48,7 @@ commands:
   people          person-track activity enrichment (dog walkers, joggers, cyclists)
   export-engine   export .pt to .engine via Ultralytics
   alpr-run        run ALPR pipelines over a session's main snaps
+  alpr-rescore    recompute plate-read confidence from saved crops (2026-09-28 fix)
   alpr-score      score ALPR pipelines against labels
   alpr-label      interactive plate labeling
   alpr-report     render the ALPR comparison HTML
@@ -117,6 +119,10 @@ def main(argv: list[str] | None = None) -> int:
         from streettracker.cli.alpr_run import main as alpr_run_main
 
         return alpr_run_main(rest)
+    if head == "alpr-rescore":
+        from streettracker.cli.alpr_rescore import main as alpr_rescore_main
+
+        return alpr_rescore_main(rest)
     if head == "alpr-score":
         from streettracker.cli.alpr_score import main as alpr_score_main
 

@@ -51,6 +51,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from streettracker.analysis.alpr.base import plate_conf_threshold
 from streettracker.analysis.dvsa import is_canonical_uk_plate
 from streettracker.analysis.makemodel.bodytype import body_type_for
 from streettracker.analysis.makemodel.colour import colour_class_for
@@ -734,7 +735,9 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
         "avg_l2r": _disp(sum(speeds_l2r) / len(speeds_l2r), factor) if speeds_l2r else 0,
         "avg_r2l": _disp(sum(speeds_r2l) / len(speeds_r2l), factor) if speeds_r2l else 0,
         "unit": unit,
-        "fastest": _build_fastest(output_root, fastest_raw, factor, unit),
+        "fastest": _build_fastest(
+            output_root, fastest_raw, factor, unit, plate_conf=plate_conf_threshold()
+        ),
     }
 
     makes = [[m, n] for m, n in Counter(makes_by_plate.values()).most_common(N_TOP_MAKES)]
@@ -855,9 +858,12 @@ def _build_fastest(
     fastest_raw: list[tuple[float, str, dict[str, Any]]],
     factor: float | None,
     unit: str,
+    *,
+    plate_conf: float,
 ) -> list[dict[str, Any]]:
     """Top-N fastest tracks, with existence-checked thumbnails and a plate link
-    when the track resolved to a confident canonical plate."""
+    when the track resolved to a canonical plate at or above ``plate_conf``
+    (the shared plate gate)."""
     top = sorted(fastest_raw, key=lambda x: x[0], reverse=True)[:N_FASTEST]
     if not top:
         return []
@@ -875,7 +881,7 @@ def _build_fastest(
             continue
         for t in tracks:
             best = t.get("best_preferred")
-            if best and (best.get("ocr_conf") or 0) >= 0.9:
+            if best and (best.get("ocr_conf") or 0) >= plate_conf:
                 plate_img[(sess, t["track_id"])] = (best.get("ocr_text"), best.get("image"))
 
     out: list[dict[str, Any]] = []

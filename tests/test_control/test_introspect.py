@@ -57,6 +57,7 @@ def test_session_info_counts_and_span(tmp_path: Path) -> None:
     # No enrichment files written yet.
     assert info.has_alpr is False
     assert info.alpr_crop_mode is None
+    assert info.alpr_ocr_conf is None
     assert info.n_dvsa_labels == 0
     assert info.has_vehicles is False
     assert info.has_makemodel is False
@@ -87,6 +88,19 @@ def test_session_info_alpr_crop_mode_stamp(tmp_path: Path) -> None:
     stat = sidecar.stat()
     os.utime(sidecar, (stat.st_atime + 10, stat.st_mtime + 10))
     assert introspect.session_info(d).alpr_crop_mode == "fullframe"
+    # Fullframe but pre-2026-09-28: the reads carry the old always-~1.0
+    # confidence, so the panel flags the session for alpr-rescore.
+    assert introspect.session_info(d).alpr_ocr_conf is None
+
+
+def test_session_info_alpr_ocr_conf_stamp(tmp_path: Path) -> None:
+    d = _make_session(tmp_path)
+    (d / f"{SESSION}_alpr_by_track.json").write_text("{}")
+    (d / f"{SESSION}_static_plates.json").write_text(
+        json.dumps({"crop_mode": "fullframe", "ocr_conf": "min_char", "spots": []})
+    )
+    info = introspect.session_info(d)
+    assert (info.alpr_crop_mode, info.alpr_ocr_conf) == ("fullframe", "min_char")
 
 
 def test_session_info_enrichment_badges(tmp_path: Path) -> None:

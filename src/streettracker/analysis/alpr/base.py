@@ -9,6 +9,7 @@ Ported from NanoTracker's ``alpr/pipelines/base.py``.
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from dataclasses import dataclass
@@ -17,6 +18,67 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     import numpy as np
+
+# How fast-plate-ocr reads' ``ocr_conf`` is computed: the probability of
+# the least certain decoded character. Stamped into
+# ``<session>_static_plates.json`` so a session's ALPR output says which
+# confidence it carries; sessions without the stamp predate the
+# 2026-09-28 fix and need ``alpr-rescore``.
+OCR_CONF_METHOD = "min_char"
+
+# The one plate-read confidence gate: a read whose ``ocr_conf`` is at
+# least this counts as a plate. Used by dvsa-label (which plates get
+# looked up and label tracks), vehicles + the showcase (plate identity),
+# alpr-rescore's summary and the stats page's fastest-car plates. 0.9 is
+# carried over from the pre-2026-09-28 always-~1.0 score, not chosen for
+# the current one: calibrate with .claude/ocr_conf_calibration.py and set
+# the result in ``configs/alpr.json`` as ``{"plate_conf_threshold": X}``.
+DEFAULT_PLATE_CONF_THRESHOLD = 0.9
+# Read at call time (not bound as a default argument) so tests can point
+# it away from a real per-install file.
+PLATE_CONF_CONFIG = Path("configs/alpr.json")
+_PLATE_CONF_KEY = "plate_conf_threshold"
+
+
+def _valid_threshold(value: object, where: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float) or not 0.0 < value <= 1.0:
+        raise ValueError(f"{where}: plate confidence threshold must be in (0, 1], got {value!r}")
+    return float(value)
+
+
+def resolve_plate_conf_threshold(override: float | None = None) -> tuple[float, str]:
+    """The plate-read confidence gate and where it came from.
+
+    Precedence: ``override`` (a command-line flag), then
+    ``plate_conf_threshold`` in ``configs/alpr.json``, then
+    :data:`DEFAULT_PLATE_CONF_THRESHOLD`. Returns ``(threshold, source)``,
+    the source being ``"command line"``, the config path, or
+    ``"default"``. A config file that exists but can't be used raises
+    ``ValueError``: silently falling back to the default would quietly
+    undo a calibration. Keys starting with ``_`` are comments.
+    """
+    if override is not None:
+        return _valid_threshold(override, "command line"), "command line"
+    path = PLATE_CONF_CONFIG
+    if not path.is_file():
+        return DEFAULT_PLATE_CONF_THRESHOLD, "default"
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{path}: unreadable ({exc})") from exc
+    if not isinstance(cfg, dict):
+        raise ValueError(f"{path}: expected a JSON object")
+    unknown = sorted(k for k in cfg if k != _PLATE_CONF_KEY and not k.startswith("_"))
+    if unknown:
+        raise ValueError(f"{path}: unknown key(s) {unknown}; expected {_PLATE_CONF_KEY!r}")
+    if _PLATE_CONF_KEY not in cfg:
+        return DEFAULT_PLATE_CONF_THRESHOLD, "default"
+    return _valid_threshold(cfg[_PLATE_CONF_KEY], str(path)), str(path)
+
+
+def plate_conf_threshold(override: float | None = None) -> float:
+    """:func:`resolve_plate_conf_threshold` without the source."""
+    return resolve_plate_conf_threshold(override)[0]
 
 SNAP_FILENAME_RE = re.compile(
     r"^(?P<cls>person|vehicle)_(?P<tid>\d+)_main_(?P<n>\d+)\.jpg$"
@@ -34,6 +96,11 @@ class PlateRead:
     text: str
     ocr_confidence: float
     raw_text: str
+    # Per-character probabilities of ``raw_text`` (fast-plate-ocr only;
+    # ``None`` for recognizers that don't expose them). ``ocr_confidence``
+    # is their min; persisting them lets a different aggregate be
+    # computed later without re-running the OCR.
+    char_probs: list[float] | None = None
 
 
 @dataclass(slots=True)
@@ -68,12 +135,14 @@ class PlateResult:
             "ocr_text": ocr_text,
             "ocr_raw": self.read.raw_text if self.read else None,
             "ocr_conf": self.read.ocr_confidence if self.read else None,
+            "ocr_char_probs": self.read.char_probs if self.read else None,
             # Annotation only -- doesn't filter or alter `ocr_text`.
             # Downstream consumers (vehicles.py, dvsa-label) read this
             # to skip OCR garbage without each one re-running the regex.
-            # The 2026-05-29 threshold-curve analysis showed the OCR
-            # conf score isn't itself informative below 0.95, so shape
-            # is the cheaper + more reliable signal.
+            # (The 2026-05-29 threshold-curve finding that the conf
+            # score "isn't informative below 0.95" was an artifact of
+            # the max-over-slots confidence bug fixed 2026-09-28; see
+            # preferred._unpack_ocr_output.)
             "canonical_uk_shape": (
                 is_canonical_uk_plate(ocr_text) if ocr_text else None
             ),

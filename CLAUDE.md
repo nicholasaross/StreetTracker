@@ -8,6 +8,79 @@ Everything from the last sprint is **merged (#57–#64) and on `main`** (clean
 tree). The detailed history lives in the sections below; this block is the
 "resume from cold" summary.
 
+**⮕ READ FIRST (2026-09-27): [`docs/data_integrity_review.md`](docs/data_integrity_review.md)**
+— the follow-up to the crop-contamination finding: 15 unverified-association
+risks with a phased experiment plan (Phase 0 = read-only checks on existing
+`output/`). Until those land, the ALPR rates below are *canonical-shape* rates,
+not verified reads.
+
+**⮕ OCR confidence bug FIXED IN CODE 2026-09-28 (R1) — existing sessions still
+need re-scoring.** Under the locked fast-plate-ocr 1.1.0, `ocr_conf` was the
+most confident OCR slot (0.96–0.998 for every read, garbage included), so every
+`conf ≥ 0.9` gate (DVSA harvest, `vehicles`, the canonical-rate headline) passed
+everything. It is now the probability of the **weakest decoded character**
+(`alpr/preferred._unpack_ocr_output`; per-character probs persisted as
+`ocr_char_probs`). Fix existing sessions with the panel's **Re-score plate
+confidence** playbook (sessions badged **Plates v2**): `alpr-rescore` re-OCRs
+the saved plate crops (no detection re-run) → `dvsa-label` → `dvsa-apply` →
+`vehicles` → showcase refresh. Expect fewer DVSA-labelled tracks: reads with
+one uncertain character no longer pass. **One shared plate gate** (2026-09-28):
+`configs/alpr.json` `{"plate_conf_threshold": X}` (gitignored; template
+`configs/alpr.example.json`) is read by dvsa-label, `vehicles` + the showcase,
+the stats page's fastest-car plates and alpr-rescore's summary
+(`analysis/alpr/base.resolve_plate_conf_threshold`: `--conf-threshold` /
+`--conf` flag > file > default 0.9; a malformed file is an error, never a silent
+fallback). The default 0.9 is **uncalibrated**: after re-scoring, run
+`uv run python .claude/ocr_conf_calibration.py` (label-free: DVSA not-found rate
+on plates old enough to have an MOT, DVSA-vs-CNN colour mismatch, and snap
+agreement, per confidence group and per cut-off; it marks the current gate) and
+set the value where the rates level off. Then re-run `dvsa-label` →
+`dvsa-apply` → `vehicles` per session and refresh the showcase; dvsa-label's
+track clearing is reversible (labels are cached), so this costs no API calls,
+and `_dvsa_labels.json` records the `conf_threshold` it used. Rebuild the
+make/colour/body corpus afterwards so training labels drop the misreads.
+
+**⮕ NEXT SESSION — start here (handoff written 2026-09-28).** Branch
+`claude/streettracker-training-data-gaps-lvy6nd` holds 5 unmerged commits:
+the review doc, the R1 OCR-confidence fix + `alpr-rescore` + panel
+**rescore** playbook, `.claude/ocr_conf_calibration.py`, and the shared plate
+gate (`configs/alpr.json`). **PR #110 is open**
+(https://github.com/nicholasaross/StreetTracker/pull/110). Nothing here
+touches the Orin; it is all dev-box analysis code. In order:
+
+1. **Land the branch.** Get CI green on PR #110 and merge it; then on the dev
+   box `git pull` + `uv sync --extra alpr --extra dev`.
+2. **Operator, dev box: re-score.** Panel → *Re-score plate confidence (all
+   sessions)*; the badges go Plates v2 → v3. Its DVSA step uses the default
+   0.9 gate. That's fine: it is reversible.
+3. **Operator, dev box: calibrate.** `uv run python .claude/ocr_conf_calibration.py
+   --exclude-corpus runs/uk_crops_0924_576 --json .claude/ocr_calibration.json`,
+   paste the output into the session, pick the gate where the rates level
+   off, then write `configs/alpr.json` (template: `configs/alpr.example.json`).
+4. **Apply the gate.** Per session run `dvsa-label` → `dvsa-apply` →
+   `vehicles`, then refresh the showcase. **Code task:** add a panel
+   "relabel (all sessions)" playbook for this. The rescore playbook skips
+   sessions that are already stamped, so it can't re-apply a new gate.
+5. **Retrain on the cleaner labels.** Run the build-train playbook (make),
+   plus `--target colour|body_type`, head-to-head, and promote only on a
+   clear win.
+6. **Then the review's plan** (`docs/data_integrity_review.md` §4):
+   - Phase 0 read-only checks (E0.2–E0.8), written as one script.
+   - E1.2 audit set (extend `.claude/triage_rl.py`) and the E1.3
+     plate-colour/direction check.
+   - E1.5 sub-stream ↔ 4K registration and timing.
+
+**Cloud sessions have no `output/`**, so they can only do code work there:
+- the step-4 playbook;
+- the Phase 0 script;
+- the E1.3 plate-colour script;
+- the R13 quick fixes: the `/stats` make chart should count only plates
+  with current `track_ids`, and `dvsa-apply` should clear stale labels
+  before writing.
+
+Anything that reads session data runs on the dev box, and the operator
+pastes the output back.
+
 **Live on the Orin** (#63 runtime bundle deployed 2026-06-13, service active,
 NRestarts=0):
 
@@ -80,7 +153,8 @@ YOLOv8m sees dogs here. Coverage soak (`.claude/person_coverage.py`,
 no person-specific snap gate needed. Both ancestor repos archived
 2026-07-07 (migration closed).
 
-**Next steps (updated 2026-07-07), priority order:**
+**Next steps (updated 2026-07-07), priority order** (older list; the
+2026-09-28 handoff above takes priority):
 
 1. **Merge PR #72** (stats-page people kinds; CI green, awaiting operator
    merge) → restart the showcase on :8090 to pick it up.
@@ -292,13 +366,18 @@ Session files:
 - `{session}_hourly.json` — per-hour rollup
 - `{session}_summary.html` + `index.html` — dashboard + auto-redirect
 - `{session}_alpr.json` + `{session}_alpr_by_track.json` — per-image
-  - per-track ALPR rollup (after running `alpr-run`)
+  - per-track ALPR rollup (after running `alpr-run`). `ocr_conf` is the
+    probability of the weakest decoded character, with the per-character
+    probabilities in `ocr_char_probs`, when `_static_plates.json` carries
+    `"ocr_conf": "min_char"`; without that stamp it is the pre-2026-09-28
+    always-~1.0 value (run `alpr-rescore`).
 - `{session}_vehicles.json` — per-vehicle plate-anchored aggregation
   (after running `vehicles`); carries DVSA `make`/`model`/`year` once
   `dvsa-label` has harvested for the session
 - `{session}_dvsa_labels.json` — DVSA MOT `make`/`model`/`year` per
   plate (after `dvsa-label`); `dvsa-apply` folds it onto `data.json` +
-  `events.jsonl` per-track records
+  `events.jsonl` per-track records. `conf_threshold` records the plate gate
+  the track attributions reflect (absent on harvests before 2026-09-28)
 - `cross_session_repeats.json` — repeat vehicles pooled across a cohort
   of sessions (after `vehicles --across`; written to the output root)
 - `{session}_makemodel.json` + `{session}_makemodel_by_track.json` —
@@ -392,7 +471,8 @@ uv run mypy src/                                         # type-check
 uv run streettracker batch sample.mp4                    # batch dev-box
 uv run streettracker export-engine yolov8m.pt            # build TRT on device
 uv run streettracker alpr-run output/<session>           # offline ALPR
-uv run streettracker dvsa-label output/<session>         # DVSA make/model harvest (needs configs/dvsa.json)
+uv run streettracker alpr-rescore output/<session>       # recompute plate-read confidence from saved crops (2026-09-28 fix); --dry-run to preview
+uv run streettracker dvsa-label output/<session>         # DVSA make/model harvest (needs configs/dvsa.json; plate gate from configs/alpr.json, default 0.9)
 uv run streettracker dvsa-apply output/<session>         # fold DVSA make/model onto per-track records
 uv run streettracker vehicles output/<session>           # per-vehicle aggregation (+ DVSA make/model)
 uv run streettracker vehicles output/<a> --across output/<b> ...  # cross-session repeat vehicles
@@ -552,6 +632,11 @@ ctx, …)` dispatches, `PlaybookContext` carries paths + device config):
   - **reinfer** (one `makemodel` job per local session → an action that POSTs
     the showcase's `/api/refresh`) — re-runs the classifier everywhere + updates
     the showcase.
+  - **rescore** (`alpr-rescore` → `dvsa-label` → `dvsa-apply` → `vehicles` on
+    every session whose ALPR stamp lacks `"ocr_conf": "min_char"` → showcase
+    refresh) — applies the 2026-09-28 OCR-confidence fix to already-enriched
+    sessions. The sessions table badges them **Plates v2** (amber) until done,
+    **Plates v3** (green) after.
   - `/api/playbooks` routes (localhost submit/cancel; name + session validated,
     destructive-confirm gated) + a **Playbooks** dashboard panel: step list with
     live status, the running/failed step's job **inlined** (progress bar /
@@ -598,7 +683,10 @@ complete** — both ancestor repos archived on GitHub 2026-07-07.
 | 6     | (opt) Nano archive role                                                 | not started                                                                                                            |
 | 7     | cutover: enable systemd on Orin + decommission Nano + archive old repos | **done** — Orin live since 2026-05-22; `VehicleTracker` + `NanoTracker` archived 2026-07-07 with superseded-by banners |
 
-Tests at HEAD: **606 passing on Python 3.10, ruff clean.**
+Tests at HEAD: **1074 passing on Python 3.10 in the CI environment (8 torch-only
+modules skip there), ruff clean.** A `tests/conftest.py` autouse fixture points
+the plate-gate config at a per-test path, so a calibrated `configs/alpr.json` on
+the dev box never changes what the tests see.
 
 All subcommands wired: `run`/`batch` go through the asyncio runtime,
 `pull`/`export-engine` ship sessions and build engines,

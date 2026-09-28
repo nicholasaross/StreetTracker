@@ -82,6 +82,7 @@ WAKE_RELEASE_GRACE_S = 120.0
 _GPU_KINDS = frozenset(
     {
         "alpr-run",
+        "alpr-rescore",
         "makemodel",
         "bodytype",
         "colour",

@@ -1,0 +1,4 @@
+{
+  "_comment": "The one plate-read confidence gate, shared by dvsa-label (which plates get looked up and label tracks), vehicles and the showcase (plate identity), alpr-rescore's summary and the stats page's fastest-car plates. A read counts as a plate when its ocr_conf -- the probability of its least certain character -- is at least plate_conf_threshold. Copy to configs/alpr.json and set the value chosen with .claude/ocr_conf_calibration.py. Without the file the default is 0.9, carried over from the pre-2026-09-28 confidence and not calibrated. A one-off --conf-threshold (dvsa-label) or --conf (vehicles) still overrides it. Must be in (0, 1]; keys starting with _ are comments, any other key is rejected.",
+  "plate_conf_threshold": 0.9
+}

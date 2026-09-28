@@ -21,6 +21,7 @@ def test_top_level_help_lists_alpr_commands() -> None:
     assert "alpr-score" in _HELP
     assert "alpr-label" in _HELP
     assert "alpr-report" in _HELP
+    assert "alpr-rescore" in _HELP
 
 
 def test_alpr_run_help_returns_zero(capsys) -> None:  # noqa: ANN001 — pytest fixture
@@ -67,6 +68,7 @@ def test_rollup_by_track_picks_highest_confidence_per_pipeline() -> None:
         # Same track, different pipeline — independent best
         {"pipeline": "preferred", "track_id": 1, "snap_index": 1,
          "image": "a.jpg", "ocr_text": "AB12CDE", "ocr_conf": 0.95, "det_conf": 0.9,
+         "ocr_char_probs": [0.99, 0.98, 0.95, 0.99, 0.99, 0.97, 0.99],
          "canonical_uk_shape": True},
         # Records with no OCR are skipped entirely
         {"pipeline": "bespoke", "track_id": 2, "snap_index": 1,
@@ -84,6 +86,9 @@ def test_rollup_by_track_picks_highest_confidence_per_pipeline() -> None:
     assert by_tid[1]["best_bespoke"]["canonical_uk_shape"] is False
     assert by_tid[1]["best_preferred"]["ocr_text"] == "AB12CDE"
     assert by_tid[1]["best_preferred"]["canonical_uk_shape"] is True
+    # Per-character probabilities ride along for auditing the confidence.
+    assert by_tid[1]["best_preferred"]["ocr_char_probs"][2] == 0.95
+    assert by_tid[1]["best_bespoke"]["ocr_char_probs"] is None
     # Track 2 had no OCR at all — should not appear
     assert 2 not in by_tid
 

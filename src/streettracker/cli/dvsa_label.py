@@ -2,15 +2,19 @@
 
     streettracker dvsa-label <session_dir>
         [--config configs/dvsa.json]
-        [--conf-threshold 0.9]
+        [--conf-threshold X]
         [--limit N]
         [--re-label]
 
 Reads ``<session>_alpr_by_track.json`` (produced by ``streettracker
 alpr-run``), picks the tracks whose best preferred-pipeline OCR read
-clears ``--conf-threshold``, and calls the DVSA MOT history API for
-each distinct plate. Writes the harvest to
-``<session>_dvsa_labels.json``.
+clears the plate confidence gate, and calls the DVSA MOT history API
+for each distinct plate. Writes the harvest to
+``<session>_dvsa_labels.json``, recording the gate it used. The gate is
+the shared plate setting (``configs/alpr.json``, else 0.9; see
+:func:`streettracker.analysis.alpr.base.resolve_plate_conf_threshold`);
+``--conf-threshold`` overrides it for one run. Re-running at a different
+gate re-attributes tracks from the cached labels without new lookups.
 
 Re-running is idempotent: by default, plates already present in the
 output file are skipped. Pass ``--re-label`` to overwrite all entries
@@ -36,6 +40,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from streettracker.analysis.alpr.base import resolve_plate_conf_threshold
 from streettracker.analysis.dvsa import (
     DvsaClient,
     DvsaConfig,
@@ -43,6 +48,7 @@ from streettracker.analysis.dvsa import (
     is_canonical_uk_plate,
 )
 from streettracker.analysis.parked import (
+    PARKED_MIN_READ_CONF,
     ParkedDetection,
     best_unsuppressed_read,
     detect_parked,
@@ -53,7 +59,6 @@ logger = logging.getLogger(__name__)
 
 # Default path matches the camera.json convention.
 _DEFAULT_CONFIG_PATH = Path("configs/dvsa.json")
-_DEFAULT_CONF_THRESHOLD = 0.9
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -75,11 +80,11 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--conf-threshold",
         type=float,
-        default=_DEFAULT_CONF_THRESHOLD,
+        default=None,
         help=(
-            f"Minimum preferred-pipeline OCR confidence to attempt a lookup "
-            f"(default: {_DEFAULT_CONF_THRESHOLD}). Below this we treat the "
-            f"plate as unread."
+            "Minimum preferred-pipeline OCR confidence to attempt a lookup "
+            "(default: plate_conf_threshold in configs/alpr.json, else 0.9). "
+            "Below this we treat the plate as unread."
         ),
     )
     ap.add_argument(
@@ -247,6 +252,7 @@ def _write_output(
     unknown: list[str],
     skipped_non_canonical: list[str],
     n_high_conf_plates: int,
+    conf_threshold: float | None = None,
 ) -> None:
     payload: dict[str, Any] = {
         "session": session_label,
@@ -254,6 +260,8 @@ def _write_output(
             timespec="seconds"
         ),
         "n_high_conf_plates": n_high_conf_plates,
+        # The confidence gate this harvest's track attributions reflect.
+        "conf_threshold": conf_threshold,
         "n_labelled": len(labels),
         "n_unknown": len(unknown),
         "n_skipped_non_canonical": len(skipped_non_canonical),
@@ -291,6 +299,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    try:
+        conf_threshold, conf_source = resolve_plate_conf_threshold(args.conf_threshold)
+    except ValueError as exc:
+        print(f"[dvsa-label] {exc}", file=sys.stderr)
+        return 2
+
     cfg = DvsaConfig.from_json_file(args.config)
     by_track = json.loads(by_track_path.read_text(encoding="utf-8"))
 
@@ -308,7 +322,10 @@ def main(argv: list[str] | None = None) -> int:
             except (OSError, json.JSONDecodeError):
                 records = []
             if records:
-                detection = detect_parked(entries, records)
+                # Every read that could be looked up must be clusterable.
+                detection = detect_parked(
+                    entries, records, min_read_conf=min(PARKED_MIN_READ_CONF, conf_threshold)
+                )
                 if detection.episodes:
                     n_tracks = len({k[0] for k in detection.suppressed})
                     print(
@@ -320,14 +337,14 @@ def main(argv: list[str] | None = None) -> int:
 
     requests_, skipped_non_canonical = _collect_plate_requests(
         by_track,
-        args.conf_threshold,
+        conf_threshold,
         canonical_only=not args.include_non_canonical,
         detection=detection,
     )
     n_tracks_billed = sum(len(r.track_ids) for r in requests_)
     print(
         f"[dvsa-label] {len(requests_)} distinct high-conf plates "
-        f"(>= {args.conf_threshold}) across {n_tracks_billed} tracks"
+        f"(>= {conf_threshold}, {conf_source}) across {n_tracks_billed} tracks"
         + (
             f"; skipping {len(skipped_non_canonical)} non-canonical "
             f"(use --include-non-canonical to query them)"
@@ -416,6 +433,7 @@ def main(argv: list[str] | None = None) -> int:
             unknown=sorted(existing_unknown),
             skipped_non_canonical=sorted(existing_skipped),
             n_high_conf_plates=len(requests_),
+            conf_threshold=conf_threshold,
         )
 
     # Final flush: ensures the output is updated even when the loop
@@ -428,6 +446,7 @@ def main(argv: list[str] | None = None) -> int:
         unknown=sorted(existing_unknown),
         skipped_non_canonical=sorted(existing_skipped),
         n_high_conf_plates=len(requests_),
+        conf_threshold=conf_threshold,
     )
 
     print(

@@ -286,6 +286,23 @@ def test_fastest_non_canonical_plate_not_linked(tmp_path: Path) -> None:
     assert build_stats(tmp_path).speed["fastest"][0]["plate"] is None
 
 
+def test_fastest_plate_follows_the_shared_plate_gate(
+    tmp_path: Path, _isolated_plate_conf_config: Path
+) -> None:
+    # A 0.85 read is below the default 0.9 gate, so the car shows unplated;
+    # once configs/alpr.json sets 0.8, the same read links the plate.
+    _mk_session(
+        tmp_path,
+        "session_20260526_090000",
+        [_track(1, speed=120.0)],
+        alpr=_alpr((1, "AB12CDE", 0.85)),
+    )
+    assert build_stats(tmp_path).speed["fastest"][0]["plate"] is None
+    _isolated_plate_conf_config.parent.mkdir(parents=True)
+    _isolated_plate_conf_config.write_text(json.dumps({"plate_conf_threshold": 0.8}))
+    assert build_stats(tmp_path).speed["fastest"][0]["plate"] == "AB12CDE"
+
+
 # ----------------------------------------------------------------------
 # Make / colour
 

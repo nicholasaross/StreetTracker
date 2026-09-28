@@ -63,8 +63,10 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from streettracker.analysis.alpr.base import plate_conf_threshold
 from streettracker.analysis.dvsa import is_canonical_uk_plate
 from streettracker.analysis.parked import (
+    PARKED_MIN_READ_CONF,
     ParkedDetection,
     best_unsuppressed_read,
     detect_parked,
@@ -72,8 +74,6 @@ from streettracker.analysis.parked import (
     merge_episodes,
     normalize_plate,
 )
-
-CONF_THRESHOLD = 0.9
 
 # Minimum confidence-weighted vote share for a track's CNN make
 # prediction (``<session>_makemodel_by_track.json``) to fill a vehicle's
@@ -460,7 +460,7 @@ def _attach_cnn_makes(
 def build_vehicles(
     session_dir: Path,
     *,
-    conf_threshold: float = CONF_THRESHOLD,
+    conf_threshold: float | None = None,
     include_unread: bool = True,
     fuzzy_ratio: int | None = FUZZY_RATIO_DEFAULT,
     canonical_only: bool = True,
@@ -471,8 +471,10 @@ def build_vehicles(
     """Build per-vehicle aggregations from a closed session's outputs.
 
     ``conf_threshold`` controls which ALPR reads are treated as
-    "anchor" plate identities (default 0.9). Reads below that are
-    discarded and the track is treated as unread.
+    "anchor" plate identities; ``None`` (the default) uses the shared
+    plate setting (``configs/alpr.json``, else 0.9 -- see
+    :func:`streettracker.analysis.alpr.base.resolve_plate_conf_threshold`).
+    Reads below it are discarded and the track is treated as unread.
 
     ``include_unread`` controls whether tracks without an anchor read
     are emitted as plate=None vehicles. Set False to focus on the
@@ -535,11 +537,13 @@ def build_vehicles(
 
     # Stationary-beacon detection over the per-image reads. Empty
     # detection (no _alpr.json, or suppression disabled) is a no-op.
+    gate = plate_conf_threshold(conf_threshold)
     detection = ParkedDetection()
     if suppress_parked:
         entries = load_alpr_entries(session_dir)
         if entries:
-            detection = detect_parked(entries, data)
+            # Every read that could anchor an identity must be clusterable.
+            detection = detect_parked(entries, data, min_read_conf=min(PARKED_MIN_READ_CONF, gate))
 
     # tid -> anchor read dict. Use the per-image best as the default
     # anchor (max-conf single read). Substitute the consensus rollup
@@ -555,7 +559,7 @@ def build_vehicles(
     best_by_tid: dict[int, dict[str, Any]] = {}
     for t in alpr_rollup.get("tracks", []):
         best = t.get("best_preferred")
-        if not best or (best.get("ocr_conf") or 0) < conf_threshold:
+        if not best or (best.get("ocr_conf") or 0) < gate:
             continue
         if canonical_only and not is_canonical_uk_plate(
             (best.get("ocr_text") or "").strip().upper().replace(" ", "")
@@ -581,7 +585,7 @@ def build_vehicles(
             fallback = best_unsuppressed_read(
                 detection.reads_by_track.get(tid, []),
                 detection.suppressed,
-                conf_threshold=conf_threshold,
+                conf_threshold=gate,
                 canonical_only=canonical_only,
             )
             if fallback is not None:
@@ -747,7 +751,7 @@ def _attach_parked_episodes(
 def build_cross_session(
     session_dirs: list[Path],
     *,
-    conf_threshold: float = CONF_THRESHOLD,
+    conf_threshold: float | None = None,
     fuzzy_ratio: int | None = FUZZY_RATIO_DEFAULT,
     canonical_only: bool = True,
     suppress_parked: bool = True,
@@ -765,10 +769,11 @@ def build_cross_session(
     """
     plated: list[tuple[str, Vehicle]] = []
     conf_by_plate: dict[str, float] = {}
+    gate = plate_conf_threshold(conf_threshold)  # one value for the whole cohort
     for d in session_dirs:
         for v in build_vehicles(
             d,
-            conf_threshold=conf_threshold,
+            conf_threshold=gate,
             fuzzy_ratio=fuzzy_ratio,
             canonical_only=canonical_only,
             suppress_parked=suppress_parked,
@@ -948,10 +953,11 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--conf",
         type=float,
-        default=CONF_THRESHOLD,
+        default=None,
         help=(
             "Minimum OCR confidence to treat a plate read as a "
-            "vehicle-identity anchor (default 0.9)."
+            "vehicle-identity anchor (default: plate_conf_threshold in "
+            "configs/alpr.json, else 0.9)."
         ),
     )
     ap.add_argument(
@@ -1093,6 +1099,13 @@ def _print_cross_summary(cross: list[CrossVehicle], dirs: list[Path], out_path: 
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    # Resolve the gate once up front: a malformed configs/alpr.json fails
+    # here with a clear message, and every session uses the same value.
+    try:
+        args.conf = plate_conf_threshold(args.conf)
+    except ValueError as exc:
+        print(f"[vehicles] {exc}", file=sys.stderr)
+        return 2
     if args.across:
         return _run_cross(args)
     session_dir: Path = args.session_dir

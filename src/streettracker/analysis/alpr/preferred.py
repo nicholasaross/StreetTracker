@@ -100,6 +100,14 @@ class FastPlateOcrRecognizer:
         # takes ``providers``; the legacy ONNXPlateRecognizer branch
         # above only trips on much older builds the pin excludes.
         self._recognizer = _Recognizer(ocr_model, providers=_gpu_first_providers())
+        # Fail at start-up, not hours into a run, if this fast-plate-ocr
+        # build returns confidences in a shape _unpack_ocr_output can't
+        # interpret (it raises rather than guessing).
+        import numpy as np
+
+        _unpack_ocr_output(
+            self._recognizer.run(np.zeros((64, 128), np.uint8), return_confidence=True)
+        )
 
     def recognize(self, crop_bgr: np.ndarray) -> PlateRead | None:
         import cv2
@@ -112,13 +120,14 @@ class FastPlateOcrRecognizer:
         # ONNXRuntime shape error.
         gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY) if crop_bgr.ndim == 3 else crop_bgr
         out = self._recognizer.run(gray, return_confidence=True)
-        raw, conf = _unpack_ocr_output(out)
+        raw, conf, char_probs = _unpack_ocr_output(out)
         if not raw:
             return None
         return PlateRead(
             text=normalize_plate_text(raw),
             ocr_confidence=conf,
             raw_text=raw,
+            char_probs=char_probs,
         )
 
 
@@ -144,41 +153,74 @@ def _extract_bbox_conf(
     return bbox, conf
 
 
-def _unpack_ocr_output(out: object) -> tuple[str, float]:
-    """Tolerate the several shapes ``fast-plate-ocr`` has used across
-    versions.
+def _unpack_ocr_output(out: object) -> tuple[str, float, list[float] | None]:
+    """Decoded text, read confidence and per-character probabilities.
 
-    - v1.1.x: ``list[PlatePrediction]`` with ``.plate`` / ``.char_probs``.
-    - Older legacy: ``(list[str], probs_ndarray)`` tuple, or plain
-      ``list[str]``, or ``str``.
+    The confidence is the probability of the read's LEAST certain
+    character (the min over the decoded characters). A plate is only as
+    right as its worst character, and one uncertain character is exactly
+    the one-slip misread that can resolve to a different real car on the
+    DVSA register. Padding slots past the decoded text are left out: they
+    are "no character here" predictions and say nothing about the plate.
+
+    fast-plate-ocr 1.1.x returns ``list[PlatePrediction]`` whose
+    ``char_probs`` is already the per-slot max probability, shape
+    ``(max_plate_slots,)``. Until 2026-09-28 this function took a second
+    max over that vector, so ``ocr_conf`` was the single most confident
+    slot (~1.0) for every read, garbage included, and every downstream
+    ``conf >= 0.9`` gate passed everything. A ``char_probs`` of any other
+    shape now raises instead of being coerced.
+
+    Older outputs are still accepted: ``(list[str], probs)`` with
+    ``probs`` of shape ``(N, max_plate_slots)``, and text-only outputs
+    (confidence 0.0, no per-character probabilities).
     """
     import numpy as np
 
     if isinstance(out, str):
-        return out, 0.0
+        return out, 0.0, None
     if isinstance(out, list) and out:
         first = out[0]
         # v1.1.x: PlatePrediction dataclass
         plate = getattr(first, "plate", None)
         if plate is not None:
+            text = str(plate)
             char_probs = getattr(first, "char_probs", None)
-            if char_probs is not None and hasattr(char_probs, "ndim"):
-                # char_probs is (slots, n_chars) softmax — mean per-slot
-                # max prob is a sane confidence proxy.
-                conf = float(np.mean(np.max(char_probs, axis=-1)))
-            else:
-                conf = 0.0
-            return str(plate), conf
+            if char_probs is None:
+                return text, 0.0, None
+            conf, probs = _char_confidence(text, char_probs)
+            return text, conf, probs
         if isinstance(first, str):
-            return first, 0.0
+            return first, 0.0, None
         if isinstance(first, tuple) and len(first) == 2:
-            return str(first[0]), float(first[1])
+            return str(first[0]), float(first[1]), None
     if isinstance(out, tuple) and len(out) == 2:
-        text, conf_obj = out
-        text_s = text[0] if isinstance(text, list) else str(text)
+        texts, conf_obj = out
+        first_text = (texts[0] if texts else "") if isinstance(texts, list) else texts
+        text = str(first_text)
         if hasattr(conf_obj, "__iter__"):
-            conf_val = float(np.mean(np.asarray(conf_obj, dtype=float)))
-        else:
-            conf_val = float(conf_obj)  # type: ignore[arg-type]
-        return text_s, conf_val
-    return "", 0.0
+            arr = np.asarray(conf_obj, dtype=float)
+            if arr.ndim == 2:  # (N, max_plate_slots): this image's row
+                arr = arr[0]
+            conf, probs = _char_confidence(text, arr)
+            return text, conf, probs
+        return text, float(conf_obj), None  # type: ignore[arg-type]
+    return "", 0.0, None
+
+
+def _char_confidence(text: str, per_slot: object) -> tuple[float, list[float]]:
+    """``(min, probs)`` over the per-slot probabilities of ``text``'s
+    characters. ``per_slot`` must be 1-D, one probability per slot, with
+    the decoded text occupying the leading slots."""
+    import numpy as np
+
+    arr = np.asarray(per_slot, dtype=float)
+    if arr.ndim != 1:
+        raise ValueError(
+            f"expected per-slot OCR probabilities of shape (slots,), got {arr.shape}; "
+            f"this fast-plate-ocr version's output format is not supported"
+        )
+    if len(text) > arr.shape[0]:
+        raise ValueError(f"OCR text {text!r} is longer than its {arr.shape[0]} probability slots")
+    probs = [round(float(p), 4) for p in arr[: len(text)]]
+    return (min(probs) if probs else 0.0), probs

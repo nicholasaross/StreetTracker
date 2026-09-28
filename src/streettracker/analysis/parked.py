@@ -60,8 +60,9 @@ PARKED_MIN_TRACKS = 4
 PARKED_MOVING_SPEED_MIN = 15.0
 
 # Reads below this OCR confidence are ignored for clustering (they're too
-# noisy to place) — but anchors all sit at >= 0.9, so anything that could
-# have minted a phantom visit is well inside the clustered set.
+# noisy to place). Anything that could mint a phantom visit must be inside
+# the clustered set, so callers pass min(this, the shared plate gate) --
+# a plate gate calibrated below 0.5 then lowers the floor with it.
 PARKED_MIN_READ_CONF = 0.5
 
 # Cluster merge radius: max(eps_min_px, eps_plate_widths * median plate

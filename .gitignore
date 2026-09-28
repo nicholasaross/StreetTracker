@@ -58,6 +58,9 @@ configs/showcase.json
 # polygon locating the front door in frame (per-install, points at the
 # operator's home). configs/door_zone.example.json IS tracked as the schema.
 configs/door_zone.json
+# Plate-read confidence gate, calibrated per install from this camera's data
+# (.claude/ocr_conf_calibration.py). configs/alpr.example.json IS tracked.
+configs/alpr.json
 *.mp4
 *.mkv
 

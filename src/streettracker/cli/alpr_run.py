@@ -23,7 +23,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from streettracker.analysis.alpr.base import atomic_write_text
+from streettracker.analysis.alpr.base import OCR_CONF_METHOD, atomic_write_text
 from streettracker.analysis.alpr.runner import PipelineRunner
 from streettracker.analysis.snap_assets import (
     discover_vehicle_snaps as _discover_snaps,
@@ -322,6 +322,7 @@ def main(argv: list[str] | None = None) -> int:
                     # needing a re-run -- see introspect.session_info.
                     "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                     "crop_mode": args.crop_mode,
+                    "ocr_conf": OCR_CONF_METHOD,
                     "spots": spots,
                     "n_suspect_reads": n_suspect,
                 },
@@ -559,6 +560,7 @@ def _rollup_by_track(records: list[dict]) -> dict:
                 "image": r["image"],
                 "ocr_text": r["ocr_text"],
                 "ocr_conf": r.get("ocr_conf"),
+                "ocr_char_probs": r.get("ocr_char_probs"),
                 "det_conf": r.get("det_conf"),
                 # Persist the canonical-UK-plate annotation through to the
                 # best-per-track rollup so downstream aggregators
