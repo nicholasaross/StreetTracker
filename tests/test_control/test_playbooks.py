@@ -27,8 +27,10 @@ from streettracker.control.playbooks import (
     promote_model,
     refresh_showcase,
     reinfer_steps,
+    relabel_steps,
     rescore_steps,
     sessions_needing_rescore,
+    sessions_rescored,
 )
 
 PY = sys.executable
@@ -470,3 +472,43 @@ def test_build_playbook_rescore(tmp_path: Path) -> None:
     label, steps = build_playbook("rescore", ctx)
     assert "Re-score" in label
     assert steps[0].job.kind == "alpr-rescore"  # type: ignore[union-attr]
+
+
+def test_relabel_targets_only_rescored_sessions(tmp_path: Path) -> None:
+    out = tmp_path / "output"
+    _alpr_session(out, "session_20260101_000000", {"crop_mode": "fullframe"})  # not re-scored
+    done = _alpr_session(
+        out, "session_20260102_000000", {"crop_mode": "fullframe", "ocr_conf": "min_char"}
+    )
+    (out / "session_20260103_000000").mkdir()  # never ALPR'd
+    assert sessions_rescored(out) == [done]
+
+    ctx = PlaybookContext(output_root=out, runs_dir=tmp_path / "runs", model_path=tmp_path / "m.pt")
+    steps = relabel_steps(ctx)
+    # No re-score: only the DVSA harvest, apply and aggregation re-run.
+    assert [s.job.kind for s in steps if s.job] == ["dvsa-label", "dvsa-apply", "vehicles"]
+    assert steps[0].job.args == [str(done)]  # type: ignore[union-attr]
+    assert steps[-1].action is not None  # the showcase refresh
+
+
+def test_build_playbook_relabel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from streettracker.analysis.alpr import base
+
+    ctx = _ctx(tmp_path)
+    cfg = tmp_path / "alpr.json"
+    monkeypatch.setattr(base, "PLATE_CONF_CONFIG", cfg)
+    _alpr_session(ctx.output_root, "session_20260101_000000", {"crop_mode": "fullframe"})
+    with pytest.raises(ValueError, match="run the rescore playbook first"):
+        build_playbook("relabel", ctx)
+
+    stamp = {"crop_mode": "fullframe", "ocr_conf": "min_char"}
+    _alpr_session(ctx.output_root, "session_20260102_000000", stamp)
+    cfg.write_text('{"plate_conf_threshold": 0.75}')
+    label, steps = build_playbook("relabel", ctx)
+    assert "0.75" in label
+    assert steps[0].job.kind == "dvsa-label"  # type: ignore[union-attr]
+
+    # A malformed gate file is refused up front, not after the first step.
+    cfg.write_text('{"plate_conf_threshold": 7}')
+    with pytest.raises(ValueError, match="threshold"):
+        build_playbook("relabel", ctx)

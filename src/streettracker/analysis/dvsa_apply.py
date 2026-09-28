@@ -13,9 +13,11 @@ The per-vehicle view already joins the harvest at aggregation time
 make/model too.
 
 Mirrors ``streettracker recolor``'s rewrite pattern. Local + cheap (no
-API calls) and idempotent -- re-run any time the harvest changes. When
-the CompCars classifier lands it will write the same fields with
-``make_model_source="cnn"``.
+API calls) and idempotent -- re-run any time the harvest changes. A track
+the harvest no longer labels (its read fell below the plate gate, or
+became a parked-car beacon) has its ``"dvsa"`` make/model cleared, so a
+stricter gate reaches the per-track records too. Fields from any other
+source are left alone.
 
     streettracker dvsa-apply <session_dir>
 """
@@ -36,6 +38,7 @@ class ApplyStats:
     records_total: int = 0
     cars_total: int = 0
     cars_labelled: int = 0
+    cars_cleared: int = 0
     track_ids_available: int = 0
 
 
@@ -66,24 +69,27 @@ def apply_dvsa_labels(session_dir: Path) -> ApplyStats:
     """Write make/model/year onto the session's car records from the DVSA
     harvest, rewriting ``*_events.jsonl`` + ``*_data.json`` atomically.
 
-    A missing / empty / unparseable harvest is a no-op (zeroed stats, no
-    file touched). Raises ``FileNotFoundError`` only when a harvest IS
-    present but the session has no ``*_events.jsonl`` to rewrite.
+    Car tracks the harvest doesn't label lose a ``"dvsa"`` make/model
+    written by an earlier pass. A missing or unparseable harvest is a
+    no-op (zeroed stats, no file touched): it must not wipe labels. Raises
+    ``FileNotFoundError`` only when the harvest labels tracks but the
+    session has no ``*_events.jsonl`` to rewrite.
     """
     labels_paths = sorted(session_dir.glob("*_dvsa_labels.json"))
-    tmap: dict[int, dict[str, Any]] = {}
+    payload: Any = None
     if labels_paths:
         try:
-            tmap = _track_label_map(
-                json.loads(labels_paths[0].read_text(encoding="utf-8"))
-            )
+            payload = json.loads(labels_paths[0].read_text(encoding="utf-8"))
         except json.JSONDecodeError:
-            tmap = {}
-    if not tmap:
-        return ApplyStats(track_ids_available=0)
+            payload = None
+    if not isinstance(payload, dict):
+        return ApplyStats()
+    tmap = _track_label_map(payload)
 
     jsonl_paths = sorted(session_dir.glob("*_events.jsonl"))
     if not jsonl_paths:
+        if not tmap:
+            return ApplyStats()
         raise FileNotFoundError(f"No *_events.jsonl in {session_dir}")
     jsonl_path = jsonl_paths[0]
     data_paths = sorted(session_dir.glob("*_data.json"))
@@ -101,6 +107,10 @@ def apply_dvsa_labels(session_dir: Path) -> ApplyStats:
         stats.cars_total += 1
         info = tmap.get(int(r["track_id"]))
         if info is None:
+            if r.get("make_model_source") == "dvsa":
+                r["make"] = r["model"] = r["year"] = None
+                r["make_model_source"] = None
+                stats.cars_cleared += 1
             continue
         r["make"] = info["make"]
         r["model"] = info["model"]
@@ -138,7 +148,8 @@ def main(argv: list[str] | None = None) -> int:
     stats = apply_dvsa_labels(session_dir)
     print(
         f"[dvsa-apply] {stats.cars_labelled}/{stats.cars_total} car tracks "
-        f"labelled from {stats.track_ids_available} DVSA-mapped track ids "
+        f"labelled from {stats.track_ids_available} DVSA-mapped track ids, "
+        f"{stats.cars_cleared} stale label(s) cleared "
         f"-> make/model/year written to events.jsonl + data.json"
     )
     return 0
