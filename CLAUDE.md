@@ -44,10 +44,11 @@ make/colour/body corpus afterwards so training labels drop the misreads.
 `claude/streettracker-training-data-gaps-lvy6nd` holds 5 unmerged commits:
 the review doc, the R1 OCR-confidence fix + `alpr-rescore` + panel
 **rescore** playbook, `.claude/ocr_conf_calibration.py`, and the shared plate
-gate (`configs/alpr.json`). **No PR yet.** Nothing here touches the Orin; it
-is all dev-box analysis code. In order:
+gate (`configs/alpr.json`). **PR #110 is open**
+(https://github.com/nicholasaross/StreetTracker/pull/110). Nothing here
+touches the Orin; it is all dev-box analysis code. In order:
 
-1. **Land the branch.** Open a PR to `main`, get CI green, merge; on the dev
+1. **Land the branch.** Get CI green on PR #110 and merge it; then on the dev
    box `git pull` + `uv sync --extra alpr --extra dev`.
 2. **Operator, dev box: re-score.** Panel → *Re-score plate confidence (all
    sessions)*; the badges go Plates v2 → v3. Its DVSA step uses the default
