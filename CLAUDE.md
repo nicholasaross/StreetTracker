@@ -641,7 +641,7 @@ complete** — both ancestor repos archived on GitHub 2026-07-07.
 | 6     | (opt) Nano archive role                                                 | not started                                                                                                            |
 | 7     | cutover: enable systemd on Orin + decommission Nano + archive old repos | **done** — Orin live since 2026-05-22; `VehicleTracker` + `NanoTracker` archived 2026-07-07 with superseded-by banners |
 
-Tests at HEAD: **1073 passing on Python 3.10 in the CI environment (8 torch-only
+Tests at HEAD: **1074 passing on Python 3.10 in the CI environment (8 torch-only
 modules skip there), ruff clean.** A `tests/conftest.py` autouse fixture points
 the plate-gate config at a per-test path, so a calibrated `configs/alpr.json` on
 the dev box never changes what the tests see.
