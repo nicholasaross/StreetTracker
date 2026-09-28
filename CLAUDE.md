@@ -25,8 +25,13 @@ confidence** playbook (sessions badged **Plates v2**): `alpr-rescore` re-OCRs
 the saved plate crops (no detection re-run) → `dvsa-label` → `dvsa-apply` →
 `vehicles` → showcase refresh. Expect fewer DVSA-labelled tracks: reads with
 one uncertain character no longer pass. The 0.9 threshold is now meaningful but
-**uncalibrated** (review E1.2). Rebuild the make/colour/body corpus afterwards
-so training labels drop the misreads.
+**uncalibrated**: after re-scoring, run `uv run python .claude/ocr_conf_calibration.py`
+(label-free: DVSA not-found rate on plates old enough to have an MOT, DVSA-vs-CNN
+colour mismatch, and snap agreement, per confidence group and per cut-off) and
+pick the threshold where the rates level off. dvsa-label's track clearing is
+reversible (labels are cached), so re-running it at the chosen `--conf-threshold`
+costs no API calls. Rebuild the make/colour/body corpus afterwards so training
+labels drop the misreads.
 
 **Live on the Orin** (#63 runtime bundle deployed 2026-06-13, service active,
 NRestarts=0):

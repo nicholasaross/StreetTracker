@@ -177,8 +177,12 @@ corpus**, including all fullframe re-enrichment, has this behaviour.
   it, then `dvsa-label` → `dvsa-apply` → `vehicles`, on every session still
   flagged **Plates v2**.
 - **Still open:** the 0.9 gates are now meaningful ("every character ≥ 0.9")
-  but uncalibrated. Recalibrate against the E1.2 audit set: pick the threshold
-  for a target precision.
+  but uncalibrated. `.claude/ocr_conf_calibration.py` gives a label-free first
+  answer from data already on disk. The old gate let every read through, so
+  nearly every UK-shaped read was already looked up on DVSA. By confidence group
+  it reports the not-on-register rate for plates old enough to have an MOT, the
+  DVSA-vs-CNN colour mismatch and snap agreement, plus a threshold sweep. Confirm
+  the result on the E1.2 audit set later.
 
 ### R2 — ALPR attribution is unverified; the headline is a shape rate (hypothesis)
 
