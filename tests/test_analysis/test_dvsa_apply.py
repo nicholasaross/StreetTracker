@@ -113,3 +113,46 @@ def test_main_without_harvest_returns_2(
 ) -> None:
     session = _write_session(tmp_path, [sample_track], dvsa_labels=None)
     assert dvsa_apply_main([str(session)]) == 2
+
+
+def test_apply_clears_a_label_the_harvest_no_longer_gives(
+    tmp_path: Path, sample_track: TrackRecord
+) -> None:
+    """A stricter plate gate (or beacon suppression) clears a track's
+    ``track_ids`` in the harvest; the per-track record must lose the old
+    make/model, even when the harvest now labels no track at all."""
+    session = _write_session(tmp_path, [sample_track], _labels([42]))
+    apply_dvsa_labels(session)
+    assert _load_data(session)[42]["make"] == "FORD"
+
+    (session / "session_test_dvsa_labels.json").write_text(json.dumps(_labels([])))
+    stats = apply_dvsa_labels(session)
+    assert stats.cars_cleared == 1
+    rec = _load_data(session)[42]
+    assert rec["make"] is None and rec["model"] is None and rec["year"] is None
+    assert rec["make_model_source"] is None
+    line = (session / "session_test_events.jsonl").read_text().splitlines()[0]
+    assert json.loads(line)["make"] is None
+
+
+def test_apply_leaves_other_sources_alone(
+    tmp_path: Path, sample_track: TrackRecord
+) -> None:
+    manual = replace(
+        sample_track, make="VOLVO", model="V40", year=2015, make_model_source="manual"
+    )
+    session = _write_session(tmp_path, [manual], _labels([]))
+    stats = apply_dvsa_labels(session)
+    assert stats.cars_cleared == 0
+    assert _load_data(session)[42]["make"] == "VOLVO"
+
+
+def test_apply_unreadable_harvest_does_not_wipe_labels(
+    tmp_path: Path, sample_track: TrackRecord
+) -> None:
+    session = _write_session(tmp_path, [sample_track], _labels([42]))
+    apply_dvsa_labels(session)
+    (session / "session_test_dvsa_labels.json").write_text("{not json")
+    stats = apply_dvsa_labels(session)
+    assert stats.cars_cleared == 0
+    assert _load_data(session)[42]["make"] == "FORD"

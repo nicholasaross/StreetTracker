@@ -40,16 +40,14 @@ track clearing is reversible (labels are cached), so this costs no API calls,
 and `_dvsa_labels.json` records the `conf_threshold` it used. Rebuild the
 make/colour/body corpus afterwards so training labels drop the misreads.
 
-**⮕ NEXT SESSION — start here (handoff written 2026-09-28).** Branch
-`claude/streettracker-training-data-gaps-lvy6nd` holds 5 unmerged commits:
-the review doc, the R1 OCR-confidence fix + `alpr-rescore` + panel
-**rescore** playbook, `.claude/ocr_conf_calibration.py`, and the shared plate
-gate (`configs/alpr.json`). **PR #110 is open**
-(https://github.com/nicholasaross/StreetTracker/pull/110). Nothing here
-touches the Orin; it is all dev-box analysis code. In order:
+**⮕ NEXT SESSION — start here (handoff written 2026-09-28).** PR #110 (the
+review doc, the R1 OCR-confidence fix + `alpr-rescore` + panel **rescore**
+playbook, `.claude/ocr_conf_calibration.py`, the shared plate gate
+`configs/alpr.json`) is **merged**. Nothing here touches the Orin; it is all
+dev-box analysis code. In order:
 
-1. **Land the branch.** Get CI green on PR #110 and merge it; then on the dev
-   box `git pull` + `uv sync --extra alpr --extra dev`.
+1. **Land the branch.** Done (PR #110 merged; it changed no dependencies, so
+   no `uv sync` was needed).
 2. **Operator, dev box: re-score.** Panel → *Re-score plate confidence (all
    sessions)*; the badges go Plates v2 → v3. Its DVSA step uses the default
    0.9 gate. That's fine: it is reversible.
@@ -57,10 +55,13 @@ touches the Orin; it is all dev-box analysis code. In order:
    --exclude-corpus runs/uk_crops_0924_576 --json .claude/ocr_calibration.json`,
    paste the output into the session, pick the gate where the rates level
    off, then write `configs/alpr.json` (template: `configs/alpr.example.json`).
-4. **Apply the gate.** Per session run `dvsa-label` → `dvsa-apply` →
-   `vehicles`, then refresh the showcase. **Code task:** add a panel
-   "relabel (all sessions)" playbook for this. The rescore playbook skips
-   sessions that are already stamped, so it can't re-apply a new gate.
+4. **Apply the gate.** Panel → *Re-apply plate gate (all sessions)* (the
+   **relabel** playbook): `dvsa-label` → `dvsa-apply` → `vehicles` on every
+   re-scored session, then a showcase refresh. Re-run it whenever
+   `configs/alpr.json` changes (the rescore playbook skips sessions it has
+   already done, so it can't). `dvsa-apply` now also clears a `dvsa`
+   make/model from tracks the harvest no longer labels (R13), so re-run it
+   once everywhere after this lands to clean the per-track records.
 5. **Retrain on the cleaner labels.** Run the build-train playbook (make),
    plus `--target colour|body_type`, head-to-head, and promote only on a
    clear win.
@@ -71,12 +72,10 @@ touches the Orin; it is all dev-box analysis code. In order:
    - E1.5 sub-stream ↔ 4K registration and timing.
 
 **Cloud sessions have no `output/`**, so they can only do code work there:
-- the step-4 playbook;
 - the Phase 0 script;
 - the E1.3 plate-colour script;
-- the R13 quick fixes: the `/stats` make chart should count only plates
-  with current `track_ids`, and `dvsa-apply` should clear stale labels
-  before writing.
+- the remaining R13 quick fix: the `/stats` make chart should count only
+  plates with current `track_ids`.
 
 Anything that reads session data runs on the dev box, and the operator
 pastes the output back.
@@ -683,7 +682,7 @@ complete** — both ancestor repos archived on GitHub 2026-07-07.
 | 6     | (opt) Nano archive role                                                 | not started                                                                                                            |
 | 7     | cutover: enable systemd on Orin + decommission Nano + archive old repos | **done** — Orin live since 2026-05-22; `VehicleTracker` + `NanoTracker` archived 2026-07-07 with superseded-by banners |
 
-Tests at HEAD: **1074 passing on Python 3.10 in the CI environment (8 torch-only
+Tests at HEAD: **1079 passing on Python 3.10 in the CI environment (8 torch-only
 modules skip there), ruff clean.** A `tests/conftest.py` autouse fixture points
 the plate-gate config at a per-test path, so a calibrated `configs/alpr.json` on
 the dev box never changes what the tests see.
