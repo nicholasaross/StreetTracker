@@ -305,10 +305,13 @@ def build_train_steps(
     # the 0715 run early-stopped at epoch 18 (0.433) before its tail arrived.
     epochs: str = "20",
     # The CLI default batch (64) OOMs big backbones on the dev-box 3080
-    # (10 GB). 8 fits B6@528 (proven by the promoted 0707 run on this box)
-    # and leaves headroom alongside the showcase/control GPU usage. Lower
-    # for a smaller card.
-    batch_size: str = "8",
+    # (10 GB). 6, not 8: measured 2026-09-29, B6@528 at batch 8 reserves
+    # 9.49 GiB, which can't fit beside the Windows desktop (~0.7 GiB for
+    # dwm alone), so WDDM pages 834 MiB to system RAM and training runs at
+    # 3.4 img/s; batch 6 reserves 7.46 GiB, doesn't spill, and runs at
+    # 18.2 img/s (5.4x faster). The 0924 run's ~200 min epochs were this
+    # spill. Lower for a smaller card.
+    batch_size: str = "6",
     # The control panel (and thus build-train) runs on the Windows dev box,
     # where a multi-worker DataLoader stalls -- workers and GPU sit idle, no
     # epoch completes. num_workers=0 (synchronous, single-process loading) is

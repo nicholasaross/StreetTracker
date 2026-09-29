@@ -262,6 +262,10 @@ def test_build_playbook_build_train_generates_dated_dirs(tmp_path: Path) -> None
     # --epochs 20, matching the production run's anneal schedule: T_max=30 was
     # evidenced (0715 run) to early-stop under patience 5 before the LR tail.
     assert train_args[train_args.index("--epochs") + 1] == "20"
+    # Batch 6: B6@528 at batch 8 spills out of the 3080's 10 GB into system
+    # RAM beside the Windows desktop and trains 5.4x slower (measured
+    # 2026-09-29).
+    assert train_args[train_args.index("--batch-size") + 1] == "6"
 
 
 def test_build_playbook_roll(tmp_path: Path) -> None:
