@@ -30,7 +30,8 @@ one uncertain character no longer pass. **One shared plate gate** (2026-09-28):
 the stats page's fastest-car plates and alpr-rescore's summary
 (`analysis/alpr/base.resolve_plate_conf_threshold`: `--conf-threshold` /
 `--conf` flag > file > default 0.9; a malformed file is an error, never a silent
-fallback). The default 0.9 is **uncalibrated**: after re-scoring, run
+fallback). **Calibrated 2026-09-28 to 0.90** (handoff step 3 below); to
+re-calibrate after more sessions land, run
 `uv run python .claude/ocr_conf_calibration.py` (label-free: DVSA not-found rate
 on plates old enough to have an MOT, DVSA-vs-CNN colour mismatch, and snap
 agreement, per confidence group and per cut-off; it marks the current gate) and
@@ -40,7 +41,8 @@ track clearing is reversible (labels are cached), so this costs no API calls,
 and `_dvsa_labels.json` records the `conf_threshold` it used. Rebuild the
 make/colour/body corpus afterwards so training labels drop the misreads.
 
-**⮕ NEXT SESSION — start here (handoff written 2026-09-28).** PR #110 (the
+**⮕ NEXT SESSION — start here (handoff written 2026-09-28; steps 1-4 done
+the same night, start at step 5).** PR #110 (the
 review doc, the R1 OCR-confidence fix + `alpr-rescore` + panel **rescore**
 playbook, `.claude/ocr_conf_calibration.py`, the shared plate gate
 `configs/alpr.json`) is **merged**. Nothing here touches the Orin; it is all
@@ -48,20 +50,29 @@ dev-box analysis code. In order:
 
 1. **Land the branch.** Done (PR #110 merged; it changed no dependencies, so
    no `uv sync` was needed).
-2. **Operator, dev box: re-score.** Panel → *Re-score plate confidence (all
-   sessions)*; the badges go Plates v2 → v3. Its DVSA step uses the default
-   0.9 gate. That's fine: it is reversible.
-3. **Operator, dev box: calibrate.** `uv run python .claude/ocr_conf_calibration.py
-   --exclude-corpus runs/uk_crops_0924_576 --json .claude/ocr_calibration.json`,
-   paste the output into the session, pick the gate where the rates level
-   off, then write `configs/alpr.json` (template: `configs/alpr.example.json`).
-4. **Apply the gate.** Panel → *Re-apply plate gate (all sessions)* (the
-   **relabel** playbook): `dvsa-label` → `dvsa-apply` → `vehicles` on every
-   re-scored session, then a showcase refresh. Re-run it whenever
-   `configs/alpr.json` changes (the rescore playbook skips sessions it has
-   already done, so it can't). `dvsa-apply` now also clears a `dvsa`
-   make/model from tracks the harvest no longer labels (R13), so re-run it
-   once everywhere after this lands to clean the per-track records.
+2. **Re-score.** Done 2026-09-28 (panel *Re-score plate confidence*, 185/185
+   steps, 108 min): all 46 ALPR'd sessions carry the min-character
+   confidence (Plates v3).
+3. **Calibrate.** Done 2026-09-28: **gate = 0.90**, written to
+   `configs/alpr.json` (its `_why` key holds the evidence; full numbers in
+   `.claude/ocr_calibration.json`). Not-on-DVSA-register rate by
+   min-confidence group over 51,953 UK-shaped best reads: 0.95-0.98 1.5 %,
+   0.90-0.95 2.5 %, 0.85-0.90 4.2 %, 0.80-0.85 7.2 %, 0.70-0.80 12.2 %. The
+   rates never level off; below 0.90 a group's rate is ~3x the top group's.
+   0.90 keeps 66 % of tracks at 2.0 % not-on-register, while 0.95 keeps only
+   32 % at 1.5 %, halving the labelled set. The colour-mismatch check is too
+   small to decide (n < 30 in most groups once training cars are excluded).
+   **Follow-up (code): snap agreement beats confidence.** 0.85-0.90 reads
+   that another snap agrees with are 1.0 % not-on-register; 0.90-0.95 reads
+   that no snap agrees with are 7.0 %. A gate that combines agreement with
+   confidence would beat any single threshold.
+4. **Apply the gate.** Done 2026-09-28 with the new panel **relabel**
+   playbook (*Re-apply plate gate (all sessions)*, PR #111): 32,150 car
+   tracks DVSA-labelled, **12,672 stale per-track labels cleared** by the
+   R13 `dvsa-apply` fix, 0 new DVSA lookups, showcase at 4,058 cars.
+   Per-track labels match `_dvsa_labels.json` exactly in all 46 sessions.
+   Re-run the playbook whenever `configs/alpr.json` changes (it costs no
+   API calls; rescore skips sessions it has already done, so it can't).
 5. **Retrain on the cleaner labels.** Run the build-train playbook (make),
    plus `--target colour|body_type`, head-to-head, and promote only on a
    clear win.
