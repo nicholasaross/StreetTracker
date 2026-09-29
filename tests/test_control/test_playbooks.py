@@ -256,6 +256,7 @@ def test_build_playbook_build_train_generates_dated_dirs(tmp_path: Path) -> None
     # actually shipped again (it sat on B5@456/512 for two promotions).
     build_args = steps[0].job.args  # type: ignore[union-attr]
     assert build_args[build_args.index("--output-size") + 1] == "576"
+    assert "--max-per-car" not in build_args  # uncapped unless asked
     assert backbone == "efficientnet_b6"
     assert train_args[train_args.index("--input-size") + 1] == "528"
     # --epochs 20, matching the production run's anneal schedule: T_max=30 was
@@ -512,3 +513,26 @@ def test_build_playbook_relabel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     cfg.write_text('{"plate_conf_threshold": 7}')
     with pytest.raises(ValueError, match="threshold"):
         build_playbook("relabel", ctx)
+
+
+def test_build_train_cap_reaches_the_build_and_gets_its_own_dirs(tmp_path: Path) -> None:
+    label, steps = build_playbook("build-train", _ctx(tmp_path), max_per_car=30)
+    build_args = steps[0].job.args  # type: ignore[union-attr]
+    assert build_args[build_args.index("--max-per-car") + 1] == "30"
+    corpus = build_args[0]
+    assert corpus.endswith("_576_cap30")
+    train_args = steps[1].job.args  # type: ignore[union-attr]
+    out_dir = train_args[train_args.index("--out") + 1]
+    assert out_dir.endswith("_b6_cap30") and "cap30" in label
+    # Train + head-to-head both use the capped corpus, not the uncapped one.
+    assert train_args[0] == corpus
+    assert steps[2].job.args[0] == corpus  # type: ignore[union-attr]
+    # Never the same dirs as an uncapped build on the same day.
+    _l, plain = build_playbook("build-train", _ctx(tmp_path))
+    assert plain[0].job.args[0] != corpus  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("bad", [0, -5, True, "30", 2.5])
+def test_build_train_rejects_a_bad_cap(tmp_path: Path, bad: object) -> None:
+    with pytest.raises(ValueError, match="max_per_car"):
+        build_playbook("build-train", _ctx(tmp_path), max_per_car=bad)  # type: ignore[arg-type]

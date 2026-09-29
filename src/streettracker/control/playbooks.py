@@ -315,11 +315,18 @@ def build_train_steps(
     # reliable; the per-epoch cost is acceptable since crops cache in RAM.
     num_workers: str = "0",
     output_root: str | None = None,
+    # Keep at most this many crops per car (its largest), so a few resident
+    # cars with hundreds of snaps don't dominate what the model sees; None
+    # keeps every crop.
+    max_per_car: int | None = None,
 ) -> list[Step]:
     """Rebuild the UK crop corpus, train the make classifier on it, then run
     the head-to-head against production (``makemodel-compare``) -- the
     candidate's val make@1 isn't comparable with production's once the crop
     mode differs, so the promote recommendation needs the report."""
+    build_args = [corpus_dir, "--output-size", output_size]
+    if max_per_car is not None:
+        build_args += ["--max-per-car", str(max_per_car)]
     compare_args = [
         corpus_dir,
         "--candidate",
@@ -332,7 +339,7 @@ def build_train_steps(
     return [
         Step(
             "Build UK crop corpus",
-            job=JobSpec("makemodel-build-uk", [corpus_dir, "--output-size", output_size]),
+            job=JobSpec("makemodel-build-uk", build_args),
         ),
         Step(
             "Train UK make classifier",
@@ -686,6 +693,7 @@ def build_playbook(
     session: str | None = None,
     old_session: str | None = None,
     run_name: str | None = None,
+    max_per_car: int | None = None,
 ) -> tuple[str, list[Step]]:
     """Resolve a playbook ``name`` (+ params) to a ``(label, steps)`` pair.
 
@@ -698,11 +706,18 @@ def build_playbook(
             raise ValueError("enrich requires a session")
         return f"Enrich {session}", enrich_steps(str(ctx.output_root / session))
     if name == "build-train":
+        if max_per_car is not None and (
+            isinstance(max_per_car, bool) or not isinstance(max_per_car, int) or max_per_car < 1
+        ):
+            raise ValueError(f"max_per_car must be a positive whole number, got {max_per_car!r}")
         mmdd = datetime.now().strftime("%m%d")
-        corpus_dir = str(ctx.runs_dir / f"uk_crops_{mmdd}_576")
-        out_dir = str(ctx.runs_dir / f"uk_make_{mmdd}_b6")
+        # A capped build gets its own dirs, so it never overwrites the same
+        # day's uncapped corpus or run (the A/B needs both).
+        suffix = f"_cap{max_per_car}" if max_per_car else ""
+        corpus_dir = str(ctx.runs_dir / f"uk_crops_{mmdd}_576{suffix}")
+        out_dir = str(ctx.runs_dir / f"uk_make_{mmdd}_b6{suffix}")
         return f"Build + train -> {out_dir}", build_train_steps(
-            corpus_dir, out_dir, output_root=str(ctx.output_root)
+            corpus_dir, out_dir, output_root=str(ctx.output_root), max_per_car=max_per_car
         )
     if name == "roll":
         if not old_session:

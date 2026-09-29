@@ -65,6 +65,17 @@ dev-box analysis code. In order:
 5. **Retrain on the cleaner labels.** Run the build-train playbook (make),
    plus `--target colour|body_type`, head-to-head, and promote only on a
    clear win.
+   **Rebuild the corpus; don't reuse `uk_crops_0924_576`.** Checked
+   2026-09-29 against the post-gate labels: 28 % of its crops no longer have
+   a valid label (23.1 % come from tracks the gate now rejects, 3.9 % from
+   tracks now labelled a *different make*), and 45 % of its 7,319 "cars"
+   were phantom plates from misreads. Training on wrong labels fits the
+   early-peak-then-memorise curve every head showed. Estimated rebuild:
+   ~3,900 cars / ~59k crops / ~36 makes (was 62), so judge only
+   head-to-head. The top 500 cars would still hold ~55 % of crops, so test
+   the per-car cap as a separate run: build-train uncapped vs **max
+   crops/car = 30** (the dashboard field; capped runs get `_capN` dirs), each
+   compared against production.
 6. **Then the review's plan** (`docs/data_integrity_review.md` §4):
    - Phase 0 read-only checks (E0.2–E0.8), written as one script.
    - E1.2 audit set (extend `.claude/triage_rl.py`) and the E1.3
@@ -620,7 +631,12 @@ ctx, …)` dispatches, `PlaybookContext` carries paths + device config):
     `makemodel` → `bodytype` → `people`) and **build-train**
     (`makemodel-build-uk` → `makemodel-train-uk` → `makemodel-compare`,
     dated dirs; the last step writes the head-to-head `compare.json` the
-    promote recommendation needs) — pure job-chains.
+    promote recommendation needs) — pure job-chains. build-train takes an
+    optional per-car crop cap (`max_per_car`, the dashboard's "max
+    crops/car" field → `makemodel-build-uk --max-per-car`, recorded in the
+    corpus manifest); a capped run writes `uk_crops_MMDD_576_capN` /
+    `uk_make_MMDD_b6_capN`, so it never overwrites the same day's uncapped
+    build.
   - **roll** (action: `orin.restart_service` finalises the live session + starts
     a new one, verifies the handover + counts finalised tracks → then a `pull`
     job of the closed session) and **promote** (action: back up `makemodel_b0.pt`
@@ -682,7 +698,7 @@ complete** — both ancestor repos archived on GitHub 2026-07-07.
 | 6     | (opt) Nano archive role                                                 | not started                                                                                                            |
 | 7     | cutover: enable systemd on Orin + decommission Nano + archive old repos | **done** — Orin live since 2026-05-22; `VehicleTracker` + `NanoTracker` archived 2026-07-07 with superseded-by banners |
 
-Tests at HEAD: **1079 passing on Python 3.10 in the CI environment (8 torch-only
+Tests at HEAD: **1091 passing on Python 3.10 in the CI environment (8 torch-only
 modules skip there), ruff clean.** A `tests/conftest.py` autouse fixture points
 the plate-gate config at a per-test path, so a calibrated `configs/alpr.json` on
 the dev box never changes what the tests see.

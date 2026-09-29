@@ -242,6 +242,22 @@ async def test_submit_build_train_dispatches(client: TestClient) -> None:
         r = await client.post("/api/playbooks", json={"name": "build-train"})
     assert r.status == 200
     assert m.call_args.args[0] == "build-train"
+    assert "max_per_car" not in m.call_args.kwargs
+
+
+async def test_submit_build_train_passes_the_cap(client: TestClient) -> None:
+    with patch(
+        "streettracker.control.server.playbooks.build_playbook", return_value=("Build", [])
+    ) as m:
+        r = await client.post("/api/playbooks", json={"name": "build-train", "max_per_car": 30})
+    assert r.status == 200
+    assert m.call_args.kwargs["max_per_car"] == 30
+
+
+@pytest.mark.parametrize("bad", [0, -1, "30", True, 2.5])
+async def test_submit_build_train_rejects_a_bad_cap(client: TestClient, bad: object) -> None:
+    r = await client.post("/api/playbooks", json={"name": "build-train", "max_per_car": bad})
+    assert r.status == 400
 
 
 async def test_destructive_playbooks_need_confirm(client: TestClient) -> None:
