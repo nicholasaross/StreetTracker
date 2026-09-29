@@ -438,9 +438,10 @@
   // `needsSession` mirrors the server PLAYBOOKS registry (playbooks.py): only
   // playbooks that take an operator-chosen session show the session picker. roll
   // resolves the live session server-side, so it doesn't need the dropdown.
+  // `takesCap` shows the optional crops-per-car cap (build-train only).
   const PLAYBOOK_DEFS = [
     {name:"enrich", label:"Enrich a session", destructive:false, needsSession:true},
-    {name:"build-train", label:"Build corpus + train CNN", destructive:false, needsSession:false},
+    {name:"build-train", label:"Build corpus + train CNN", destructive:false, needsSession:false, takesCap:true},
     {name:"roll", label:"Roll session + pull (restarts camera)", destructive:true, needsSession:false},
     {name:"promote", label:"Promote best model", destructive:true, needsSession:false},
     {name:"reinfer", label:"Re-infer all + refresh showcase", destructive:false, needsSession:false},
@@ -458,6 +459,7 @@
     host.innerHTML = `<span class="runbar">
       <select id="pbName">${PLAYBOOK_DEFS.map(d=>`<option value="${d.name}">${esc(d.label)}</option>`).join("")}</select>
       <select id="pbSession" title="session to enrich (used by the enrich playbook only)"><option value="">loading sessions…</option></select>
+      <input id="pbCap" type="number" min="1" step="1" placeholder="max crops/car (blank = all)" title="keep at most this many crops per car (its largest) when building the corpus; blank keeps every crop" style="width:13em">
       <button class="btn sm" id="pbRunBtn">Run playbook</button></span>`;
     document.getElementById("pbRunBtn").addEventListener("click", submitPlaybook);
     // Show the session picker only for playbooks that take one (e.g. enrich).
@@ -470,6 +472,8 @@
     if (!nameSel || !sessSel) return;
     const def = PLAYBOOK_DEFS.find(d=>d.name===nameSel.value) || {};
     sessSel.style.display = def.needsSession ? "" : "none";
+    const capIn = document.getElementById("pbCap");
+    if (capIn) capIn.style.display = def.takesCap ? "" : "none";
   }
   // (Re)fill the enrich session picker from the current status: newest first,
   // newest pre-selected, the operator's choice preserved. Rebuilds only when the
@@ -503,6 +507,14 @@
     }
     const body = {name};
     if (session) body.session = session;
+    if (def.takesCap){
+      const raw = document.getElementById("pbCap").value.trim();
+      if (raw){
+        const cap = Number(raw);
+        if (!Number.isInteger(cap) || cap < 1){ showToast("Max crops/car must be a whole number of 1 or more"); return; }
+        body.max_per_car = cap;
+      }
+    }
     if (def.destructive) body.confirm = true;
     try {
       await fetchJSON("/api/playbooks", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});

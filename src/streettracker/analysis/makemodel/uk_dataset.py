@@ -298,6 +298,9 @@ def extract_crops(
         "body_types": body_present,
         "colours": colour_present,
         "min_cars_per_make": min_cars_per_make,
+        # The per-car crop cap the build used (each car's N largest crops);
+        # None = every crop kept.
+        "max_per_car": cap,
         "crop_mode": crop_mode,
         "pad_frac": pad_frac,
         "output_size": output_size,

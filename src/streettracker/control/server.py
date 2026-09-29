@@ -313,7 +313,7 @@ async def _api_submit_playbook(request: web.Request) -> web.Response:
         remote_parent=state.remote_parent,
         target=str(state.output_root),
     )
-    kwargs: dict[str, str] = {}
+    kwargs: dict[str, Any] = {}
     if name == "enrich":
         session = body.get("session")
         if (
@@ -335,6 +335,12 @@ async def _api_submit_playbook(request: web.Request) -> web.Response:
         if not snap.reachable or snap.service_active != "active" or not snap.live_session:
             raise web.HTTPBadRequest(text="roll needs the device reachable and actively recording")
         kwargs["old_session"] = snap.live_session
+    elif name == "build-train":
+        cap = body.get("max_per_car")
+        if cap is not None:
+            if isinstance(cap, bool) or not isinstance(cap, int) or not 1 <= cap <= 100_000:
+                raise web.HTTPBadRequest(text="max_per_car must be a positive whole number")
+            kwargs["max_per_car"] = cap
     elif name == "promote":
         run = body.get("run")
         if run is not None and not isinstance(run, str):

@@ -330,6 +330,7 @@ def test_extract_select_top_by_area_keeps_largest(tmp_path: Path) -> None:
     manifest = json.loads((tmp_path / "crops" / "manifest.json").read_text())
     # snap 1 (the larger bbox) survived, not snap 2.
     assert manifest["samples"][0]["path"].endswith("_1_1.jpg")
+    assert manifest["max_per_car"] == 1  # the cap is recorded with the corpus
 
 
 def test_extract_crops_output_size(tmp_path: Path) -> None:
@@ -351,6 +352,7 @@ def test_extract_crops_output_size(tmp_path: Path) -> None:
     manifest = json.loads((out / "manifest.json").read_text())
     with Image.open(out / manifest["samples"][0]["path"]) as im:
         assert im.size == (384, 384)
+    assert manifest["max_per_car"] is None  # uncapped build
 
 
 def test_train_main_input_size_passthrough(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
