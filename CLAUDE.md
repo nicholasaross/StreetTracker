@@ -886,8 +886,12 @@ the operator promoted (prior model backed up as
 trajectory rule, so their gain is smaller) and the val cars also picked
 the best epoch (mild optimism). **Ops:** at `--batch-size 8`, B6@528
 spilled ~1.06 GB into WDDM system memory (desktop compositor held
-1.2-1.4 GB) and every epoch ran ~200 min instead of ~85 — train at
-`--batch-size 6`, or free VRAM first, next time. Per-car crop dominance
+1.2-1.4 GB) and every epoch ran ~200 min instead of ~85. **Measured
+2026-09-29** (real model, dummy data, desktop apps closed): batch 8
+reserves 9.49 GiB and still spills 834 MiB (3.4 img/s); batch 6 reserves
+7.46 GiB with no spill (18.2 img/s, 5.4× faster). Batch 8 can't fit a
+10 GB card beside the Windows desktop, so **build-train now defaults to
+batch 6**. Per-car crop dominance
 (top 500 of 7,319 cars hold 47.6 % of crops; residents LA68CWY 668 /
 FD61PVX 589) is an untested lever (`--max-per-car`).
 
