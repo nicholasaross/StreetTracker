@@ -853,6 +853,33 @@ def _speed_ranking(
     return rows[:top]
 
 
+def _track_snap(
+    session_dir: Path,
+    prefix: str,
+    track_id: int,
+    record: dict[str, Any],
+    *,
+    preferred: str | None = None,
+) -> str | None:
+    """A 4K snap of the track that exists on disk: ``preferred`` when it
+    does, else the one where the car's box was largest (closest to the
+    camera; completion-time boxes over fire-time ones), else ``None``."""
+    if preferred and (session_dir / preferred).is_file():
+        return preferred
+    snaps = record.get("main_snaps") or []
+    boxes = record.get("main_snap_bboxes_done") or record.get("main_snap_bboxes") or []
+
+    def area(i: int) -> int:
+        b = boxes[i] if i < len(boxes) else None
+        return (b[2] - b[0]) * (b[3] - b[1]) if b else -1
+
+    for i in sorted(range(len(snaps)), key=area, reverse=True):
+        name = f"{prefix}_{track_id}_main_{snaps[i]}.jpg"
+        if (session_dir / name).is_file():
+            return name
+    return None
+
+
 def _build_fastest(
     output_root: Path,
     fastest_raw: list[tuple[float, str, dict[str, Any]]],
@@ -863,14 +890,17 @@ def _build_fastest(
 ) -> list[dict[str, Any]]:
     """Top-N fastest tracks, with existence-checked thumbnails and a plate link
     when the track resolved to a canonical plate at or above ``plate_conf``
-    (the shared plate gate)."""
+    (the shared plate gate). The gate decides only the plate: the picture is
+    the best read's snap whatever its confidence, else the track's closest
+    4K snap on disk (fast cars are the hardest plates to read, and sessions
+    pulled ``--only-main`` have no tile to fall back on)."""
     top = sorted(fastest_raw, key=lambda x: x[0], reverse=True)[:N_FASTEST]
     if not top:
         return []
 
-    # Resolve plate (+ best snap image) for the top tracks from each session's
-    # alpr_by_track, loaded once per session involved.
-    plate_img: dict[tuple[str, int], tuple[str | None, str | None]] = {}
+    # Best read for the top tracks from each session's alpr_by_track, loaded
+    # once per session involved.
+    best_reads: dict[tuple[str, int], dict[str, Any]] = {}
     for sess in {s for _sp, s, _r in top}:
         p = output_root / sess / f"{sess}_alpr_by_track.json"
         if not p.exists():
@@ -881,19 +911,22 @@ def _build_fastest(
             continue
         for t in tracks:
             best = t.get("best_preferred")
-            if best and (best.get("ocr_conf") or 0) >= plate_conf:
-                plate_img[(sess, t["track_id"])] = (best.get("ocr_text"), best.get("image"))
+            if best:
+                best_reads[(sess, t["track_id"])] = best
 
     out: list[dict[str, Any]] = []
     for sp, sess, r in top:
         tid = r["track_id"]
-        plate_raw, best_image = plate_img.get((sess, tid), (None, None))
+        best = best_reads.get((sess, tid), {})
         plate = None
-        if plate_raw:
+        plate_raw = best.get("ocr_text")
+        if plate_raw and (best.get("ocr_conf") or 0) >= plate_conf:
             norm = plate_raw.strip().upper().replace(" ", "")
             plate = norm if is_canonical_uk_plate(norm) else None
+        prefix = r.get("asset_prefix") or "vehicle"
+        snap = _track_snap(output_root / sess, prefix, tid, r, preferred=best.get("image"))
         thumb, full, _small = resolve_image_urls(
-            output_root, sess, tid, prefix="vehicle", best_image=best_image
+            output_root, sess, tid, prefix=prefix, best_image=snap
         )
         dt = datetime.fromisoformat(r["time_start"])
         out.append(
