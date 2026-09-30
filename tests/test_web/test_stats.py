@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -301,6 +301,45 @@ def test_fastest_plate_follows_the_shared_plate_gate(
     _isolated_plate_conf_config.parent.mkdir(parents=True)
     _isolated_plate_conf_config.write_text(json.dumps({"plate_conf_threshold": 0.8}))
     assert build_stats(tmp_path).speed["fastest"][0]["plate"] == "AB12CDE"
+
+
+def test_fastest_picture_does_not_depend_on_the_plate_gate(tmp_path: Path) -> None:
+    # An --only-main session (no tile / hq): a 0.5 read is below the gate, so
+    # no plate, but its snap is still the car's picture.
+    d = _mk_session(
+        tmp_path,
+        "session_20260526_090000",
+        [_track(1, speed=120.0)],
+        alpr=_alpr((1, "AB12CDE", 0.5)),
+        images=False,
+    )
+    (d / "vehicle_1_main_1.jpg").write_bytes(_FAKE_JPEG)
+    fast = build_stats(tmp_path).speed["fastest"][0]
+    assert fast["plate"] is None
+    assert fast["thumb"] == fast["full"] == "/images/session_20260526_090000/vehicle_1_main_1.jpg"
+
+
+def test_fastest_without_a_read_shows_the_closest_snap_on_disk(tmp_path: Path) -> None:
+    # No ALPR read at all: fall back to the snap with the largest box that is
+    # on disk (snap 3 is largest but missing, so snap 2), preferring the
+    # completion-time boxes.
+    rec = replace(
+        _track(1, speed=120.0),
+        main_snaps=[1, 2, 3],
+        main_snap_bboxes=[[0, 0, 90, 90], [0, 0, 10, 10], [0, 0, 5, 5]],
+        main_snap_bboxes_done=[[0, 0, 10, 10], [0, 0, 50, 50], [0, 0, 80, 80]],
+    )
+    d = _mk_session(tmp_path, "session_20260526_090000", [rec], images=False)
+    for n in (1, 2):
+        (d / f"vehicle_1_main_{n}.jpg").write_bytes(_FAKE_JPEG)
+    fast = build_stats(tmp_path).speed["fastest"][0]
+    assert fast["thumb"] == "/images/session_20260526_090000/vehicle_1_main_2.jpg"
+
+
+def test_fastest_with_no_snap_on_disk_has_no_picture(tmp_path: Path) -> None:
+    _mk_session(tmp_path, "session_20260526_090000", [_track(1, speed=120.0)], images=False)
+    fast = build_stats(tmp_path).speed["fastest"][0]
+    assert fast["thumb"] is None and fast["full"] is None
 
 
 # ----------------------------------------------------------------------
