@@ -12,7 +12,13 @@ module scores both models on ONE held-out set instead:
 
 * **Cars** -- the candidate corpus's by-car val split (the exact cars the
   candidate never trained on), minus every car in production's training
-  corpus (so production isn't scored on cars it learnt).
+  corpus (so production isn't scored on cars it learnt). With
+  ``--eval-session`` they instead come from the DVSA labels of the named
+  sessions, minus every car in production's AND the candidate's training
+  corpora: fresh cars neither model has seen. Use it when the two corpora
+  share most of their cars, which leaves the val-split mode only a handful
+  (2026-10-01: 67 cars, because 93 % of the rebuilt corpus's cars were
+  already in production's).
 * **Tracks** -- each held-out car's DVSA-labelled tracks (capped per car so
   a few regulars can't dominate), and ALL of each track's 4K snaps, as the
   ``makemodel`` command would classify them.
@@ -137,6 +143,28 @@ def corpus_cars(corpus_dir: Path) -> set[str]:
     return {s["car"] for s in _manifest(corpus_dir)["samples"]}
 
 
+def _sample_tracks(
+    label_of: dict[str, str],
+    tracks_of: dict[str, set[tuple[str, int]]],
+    *,
+    seed: int,
+    max_tracks_per_car: int,
+    max_cars: int,
+) -> list[HeldOutCar]:
+    """Cap each car's tracks and optionally the number of cars, seeded so
+    every model compared on the same cars gets the same tracks."""
+    rng = random.Random(f"compare:{seed}")
+    out = []
+    for car in sorted(label_of):
+        tracks = sorted(tracks_of[car])
+        if max_tracks_per_car and len(tracks) > max_tracks_per_car:
+            tracks = sorted(rng.sample(tracks, max_tracks_per_car))
+        out.append(HeldOutCar(car, label_of[car], tracks))
+    if max_cars and len(out) > max_cars:
+        out = sorted(rng.sample(out, max_cars), key=lambda c: c.car)
+    return out
+
+
 def held_out_cars(
     corpus_dir: Path,
     *,
@@ -168,17 +196,62 @@ def held_out_cars(
             continue
         label_of[car] = s[target]
         tracks_of[car].add((m["session"], int(m["tid"])))
+    return _sample_tracks(
+        label_of, tracks_of, seed=seed, max_tracks_per_car=max_tracks_per_car, max_cars=max_cars
+    )
 
-    rng = random.Random(f"compare:{seed}")
-    out = []
-    for car in sorted(label_of):
-        tracks = sorted(tracks_of[car])
-        if max_tracks_per_car and len(tracks) > max_tracks_per_car:
-            tracks = sorted(rng.sample(tracks, max_tracks_per_car))
-        out.append(HeldOutCar(car, label_of[car], tracks))
-    if max_cars and len(out) > max_cars:
-        out = sorted(rng.sample(out, max_cars), key=lambda c: c.car)
-    return out
+
+def target_label(row: dict[str, Any], target: str) -> str:
+    """A DVSA label row's truth for ``target``, derived exactly as
+    ``makemodel-build-uk`` labels a corpus crop ("" when it has none)."""
+    from streettracker.analysis.makemodel.bodytype import body_type_for, normalize_make
+    from streettracker.analysis.makemodel.colour import colour_class_for
+
+    if target == "make":
+        return normalize_make(row.get("make"))
+    if target == "colour":
+        return colour_class_for(row.get("primary_colour"))
+    if target == "body_type":
+        return body_type_for(row.get("make"), row.get("model"))
+    raise ValueError(f"target must be one of {TARGETS}, got {target!r}")
+
+
+def session_cars(
+    output_root: Path,
+    sessions: list[str],
+    *,
+    exclude_cars: set[str] | None = None,
+    target: str = "make",
+    seed: int = 0,
+    max_tracks_per_car: int = DEFAULT_MAX_TRACKS_PER_CAR,
+    max_cars: int = 0,
+) -> list[HeldOutCar]:
+    """Held-out cars from ``sessions``' DVSA labels instead of a corpus val
+    split: every labelled car there (its tracks in those sessions only)
+    except ``exclude_cars``, the cars any compared model trained on. A car
+    seen under a misread plate in training escapes the exclusion; the plate
+    gate makes that rare."""
+    exclude = exclude_cars or set()
+    label_of: dict[str, str] = {}
+    tracks_of: dict[str, set[tuple[str, int]]] = defaultdict(set)
+    for sess in sessions:
+        path = output_root / sess / f"{sess}_dvsa_labels.json"
+        try:
+            labels = json.loads(path.read_text(encoding="utf-8")).get("labels") or {}
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"{path}: no readable DVSA labels ({exc})") from exc
+        for plate, row in labels.items():
+            if plate in exclude or not isinstance(row, dict):
+                continue
+            label = target_label(row, target)
+            tids = row.get("track_ids") or []
+            if not label or not tids:
+                continue
+            label_of.setdefault(plate, label)
+            tracks_of[plate].update((sess, int(t)) for t in tids)
+    return _sample_tracks(
+        label_of, tracks_of, seed=seed, max_tracks_per_car=max_tracks_per_car, max_cars=max_cars
+    )
 
 
 def _vote(preds: list[tuple[str, float]]) -> str | None:
@@ -314,6 +387,7 @@ def compare(
     device: str = "cpu",
     vehicle_detector: Any = None,
     target: str = "make",
+    eval_sessions: list[str] | None = None,
 ) -> dict[str, Any]:
     """Run the head-to-head and return the report dict (see module doc)."""
     import cv2  # type: ignore[import-untyped]
@@ -324,15 +398,29 @@ def compare(
     exclude: set[str] = set()
     for d in exclude_corpora or []:
         exclude |= corpus_cars(d)
-    cars = held_out_cars(
-        corpus_dir,
-        exclude_cars=exclude,
-        val_frac=val_frac,
-        seed=seed,
-        max_tracks_per_car=max_tracks_per_car,
-        max_cars=max_cars,
-        target=target,
-    )
+    if eval_sessions:
+        # Fresh cars: the candidate's own training cars go too (the val-split
+        # mode gets that from the split itself).
+        exclude |= corpus_cars(corpus_dir)
+        cars = session_cars(
+            output_root,
+            eval_sessions,
+            exclude_cars=exclude,
+            target=target,
+            seed=seed,
+            max_tracks_per_car=max_tracks_per_car,
+            max_cars=max_cars,
+        )
+    else:
+        cars = held_out_cars(
+            corpus_dir,
+            exclude_cars=exclude,
+            val_frac=val_frac,
+            seed=seed,
+            max_tracks_per_car=max_tracks_per_car,
+            max_cars=max_cars,
+            target=target,
+        )
 
     prod_auto = load_contender(target, production, device=device)
     contenders: dict[str, Contender] = {"production": prod_auto}
@@ -360,7 +448,8 @@ def compare(
     print(
         f"[makemodel-compare] {len(cars)} held-out cars, "
         f"{sum(len(c.tracks) for c in cars)} tracks, {total} snaps; "
-        f"excluded {len(exclude)} production-training cars",
+        f"excluded {len(exclude)} cars from training corpora"
+        + (f"; eval sessions: {', '.join(eval_sessions)}" if eval_sessions else ""),
         flush=True,
     )
 
@@ -448,6 +537,8 @@ def compare(
         "candidate": {**_file_fingerprint(candidate), **n_classes("candidate")},
         "production": {**_file_fingerprint(production), **n_classes("production")},
         "excluded_corpora": [str(d) for d in exclude_corpora or []],
+        "eval_sessions": list(eval_sessions or []),
+        "n_excluded_cars": len(exclude),
         "n_cars": len(cars),
         "n_tracks": sum(len(c.tracks) for c in cars),
         "n_snaps": total,
@@ -540,6 +631,14 @@ def main(argv: list[str] | None = None) -> int:
         "training corpus, from its .meta.json sidecar)",
     )
     ap.add_argument("--output-root", type=Path, default=Path("output"))
+    ap.add_argument(
+        "--eval-session",
+        nargs="+",
+        default=None,
+        metavar="SESSION",
+        help="score on these sessions' DVSA-labelled cars (minus every car in production's and "
+        "the candidate's training corpora) instead of the candidate corpus's val split",
+    )
     ap.add_argument("--road-polygon", type=Path, default=Path(".claude/triggers_proposal.json"))
     ap.add_argument("--max-tracks-per-car", type=int, default=DEFAULT_MAX_TRACKS_PER_CAR)
     ap.add_argument("--max-cars", type=int, default=0, help="random subset of cars (0 = all)")
@@ -566,6 +665,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         exclude = [prod_corpus]
+    for sess in args.eval_session or []:
+        if not (args.output_root / sess / f"{sess}_dvsa_labels.json").is_file():
+            print(f"[makemodel-compare] {sess}: no DVSA labels under {args.output_root}")
+            return 1
 
     device = "cuda" if (torch.cuda.is_available() and not args.cpu) else "cpu"
     report = compare(
@@ -581,11 +684,14 @@ def main(argv: list[str] | None = None) -> int:
         max_cars=args.max_cars,
         device=device,
         target=args.target,
+        eval_sessions=args.eval_session,
     )
     if not report["n_cars"]:
         print("[makemodel-compare] no held-out cars left after exclusions")
         return 1
     out = args.out or args.candidate.parent / "compare.json"
+    if out.is_file():  # keep the report this one replaces
+        out.replace(out.with_name(f"{out.stem}.prev{out.suffix}"))
     atomic_write_text(out, json.dumps(report, indent=2))
     _print_report(report)
     print(f"[makemodel-compare] wrote {out}")

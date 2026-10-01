@@ -200,6 +200,44 @@ def test_main_requires_leakage_guard_then_writes_report(
     report = json.loads((tmp_path / "run" / "compare.json").read_text())
     assert report["n_cars"] == 4
     assert report["excluded_corpora"] == [str(other)]
+    assert report["eval_sessions"] == []
+
+
+def test_main_eval_session_scores_only_fresh_cars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import streettracker.analysis.vehicle_locator as vl
+
+    monkeypatch.setattr(vl, "yolo_vehicle_detector", lambda *a, **k: _stub_detector)
+    corpus = _corpus(tmp_path)
+    out = tmp_path / "output"
+    sd = _session(out)
+    # FD0 is in the candidate's corpus (excluded); NEW1 / NEW2 are fresh cars.
+    labels = {
+        "FD0": {"make": "FORD", "track_ids": [1]},
+        "NEW1": {"make": "FORD", "track_ids": [2]},
+        "NEW2": {"make": "AUDI", "track_ids": [5]},
+    }
+    (sd / f"{SESS}_dvsa_labels.json").write_text(json.dumps({"labels": labels}))
+    prod = _ckpt(tmp_path / "prod.pt", ["AUDI", "FORD"])
+    (tmp_path / "run").mkdir()
+    cand = _ckpt(tmp_path / "run" / "best.pt", ["AUDI", "FORD"], crop_mode="plate")
+    (tmp_path / "run" / "compare.json").write_text('{"old": true}')
+    other = tmp_path / "uk_crops_prod"
+    other.mkdir()
+    (other / "manifest.json").write_text(json.dumps({"samples": [{"car": "ZZ1"}]}))
+    args = [str(corpus), "--candidate", str(cand), "--production", str(prod), "--cpu"]
+    args += ["--output-root", str(out), "--road-polygon", str(tmp_path / "none.json")]
+    args += ["--exclude-corpus", str(other)]
+
+    assert main(args + ["--eval-session", "session_20990101_000000"]) == 1  # no labels there
+    assert main(args + ["--eval-session", SESS]) == 0
+    report = json.loads((tmp_path / "run" / "compare.json").read_text())
+    assert report["eval_sessions"] == [SESS]
+    assert report["n_cars"] == 2 and report["n_tracks"] == 2 and report["n_snaps"] == 4
+    assert report["n_excluded_cars"] == 9  # 8 candidate-corpus cars + ZZ1
+    # The report it replaced is kept beside it.
+    assert json.loads((tmp_path / "run" / "compare.prev.json").read_text()) == {"old": True}
 
 
 # ----------------------------------------------------------------------

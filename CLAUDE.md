@@ -87,6 +87,22 @@ dev-box analysis code. In order:
    the per-car cap as a separate run: build-train uncapped vs **max
    crops/car = 30** (the dashboard field; capped runs get `_capN` dirs), each
    compared against production.
+   **Progress (2026-10-01):** the uncapped run (`runs/uk_make_0929_b6`,
+   corpus `uk_crops_0929_576`: 4,347 cars / 76,033 crops / 62 makes) ran all
+   20 epochs at batch 6 (~100 min/epoch); val make@1 peaked **0.932** at epoch
+   15 and never fell away (the old corpus peaked at epoch 2, then dropped).
+   Its build-train head-to-head is **inconclusive**: +1.3 pp per track (95 % CI
+   −2.6..+6.3) on only **67 held-out cars**, because 93 % of the rebuilt
+   corpus's cars are also in production's training corpus and are excluded.
+   The cap-30 run (`runs/uk_make_1001_b6_cap30`, 39,219 train crops,
+   ~69 min/epoch) followed automatically. **To decide:** enrich the unseen
+   week `session_20260924_104939` (pulled 2026-09-30) once training frees the
+   GPU, then score both candidates on its fresh cars with `makemodel-compare
+   <corpus> --candidate <best.pt> --eval-session session_20260924_104939
+   --exclude-corpus runs/uk_crops_0924_576 <the other candidate's corpus>`.
+   Pass the same exclusions for both runs so they score identical cars
+   (`--exclude-corpus` replaces the default production-corpus exclusion, so
+   name 0924 explicitly; each run always excludes its own corpus).
 6. **Then the review's plan** (`docs/data_integrity_review.md` §4):
    - Phase 0 read-only checks (E0.2–E0.8), written as one script.
    - E1.2 audit set (extend `.claude/triage_rl.py`) and the E1.3
@@ -505,7 +521,7 @@ uv run streettracker colour output/<session>             # CNN vehicle-colour in
 # Mine the Orin -> grow the UK make-classifier corpus (run pull from PowerShell):
 uv run streettracker pull --session <S> --only-main      # pull a session's 4K snaps from the Orin
 uv run streettracker makemodel-build-uk runs/uk_crops --output-size 512  # DVSA-labelled UK make crops @512 (auto-discovers sessions); --crop-mode plate (default) = plate-anchored crops, needs alpr-run output
-uv run streettracker makemodel-compare runs/uk_crops --candidate runs/uk_make_X/best.pt  # head-to-head vs production on shared held-out cars -> runs/uk_make_X/compare.json; --target colour|body_type for the other heads (colour also reports a grouped score)
+uv run streettracker makemodel-compare runs/uk_crops --candidate runs/uk_make_X/best.pt  # head-to-head vs production on shared held-out cars -> runs/uk_make_X/compare.json (the report it replaces is kept as compare.prev.json); --target colour|body_type for the other heads (colour also reports a grouped score); --eval-session <S>... scores fresh sessions' cars instead of the corpus val split, minus every car in production's and the candidate's corpora
 uv run streettracker makemodel-train-uk runs/uk_crops --input-size 512   # train the UK make classifier (B0@512; +--backbone b4/b5). honest make@1 ~28% on 1229 cars (old "37.6%" was small-val optimism)
 ```
 
@@ -709,7 +725,7 @@ complete** — both ancestor repos archived on GitHub 2026-07-07.
 | 6     | (opt) Nano archive role                                                 | not started                                                                                                            |
 | 7     | cutover: enable systemd on Orin + decommission Nano + archive old repos | **done** — Orin live since 2026-05-22; `VehicleTracker` + `NanoTracker` archived 2026-07-07 with superseded-by banners |
 
-Tests at HEAD: **1091 passing on Python 3.10 in the CI environment (8 torch-only
+Tests at HEAD: **1099 passing on Python 3.10 in the CI environment (8 torch-only
 modules skip there), ruff clean.** A `tests/conftest.py` autouse fixture points
 the plate-gate config at a per-test path, so a calibrated `configs/alpr.json` on
 the dev box never changes what the tests see.
