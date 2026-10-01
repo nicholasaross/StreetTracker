@@ -409,6 +409,15 @@ def _corpus_from_manifest(d: Path) -> CorpusInfo | None:
     )
 
 
+def corpus_info(corpus_dir: Path) -> CorpusInfo | None:
+    """One corpus's stats from its manifest, or ``None`` without one."""
+    if not (corpus_dir / "manifest.json").is_file():
+        return None
+    return _by_mtime(
+        corpus_dir / "manifest.json", "corpus", lambda: _corpus_from_manifest(corpus_dir)
+    )
+
+
 def latest_corpus(runs_dir: Path) -> CorpusInfo | None:
     """The most recently built ``runs/uk_crops_*`` that carries a manifest."""
     if not runs_dir.is_dir():
@@ -553,6 +562,9 @@ class TrainingRunInfo:
     crop_pad_frac: float | None = None
     # makemodel-compare's head-to-head report (compare.json), or None.
     compare: dict[str, Any] | None = None
+    # The corpus the run trained on, as history.json records it (None on runs
+    # from before the trainer wrote it).
+    corpus: str | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -595,6 +607,7 @@ def _run_from_history(d: Path) -> TrainingRunInfo | None:
         crop_mode=normalize_crop_mode(summary.get("crop_mode")),
         crop_pad_frac=summary.get("crop_pad_frac"),
         compare=_compare_summary(cmp_path) if cmp_path.is_file() else None,
+        corpus=summary.get("corpus") if isinstance(summary.get("corpus"), str) else None,
     )
 
 

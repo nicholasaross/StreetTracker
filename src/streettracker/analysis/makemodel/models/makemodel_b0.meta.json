@@ -2,45 +2,39 @@
   "arch": "efficientnet_b6",
   "input_size": 528,
   "n_makes": 62,
-  "val_make_top1": 0.8684,
-  "promoted_at": "2026-09-25",
-  "source_run": "uk_make_0924_b6",
+  "val_make_top1": 0.9323,
+  "promoted_at": "2026-10-01",
+  "source_run": "uk_make_0929_b6",
   "crop_mode": "plate",
   "crop_pad_frac": 0.1,
   "head_to_head": {
-    "created_at": "2026-09-25T17:24:18",
+    "created_at": "2026-10-01T04:53:38",
     "production": {
       "path": "D:\\Projects\\StreetTracker\\src\\streettracker\\analysis\\makemodel\\models\\makemodel_b0.pt",
-      "size": 164581419,
-      "mtime": 1783516342.1065354,
-      "n_makes": 45
+      "size": 164738475,
+      "mtime": 1790292795.9195068,
+      "n_classes": 62,
+      "n_makes": 62
     },
-    "n_cars": 883,
-    "n_tracks": 1319,
+    "n_cars": 67,
+    "n_tracks": 77,
     "delta": {
       "metric": "track_acc",
-      "candidate_minus_production": 0.2252,
+      "candidate_minus_production": 0.013,
       "ci95": [
-        0.1961,
-        0.2542
+        -0.026,
+        0.0625
       ]
     },
-    "candidate_track_acc": 0.6042,
-    "production_track_acc": 0.3791,
-    "production_clean_track_acc": 0.439,
-    "production_clean_crop_delta": {
-      "metric": "track_acc",
-      "clean_minus_deployed": 0.0599,
-      "ci95": [
-        0.0336,
-        0.0851
-      ]
-    }
+    "candidate_track_acc": 0.5844,
+    "production_track_acc": 0.5714,
+    "production_clean_track_acc": null,
+    "production_clean_crop_delta": null
   },
   "trained_corpus": {
-    "name": "uk_crops_0924_576",
-    "n_cars": 7319,
+    "name": "uk_crops_0929_576",
+    "n_cars": 4347,
     "n_makes": 62,
-    "n_crops": 81933
+    "n_crops": 76033
   }
 }
