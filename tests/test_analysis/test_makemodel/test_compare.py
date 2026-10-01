@@ -239,6 +239,18 @@ def test_main_eval_session_scores_only_fresh_cars(
     # The report it replaced is kept beside it.
     assert json.loads((tmp_path / "run" / "compare.prev.json").read_text()) == {"old": True}
 
+    # --include-trained-cars keeps FD0 (a corpus car) and needs no production
+    # corpus to exclude; without --eval-session it is refused.
+    base = [str(corpus), "--candidate", str(cand), "--production", str(prod), "--cpu"]
+    base += ["--output-root", str(out), "--road-polygon", str(tmp_path / "none.json")]
+    base += ["--runs-dir", str(tmp_path)]  # no production sidecar here
+    assert main(base + ["--include-trained-cars"]) == 2
+    assert main(base + ["--eval-session", SESS, "--include-trained-cars"]) == 0
+    report = json.loads((tmp_path / "run" / "compare.json").read_text())
+    assert report["include_trained_cars"] is True
+    assert report["n_cars"] == 3 and report["n_excluded_cars"] == 0
+    assert report["excluded_corpora"] == []
+
 
 # ----------------------------------------------------------------------
 # Colour + body-type heads (--target).

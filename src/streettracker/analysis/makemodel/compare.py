@@ -18,7 +18,12 @@ module scores both models on ONE held-out set instead:
   corpora: fresh cars neither model has seen. Use it when the two corpora
   share most of their cars, which leaves the val-split mode only a handful
   (2026-10-01: 67 cars, because 93 % of the rebuilt corpus's cars were
-  already in production's).
+  already in production's). ``--include-trained-cars`` keeps the cars the
+  models trained on: new PASSES of known cars, from sessions recorded after
+  every model's training data. On a street of regulars (88 % of one day's
+  plated cars were already in the corpora) that is most of what the
+  classifier sees, and it gives far more cars than the fresh-only set; it
+  rewards recognising known cars, so read it beside the fresh-car result.
 * **Tracks** -- each held-out car's DVSA-labelled tracks (capped per car so
   a few regulars can't dominate), and ALL of each track's 4K snaps, as the
   ``makemodel`` command would classify them.
@@ -372,6 +377,30 @@ def _production_corpus(production: Path, runs_dir: Path) -> Path | None:
     return d if (d / "manifest.json").is_file() else None
 
 
+def excluded_cars(
+    corpus_dir: Path,
+    exclude_corpora: list[Path] | None,
+    *,
+    eval_sessions: list[str] | None = None,
+    include_trained_cars: bool = False,
+) -> set[str]:
+    """The cars dropped from the held-out set: every car in
+    ``exclude_corpora`` (production's training corpus by default), plus the
+    candidate's own corpus when scoring ``eval_sessions`` (the val-split mode
+    gets that from the split itself). ``include_trained_cars`` (sessions
+    only) drops none: new passes of known cars are scored too."""
+    if include_trained_cars:
+        if not eval_sessions:
+            raise ValueError("include_trained_cars needs eval_sessions")
+        return set()
+    exclude: set[str] = set()
+    for d in exclude_corpora or []:
+        exclude |= corpus_cars(d)
+    if eval_sessions:
+        exclude |= corpus_cars(corpus_dir)
+    return exclude
+
+
 def compare(
     corpus_dir: Path,
     candidate: Path,
@@ -388,6 +417,7 @@ def compare(
     vehicle_detector: Any = None,
     target: str = "make",
     eval_sessions: list[str] | None = None,
+    include_trained_cars: bool = False,
 ) -> dict[str, Any]:
     """Run the head-to-head and return the report dict (see module doc)."""
     import cv2  # type: ignore[import-untyped]
@@ -395,13 +425,13 @@ def compare(
     from streettracker.analysis.snap_assets import discover_vehicle_snaps
     from streettracker.analysis.vehicle_locator import SnapVehicleLocator, VehicleBoxCache
 
-    exclude: set[str] = set()
-    for d in exclude_corpora or []:
-        exclude |= corpus_cars(d)
+    exclude = excluded_cars(
+        corpus_dir,
+        exclude_corpora,
+        eval_sessions=eval_sessions,
+        include_trained_cars=include_trained_cars,
+    )
     if eval_sessions:
-        # Fresh cars: the candidate's own training cars go too (the val-split
-        # mode gets that from the split itself).
-        exclude |= corpus_cars(corpus_dir)
         cars = session_cars(
             output_root,
             eval_sessions,
@@ -448,7 +478,11 @@ def compare(
     print(
         f"[makemodel-compare] {len(cars)} held-out cars, "
         f"{sum(len(c.tracks) for c in cars)} tracks, {total} snaps; "
-        f"excluded {len(exclude)} cars from training corpora"
+        + (
+            "kept cars the models trained on (scoring their new passes)"
+            if include_trained_cars
+            else f"excluded {len(exclude)} cars from training corpora"
+        )
         + (f"; eval sessions: {', '.join(eval_sessions)}" if eval_sessions else ""),
         flush=True,
     )
@@ -536,8 +570,9 @@ def compare(
         "corpus": str(corpus_dir),
         "candidate": {**_file_fingerprint(candidate), **n_classes("candidate")},
         "production": {**_file_fingerprint(production), **n_classes("production")},
-        "excluded_corpora": [str(d) for d in exclude_corpora or []],
+        "excluded_corpora": [] if include_trained_cars else [str(d) for d in exclude_corpora or []],
         "eval_sessions": list(eval_sessions or []),
+        "include_trained_cars": include_trained_cars,
         "n_excluded_cars": len(exclude),
         "n_cars": len(cars),
         "n_tracks": sum(len(c.tracks) for c in cars),
@@ -639,6 +674,12 @@ def main(argv: list[str] | None = None) -> int:
         help="score on these sessions' DVSA-labelled cars (minus every car in production's and "
         "the candidate's training corpora) instead of the candidate corpus's val split",
     )
+    ap.add_argument(
+        "--include-trained-cars",
+        action="store_true",
+        help="with --eval-session: keep cars the models trained on, scoring their new passes "
+        "(sessions recorded after all training data) alongside fresh cars",
+    )
     ap.add_argument("--road-polygon", type=Path, default=Path(".claude/triggers_proposal.json"))
     ap.add_argument("--max-tracks-per-car", type=int, default=DEFAULT_MAX_TRACKS_PER_CAR)
     ap.add_argument("--max-cars", type=int, default=0, help="random subset of cars (0 = all)")
@@ -654,8 +695,11 @@ def main(argv: list[str] | None = None) -> int:
         if not p.exists():
             print(f"[makemodel-compare] not found: {p}")
             return 1
+    if args.include_trained_cars and not args.eval_session:
+        print("[makemodel-compare] --include-trained-cars needs --eval-session")
+        return 2
     exclude = args.exclude_corpus
-    if exclude is None:
+    if exclude is None and not args.include_trained_cars:
         prod_corpus = _production_corpus(args.production, args.runs_dir)
         if prod_corpus is None:
             print(
@@ -685,6 +729,7 @@ def main(argv: list[str] | None = None) -> int:
         device=device,
         target=args.target,
         eval_sessions=args.eval_session,
+        include_trained_cars=args.include_trained_cars,
     )
     if not report["n_cars"]:
         print("[makemodel-compare] no held-out cars left after exclusions")
