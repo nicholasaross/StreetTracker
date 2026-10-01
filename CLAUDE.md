@@ -113,6 +113,24 @@ dev-box analysis code. In order:
    has several hundred cars and matches what the classifier mostly sees, but
    it rewards recognising known cars, so read it beside the fresh-car result
    and use `--out` to keep the two reports apart.
+   **Verdict (2026-10-01) — uncapped `uk_make_0929_b6` PROMOTED.** Scored on
+   the unseen sessions `session_20260924_104939` + `session_20260930_211033`
+   (reports `runs/uk_make_*/compare_{fresh,known}_week0924.json`), per-track
+   make@1:
+
+   | model | 117 fresh cars | 710 cars, new passes |
+   | --- | --- | --- |
+   | production (`uk_make_0924_b6`) | 80.8 % | 93.6 % |
+   | **uncapped `uk_make_0929_b6`** | **85.0 %** (+4.2, CI −1.2..+10.0) | **95.1 %** (+1.5, CI +0.0..+2.9) |
+   | cap-30 `uk_make_1001_b6_cap30` | 84.4 % (+3.6, CI −0.7..+8.2) | 94.0 % (+0.4, CI −1.2..+1.9) |
+
+   Better than production in both tests and never worse, from cleaner labels;
+   the 710-car CI touches zero, so it was a judgement call, not the panel's
+   strict "clear win". **The per-car cap doesn't help** (no better fresh,
+   −1.1 pp known) — keep the option, don't use it by default. Prior model
+   backed up as `makemodel_b0.20261001T224515.pt`; the reinfer playbook was
+   queued to follow the week's enrich. Colour + body type still to retrain
+   on `uk_crops_0929_576` (judge them the same way).
 6. **Then the review's plan** (`docs/data_integrity_review.md` §4):
    - Phase 0 read-only checks (E0.2–E0.8), written as one script.
    - E1.2 audit set (extend `.claude/triage_rl.py`) and the E1.3
@@ -735,7 +753,7 @@ complete** — both ancestor repos archived on GitHub 2026-07-07.
 | 6     | (opt) Nano archive role                                                 | not started                                                                                                            |
 | 7     | cutover: enable systemd on Orin + decommission Nano + archive old repos | **done** — Orin live since 2026-05-22; `VehicleTracker` + `NanoTracker` archived 2026-07-07 with superseded-by banners |
 
-Tests at HEAD: **1100 passing on Python 3.10 in the CI environment (8 torch-only
+Tests at HEAD: **1101 passing on Python 3.10 in the CI environment (8 torch-only
 modules skip there), ruff clean.** A `tests/conftest.py` autouse fixture points
 the plate-gate config at a per-test path, so a calibrated `configs/alpr.json` on
 the dev box never changes what the tests see.

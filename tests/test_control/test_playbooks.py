@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -330,6 +331,32 @@ def test_promote_model_swaps_backs_up_and_writes_sidecar(tmp_path: Path) -> None
     # the prior model was preserved under a timestamped backup
     backups = list(model_path.parent.glob("makemodel_b0.*.pt"))
     assert any(b.read_bytes() == b"OLD-MODEL" for b in backups)
+
+
+def test_promote_records_the_runs_own_corpus_not_the_newest(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    for name, n_cars in (("uk_crops_0929_576", 3), ("uk_crops_1001_576_cap30", 2)):
+        d = runs / name
+        d.mkdir(parents=True)
+        samples = [{"make": "FORD", "car": f"C{i}"} for i in range(n_cars)]
+        (d / "manifest.json").write_text(json.dumps({"makes": ["FORD"], "samples": samples}))
+    os.utime(runs / "uk_crops_0929_576", (1, 1))  # the capped corpus is the newest
+    rundir = runs / "uk_make_0929_b6"
+    rundir.mkdir()
+    summary = {"best_epoch": 15, "best_val_make_top1": 0.93, "makes": ["FORD"], "history": [{}]}
+    summary["corpus"] = r"runs\uk_crops_0929_576"  # as the trainer records it on Windows
+    (rundir / "history.json").write_text(json.dumps(summary))
+    (rundir / "best.pt").write_bytes(b"CANDIDATE")
+    model_path = tmp_path / "models" / "makemodel_b0.pt"
+    model_path.parent.mkdir(parents=True)
+    ctx = PlaybookContext(output_root=tmp_path / "output", runs_dir=runs, model_path=model_path)
+
+    def reader(_p: Path) -> ModelInfo:
+        return ModelInfo(path="x", mtime=0.0, source="checkpoint", n_makes=1, val_make_top1=0.93)
+
+    assert promote_model(ctx, "uk_make_0929_b6", reader=reader).ok
+    trained = json.loads(model_path.with_suffix(".meta.json").read_text())["trained_corpus"]
+    assert trained["name"] == "uk_crops_0929_576" and trained["n_cars"] == 3
 
 
 def _plate_run_dir(runs: Path, *, compare: dict | None = None) -> Path:

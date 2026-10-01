@@ -482,7 +482,7 @@ def promote_model(
         backup_name = backup.name
     shutil.copy2(cand, model_path)
 
-    corpus = introspect.latest_corpus(ctx.runs_dir)
+    corpus = _run_corpus(run, ctx.runs_dir)
     sidecar = {
         "arch": meta.arch,
         "input_size": meta.input_size,
@@ -513,6 +513,21 @@ def promote_model(
     if backup_name:
         msg += f"; backed up prior model to {backup_name}"
     return StepResult(True, msg)
+
+
+def _run_corpus(run: introspect.TrainingRunInfo, runs_dir: Path) -> introspect.CorpusInfo | None:
+    """The corpus ``run`` trained on (its history.json names it), else the
+    newest corpus for runs from before the trainer recorded one. Recording
+    the newest unconditionally wrote the wrong corpus on 2026-10-01: a
+    capped corpus built after the promoted run's, whose crop count then made
+    the retrain recommendation see 27k crops of phantom growth."""
+    if run.corpus:
+        recorded = Path(run.corpus.replace("\\", "/"))  # recorded on Windows
+        for d in (recorded, runs_dir / recorded.name):
+            info = introspect.corpus_info(d)
+            if info is not None:
+                return info
+    return introspect.latest_corpus(runs_dir)
 
 
 def promote_steps(ctx: PlaybookContext, run_name: str | None = None) -> list[Step]:
