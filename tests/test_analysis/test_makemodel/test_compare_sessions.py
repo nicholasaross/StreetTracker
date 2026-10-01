@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from streettracker.analysis.makemodel.compare import session_cars, target_label
+from streettracker.analysis.makemodel.compare import excluded_cars, session_cars, target_label
 
 
 def _labels(output_root: Path, sess: str, labels: dict) -> None:
@@ -77,3 +77,24 @@ def test_session_cars_unreadable_labels_is_an_error(tmp_path: Path) -> None:
 def test_target_label_rejects_an_unknown_target() -> None:
     with pytest.raises(ValueError, match="target must be one of"):
         target_label({"make": "FORD"}, "wheels")
+
+
+def _corpus(root: Path, name: str, cars: list[str]) -> Path:
+    d = root / name
+    d.mkdir()
+    (d / "manifest.json").write_text(json.dumps({"samples": [{"car": c} for c in cars]}))
+    return d
+
+
+def test_excluded_cars_per_mode(tmp_path: Path) -> None:
+    cand = _corpus(tmp_path, "uk_crops_cand", ["CAND1", "SHARED"])
+    prod = _corpus(tmp_path, "uk_crops_prod", ["PROD1", "SHARED"])
+    # Val-split mode: production's cars only (the split handles the candidate's).
+    assert excluded_cars(cand, [prod]) == {"PROD1", "SHARED"}
+    # Fresh-car sessions: every car either model trained on.
+    sess = ["session_a"]
+    assert excluded_cars(cand, [prod], eval_sessions=sess) == {"PROD1", "SHARED", "CAND1"}
+    # New passes of known cars: nothing dropped.
+    assert excluded_cars(cand, [prod], eval_sessions=sess, include_trained_cars=True) == set()
+    with pytest.raises(ValueError, match="needs eval_sessions"):
+        excluded_cars(cand, [prod], include_trained_cars=True)
