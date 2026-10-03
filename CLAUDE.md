@@ -129,8 +129,25 @@ dev-box analysis code. In order:
    strict "clear win". **The per-car cap doesn't help** (no better fresh,
    −1.1 pp known) — keep the option, don't use it by default. Prior model
    backed up as `makemodel_b0.20261001T224515.pt`; the reinfer playbook was
-   queued to follow the week's enrich. Colour + body type still to retrain
-   on `uk_crops_0929_576` (judge them the same way).
+   queued to follow the week's enrich (done 2026-10-02: all 48 sessions,
+   showcase at 4,173 cars).
+   **Colour + body type — retrained on `uk_crops_0929_576` and PROMOTED
+   (2026-10-03).** EfficientNet-B0 @384, batch 32, 20 epochs / patience 5
+   (`runs/uk_colour_1002_b0`: early-stopped at 15, best val 0.906 at epoch
+   10; `runs/uk_body_1002_b0`: all 20, best 0.940 at 16 — neither showed the
+   old epoch-1-to-3 peak). Same fresh-week head-to-heads, per track:
+
+   | head | fresh cars | all cars, new passes |
+   | --- | --- | --- |
+   | colour | 76.2 % → **83.3 %** (+7.1, CI +0.6..+13.8; grouped +5.9, CI +0.6..+12.1), 118 cars | 86.9 % → **93.5 %** (+6.6, CI +4.7..+8.6; grouped +5.3), 711 cars |
+   | body type | 87.8 % → **89.1 %** (+1.3, CI −2.6..+4.7), 109 cars | 92.8 % → **95.9 %** (+3.1, CI +1.7..+4.5), 674 cars |
+
+   Colour is a clear win on both sets; body type is clear on the large set
+   and level on fresh cars (both near ceiling there). Prior models backed
+   up as `models/{colour,bodytype}_b0.20261003T*.pt` (untracked); every
+   session re-run with both heads via the panel (2026-10-03, 96 jobs, then
+   a showcase refresh). **Step 5 is complete** — all three heads now train
+   on the label-clean corpus.
 6. **Then the review's plan** (`docs/data_integrity_review.md` §4):
    - Phase 0 read-only checks (E0.2–E0.8), written as one script.
    - E1.2 audit set (extend `.claude/triage_rl.py`) and the E1.3
