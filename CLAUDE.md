@@ -197,11 +197,22 @@ step 6's E1.5(c) is the one Orin deploy. In order:
         (E2.8), or IR mode with inference in IR (needs a runtime switch and
         `dayNight` back to Auto). That choice is the operator's: it changes the
         camera or the live runtime.
-   4. **E1.3 plate-colour/direction check, and the combined gate.** E0.9
-      says to gate on cross-track support (≥ 2 tracks; ≥ 5 cleanest) or snap
-      agreement, with confidence secondary (E1.4's first cut). E1.3 also
-      settles E0.5's concurrent collisions: the plate's colour says which
-      track owns it.
+   4. **E1.3 plate-colour/direction check, and the combined gate.
+      Measured 2026-10-04; pipeline change not built yet.** Classifier
+      `analysis/alpr/plate_colour.py` (R→L shows the white front plate, L→R
+      the yellow rear). **2.5 % of gated best reads carry a plate whose colour
+      contradicts the direction** (L→R 3.9 %, mostly oncoming cars' front
+      plates), confidence and support can't see it, and colour resolves all
+      230 of E0.5's concurrent collisions. Gate comparison
+      (`.claude/plate_gate_rules.py`, review E1.4): **gate H = (another snap
+      agrees, or ≥ 2 tracks read the plate) and conf ≥ 0.80 and plate colour
+      not wrong**. It labels 15.5 % more tracks than today's conf ≥ 0.90, with
+      not-on-register 2.1 → 1.4 %, unseen colour mismatch 4.1 → 3.6 % and
+      misattributed plates 2.5 % → 0. To build: flag colour-inconsistent reads
+      as suspects (like `static_suspect`) so a track's best read falls back;
+      put H into the shared gate (dvsa-label, vehicles, showcase, stats); then
+      backfill existing sessions with a panel playbook. Newly admitted plates
+      cost some DVSA lookups.
    5. **E1.2 audit set** (extend `.claude/triage_rl.py`), stratified to
       over-represent what E0.5 and E1.3 flag; then calibrate E1.3 and the
       combined gate against it. It is the only check on whether a plate
