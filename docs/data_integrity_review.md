@@ -708,6 +708,36 @@ highest-confidence read (now meaningful), not "most-supported string".
     - require the plate position to agree with the track's motion;
     - reject reads whose plate colour contradicts the direction.
   - Use the check as a standing per-session health metric in the panel.
+- **Done 2026-10-04, before E1.2** (classifier
+  `analysis/alpr/plate_colour.py`, checked visually on contact sheets of
+  confident reads; corpus run `.claude/plate_colour_check.py`, 48 sessions,
+  ~190k UK-shaped reads). Thresholds: yellow = hue 8-40 with saturation
+  ≥ 35 (yellow plates sit at hue 15-25, washing out to saturation ~35-70 in
+  sun); white = saturation < 35, or hue 75-135 with saturation < 90 (the
+  camera renders white slightly blue). Crops with no colour count as IR
+  frames; none occurred. The classifier works at night under forced colour
+  too.
+  - **Per read, the plate colour contradicts the track's direction on
+    3.4-4.7 % of left-to-right reads** (white front plates on cars moving
+    away) and 1.5-2.6 % of right-to-left reads.
+  - **Per track's best read (what labels come from): 2.5 % of gated best reads
+    are inconsistent** (862/35,123): left-to-right 3.9 %, right-to-left
+    1.0 %. That fits R2's mechanism: an oncoming car's large front plate wins
+    the left-to-right track's candidate pick.
+  - **Confidence can't see this** (2.0-2.6 % in every confidence group;
+    a misattributed plate is a perfectly read real plate). Neither can
+    cross-track support (2.5 % at ≥ 5 tracks, because the plate belongs to a
+    real, often regular, car). Snap agreement helps a little (1.7 % agrees vs
+    4.7 % no snap agrees).
+  - **It resolves every concurrent collision from E0.5:** in all 230 gated
+    two-cars-one-plate pairs, the plate's colour fits exactly one of the two
+    tracks.
+  - Of the 1,229 inconsistent best reads, 386 have another UK-shaped read in
+    the same track whose colour fits (a fallback); 843 have none.
+  - Some inconsistent reads will be the right plate on a track whose
+    *direction* is wrong (e.g. a car reversing). Rejecting them costs a
+    correct identity but never adds a wrong label, so the trade is safe for
+    labels.
 
 **E1.4 — DVSA label-quality signals (R3).**
 
@@ -715,6 +745,26 @@ highest-confidence read (now meaningful), not "most-supported string".
   agreement with min-character confidence, since agreement separates the
   not-on-register rate better than confidence alone (see the revision above).
   Build it into the shared gate, then validate it on E1.2.
+- **Candidate gates compared 2026-10-04** (`.claude/plate_gate_rules.py`,
+  54,326 UK-shaped best reads, 49 sessions; "unseen" colour mismatch is on
+  the two post-corpus sessions only):
+
+  | gate | tracks kept | not on register | colour mismatch (unseen) | plate colour wrong |
+  | --- | --- | --- | --- | --- |
+  | A: conf ≥ 0.90 (today) | 35,761 (65.8 %) | 2.1 % | 4.1 % | 2.5 % |
+  | C: conf ≥ 0.90 and (agree or support ≥ 2) | 34,904 (64.2 %) | 1.2 % | 3.6 % | 2.4 % |
+  | D: (agree or support ≥ 2) and conf ≥ 0.80 | 42,246 (77.8 %) | 1.4 % | 3.7 % | 2.3 % |
+  | F: support ≥ 2 and conf ≥ 0.80 | 41,602 (76.6 %) | 1.3 % | 3.5 % | 2.3 % |
+  | **H: D and plate colour not wrong** | **41,303 (76.0 %)** | **1.4 %** | **3.6 %** | **0 %** |
+  | I: C and plate colour not wrong | 34,070 (62.7 %) | 1.2 % | 3.5 % | 0 % |
+
+  ("agree" = another snap of the track read the same string; "support" =
+  tracks anywhere whose best read is the plate.) **Recommendation: H.** It
+  labels 15.5 % more tracks than today's gate *and* every quality measure is
+  better: not-on-register 2.1 → 1.4 %, unseen colour mismatch 4.1 → 3.6 %,
+  misattributed plates 2.5 % → 0. C/I are cleanest on the register but keep
+  fewer tracks than today. Support is computed over every session, so a car
+  seen once is labelled only when two of its snaps agree.
 
 - Compute, per labelled plate:
   - read support (E0.4);
