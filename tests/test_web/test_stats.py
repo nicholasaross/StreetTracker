@@ -146,6 +146,25 @@ def test_session_spanning_two_dates_splits(tmp_path: Path) -> None:
     assert dates == {"2026-06-01", "2026-06-02"}
 
 
+def test_clock_change_repeat_hour_counts_each_pass_once(tmp_path: Path) -> None:
+    """BST ends 2026-10-25: local 01:00-02:00 happens twice (+01:00, then
+    +00:00). Each pass counts once, on its own camera-local date and hour, so
+    hour 1 that Sunday holds two clock-hours of traffic (wall-clock
+    semantics; an observed-hours denominator is review E3.4's job)."""
+    stamps = [
+        "2026-10-25T00:30:00+01:00",
+        "2026-10-25T01:30:00+01:00",
+        "2026-10-25T01:30:00+00:00",  # the repeated hour, an hour later
+        "2026-10-25T02:30:00+00:00",
+    ]
+    tracks = [replace(_track(i + 1), time_start=ts) for i, ts in enumerate(stamps)]
+    _mk_session(tmp_path, "session_20261024_090000", tracks)
+    s = build_stats(tmp_path)
+    assert s.daily == [{"date": "2026-10-25", "l2r": 4, "r2l": 0, "total": 4}]
+    sunday = s.heatmap[6]
+    assert (sunday[0], sunday[1], sunday[2]) == (1, 2, 1)
+
+
 def test_dow_and_heatmap(tmp_path: Path) -> None:
     date = "2026-05-26"
     wd = datetime.fromisoformat(f"{date}T12:00:00+01:00").weekday()
@@ -346,32 +365,86 @@ def test_fastest_with_no_snap_on_disk_has_no_picture(tmp_path: Path) -> None:
 # Make / colour
 
 
+def _colour_sidecar(d: Path, colours: dict[int, str]) -> None:
+    (d / f"{d.name}_colour_by_track.json").write_text(
+        json.dumps(
+            {"tracks": [{"track_id": t, "colour": c, "conf": 0.9} for t, c in colours.items()]}
+        )
+    )
+
+
 def test_make_dedupe_across_sessions(tmp_path: Path) -> None:
-    dv = {"labels": {"AB12CDE": {"make": "FORD"}, "LA68EWY": {"make": "FIAT"}}}
+    dv = {
+        "labels": {
+            "AB12CDE": {"make": "FORD", "track_ids": [1]},
+            "LA68EWY": {"make": "FIAT", "track_ids": [1]},
+        }
+    }
     _mk_session(tmp_path, "session_20260526_090000", [_track(1)], dvsa=dv)
     # Same FORD plate again in a later session -> counted once; add a VW.
     _mk_session(
         tmp_path,
         "session_20260527_090000",
         [_track(2, date="2026-05-27")],
-        dvsa={"labels": {"AB12CDE": {"make": "FORD"}, "GL74JYW": {"make": "VOLKSWAGEN"}}},
+        dvsa={
+            "labels": {
+                "AB12CDE": {"make": "FORD", "track_ids": [2]},
+                "GL74JYW": {"make": "VOLKSWAGEN", "track_ids": [2]},
+            }
+        },
     )
     makes = dict(build_stats(tmp_path).makes)
     assert makes == {"FORD": 1, "FIAT": 1, "VOLKSWAGEN": 1}
 
 
-def test_colour_distribution(tmp_path: Path) -> None:
+def test_make_chart_skips_orphan_labels(tmp_path: Path) -> None:
+    """A cached DVSA label with no current track_ids (cleared by the plate
+    gate, beacon suppression or re-enrichment) is not a car on the street --
+    but the same plate still counts where another session attributes it."""
     _mk_session(
         tmp_path,
         "session_20260526_090000",
-        [
-            _track(1, color="white"),
-            _track(2, color="white"),
-            _track(3, color="black"),
-        ],
+        [_track(1)],
+        dvsa={
+            "labels": {
+                "AB12CDE": {"make": "FORD", "track_ids": []},  # orphan here...
+                "LA68EWY": {"make": "FIAT", "track_ids": []},  # ...and everywhere
+                "GL74JYW": {"make": "VOLKSWAGEN"},  # pre-track_ids row: orphan
+            }
+        },
     )
+    _mk_session(
+        tmp_path,
+        "session_20260527_090000",
+        [_track(2, date="2026-05-27")],
+        dvsa={"labels": {"AB12CDE": {"make": "FORD", "track_ids": [2]}}},
+    )
+    assert dict(build_stats(tmp_path).makes) == {"FORD": 1}
+
+
+def test_colour_distribution(tmp_path: Path) -> None:
+    d = _mk_session(
+        tmp_path,
+        "session_20260526_090000",
+        [_track(1), _track(2), _track(3)],
+    )
+    _colour_sidecar(d, {1: "white", 2: "white", 3: "black"})
     colours = dict(build_stats(tmp_path).colours)
     assert colours == {"white": 2, "black": 1}
+
+
+def test_hsv_colour_never_used(tmp_path: Path) -> None:
+    """The low-res HSV `color` field drifts light cars to black/blue, so a
+    track with no DVSA or CNN colour counts as unknown, never as its HSV
+    vote -- in the mix chart and on the fastest-by-colour board."""
+    _mk_session(
+        tmp_path,
+        "session_20260526_090000",
+        [_track(i, color="black") for i in range(1, 41)],
+    )
+    s = build_stats(tmp_path)
+    assert dict(s.colours) == {"unknown": 40}
+    assert s.fastest_colours == []
 
 
 def test_speed_ranking_orders_gates_and_annotates() -> None:
@@ -400,9 +473,9 @@ def test_speed_ranking_top_n_limit() -> None:
 def test_fastest_by_make_and_colour_through_build_stats(tmp_path: Path) -> None:
     """Integration: fastest_makes / fastest_colours populate, gate on sample
     size, and convert to mph under a calibration."""
-    ford = [_track(i, speed=150.0, color="red") for i in range(1, 41)]  # 40 red FORDs
-    audi = [_track(i, speed=300.0, color="blue") for i in range(41, 80)]  # 39 -> gated
-    _mk_session(
+    ford = [_track(i, speed=150.0) for i in range(1, 41)]  # 40 red FORDs
+    audi = [_track(i, speed=300.0) for i in range(41, 80)]  # 39 blue AUDIs -> gated
+    d = _mk_session(
         tmp_path,
         "session_20260526_090000",
         ford + audi,
@@ -413,6 +486,7 @@ def test_fastest_by_make_and_colour_through_build_stats(tmp_path: Path) -> None:
             }
         },
     )
+    _colour_sidecar(d, {i: "red" if i <= 40 else "blue" for i in range(1, 80)})
     s = build_stats(tmp_path, m_per_px=0.05)
     make_names = {r["name"] for r in s.fastest_makes}
     assert "FORD" in make_names  # 40 tracks clears the gate
@@ -421,22 +495,21 @@ def test_fastest_by_make_and_colour_through_build_stats(tmp_path: Path) -> None:
     assert ford_row["n"] == 40
     assert ford_row["mean"] == round(150.0 * 0.05 * MPH_PER_M_S, 1)  # px/s -> mph
     assert ford_row["unit"] == "mph"
-    # Colours use the HSV `color` fallback here (no DVSA colour / CNN sidecar).
     colour_names = {r["name"] for r in s.fastest_colours}
     assert "red" in colour_names  # 40 red tracks
     assert "blue" not in colour_names  # only 39
 
 
-def test_colour_mix_dvsa_preferred_cnn_then_hsv(tmp_path: Path) -> None:
+def test_colour_mix_dvsa_preferred_cnn_then_unknown(tmp_path: Path) -> None:
     """Colour mix precedence: DVSA register colour (plated) > colour CNN
-    sidecar > the low-res HSV `color` field for tracks nothing else covers."""
+    sidecar > unknown (the HSV `color` field is ignored)."""
     d = _mk_session(
         tmp_path,
         "session_col",
         [
             _track(1, color="black"),  # HSV black, but DVSA says Blue -> blue
             _track(2, color="black"),  # HSV black, but CNN says silver -> silver
-            _track(3, color="green"),  # no DVSA, no CNN -> HSV green
+            _track(3, color="green"),  # no DVSA, no CNN -> unknown
         ],
         dvsa={"labels": {"AB12CDE": {"primary_colour": "Blue", "track_ids": [1]}}},
     )
@@ -451,7 +524,7 @@ def test_colour_mix_dvsa_preferred_cnn_then_hsv(tmp_path: Path) -> None:
         )
     )
     colours = dict(build_stats(tmp_path).colours)
-    assert colours == {"blue": 1, "silver": 1, "green": 1}
+    assert colours == {"blue": 1, "silver": 1, "unknown": 1}
 
 
 def test_body_type_mix_dvsa_preferred_cnn_fallback(tmp_path: Path) -> None:

@@ -333,7 +333,12 @@ def test_promote_model_swaps_backs_up_and_writes_sidecar(tmp_path: Path) -> None
     assert any(b.read_bytes() == b"OLD-MODEL" for b in backups)
 
 
-def test_promote_records_the_runs_own_corpus_not_the_newest(tmp_path: Path) -> None:
+def test_promote_records_the_runs_own_corpus_not_the_newest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The recorded corpus path is relative; resolve it under tmp_path, not a
+    # dev box's real runs/ (which holds a real uk_crops_0929_576).
+    monkeypatch.chdir(tmp_path)
     runs = tmp_path / "runs"
     for name, n_cars in (("uk_crops_0929_576", 3), ("uk_crops_1001_576_cap30", 2)):
         d = runs / name

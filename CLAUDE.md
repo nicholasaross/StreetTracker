@@ -151,11 +151,16 @@ step 6's E1.5(c) is the one Orin deploy. In order:
 6. **Then the review's plan, revised 2026-10-04**
    (`docs/data_integrity_review.md` §4, "Revision (2026-10-04)" has the
    reasoning). In order:
-   1. **Small code fixes.** The `/stats` make chart counts only plates with
-      current `track_ids` (E0.2; `web/stats.py:559` still counts every plate
-      ever labelled). HSV-sourced colours show as "unknown" (E0.8). The
-      repeated hour at the clock change stops double-counting (part of E3.5;
-      **BST ends 2026-10-25**). Run the E0.6 time-base check.
+   1. **Small code fixes. Done 2026-10-04.** The `/stats` make chart counts
+      only plates with current `track_ids` (E0.2: 10,071 of 29,053 label
+      rows were orphans; the top-12 makes halved to 3,196 cars, Toyota
+      +2.3 pp). HSV-sourced colours show as "unknown" in the mix and the
+      fastest-by-colour board (E0.8: HSV coloured only 5.5 % of car tracks,
+      but 78 % of them black or blue). E0.6 found no time-base anomaly (Orin
+      `Europe/London`, NTP synced; `.claude/phase0_checks.py --checks e06`),
+      and the BST repeat hour needs no fix: each pass counts once, and the
+      repeated hour just holds two clock-hours (E3.5 note). **The showcase
+      needs a restart to pick up the stats change.**
    2. **E1.5(c): persist per-snap fire/done timestamps and a thinned
       per-track trajectory.** A code-only Orin deploy, in the
       [schema-additive order](#schema-additive-config-changes). It only helps
@@ -525,7 +530,8 @@ Session files:
   [Make/model classification](#makemodel-classification)). Same `--pad-frac 0.1`
   discipline as bodytype. The HSV `color` field is left untouched
   (offline sidecar, no Orin/schema change). **Wired in 2026-08-11:** the
-  `/stats` colour mix prefers DVSA `primary_colour` → this CNN → HSV; the
+  `/stats` colour mix prefers DVSA `primary_colour` → this CNN → "unknown"
+  (HSV was the last resort until 2026-10-04, review E0.8); the
   showcase car page shows the CNN `cnn_colour`; the control-panel
   **enrich** playbook runs `colour` after `bodytype`; and the sessions
   table shows a **Colour** enrichment badge (`has_colour` =

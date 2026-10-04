@@ -541,10 +541,10 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
         # count it. Also harvests makes_by_plate from the same DVSA read.
         # Per-track colour for the mix chart follows the same DVSA-first
         # precedence: DVSA register colour (ground truth, plated cars) ->
-        # confident colour CNN -> the low-res HSV vote (`color` field) as a
-        # last resort. The CNN reads the 4K snap and scores ~87% vs DVSA
-        # (grouped) where HSV managed ~40%, so it's strongly preferred over
-        # HSV for the unplated majority.
+        # confident colour CNN -> "unknown". The low-res HSV vote (`color`
+        # field) is never used: it scores ~40% grouped vs DVSA and drifts
+        # light cars to black/blue (78% of the tracks it would colour came
+        # out black or blue, vs ~39% from DVSA or the CNN; review R11/E0.8).
         track_body: dict[int, str] = {}
         track_colour: dict[int, str] = {}
         track_make: dict[int, str] = {}
@@ -556,7 +556,11 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
                 labels = {}
             for plate, row in labels.items():
                 make = (row.get("make") or "").strip()
-                if make and plate not in makes_by_plate:
+                # Only plates still attributed to a track count as cars: labels
+                # are cached forever, and the plate gate / parked-beacon
+                # suppression / re-enrichment orphan them by clearing
+                # track_ids (review R13/E0.2).
+                if make and row.get("track_ids") and plate not in makes_by_plate:
                     makes_by_plate[plate] = make
                 bt: str | None = body_type_for(row.get("make"), row.get("model"))
                 col = colour_class_for(row.get("primary_colour"))
@@ -633,7 +637,7 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
             hour_totals[dt.hour] += 1
             tid = r.get("track_id")
             cnn_col = track_colour.get(int(tid)) if tid is not None else None
-            colours[cnn_col or r.get("color") or "unknown"] += 1
+            colours[cnn_col or "unknown"] += 1
             bt = track_body.get(r.get("track_id"))
             if bt:
                 bodytypes[bt] += 1
@@ -657,9 +661,8 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
                     mk = track_make.get(int(tid)) if tid is not None else None
                     if mk:
                         speeds_by_make[mk].append(sp)
-                    grp_col = cnn_col or r.get("color")
-                    if grp_col and grp_col != "unknown":
-                        speeds_by_colour[grp_col].append(sp)
+                    if cnn_col:
+                        speeds_by_colour[cnn_col].append(sp)
 
         pp = d / f"{name}_people.json"
         if pp.exists():

@@ -147,9 +147,14 @@
       it's good for "faster/slower than typical", not for evidence.</li>
       <li><b>Top makes</b> — counts <i>distinct cars</i>, and only plated ones
       (it needs the DVSA match), so it inherits the gallery's direction skew.
-      <b>Colours</b> and <b>body types</b> count <i>journeys</i>; colour comes
-      from the tracker's own pixels, body type from DVSA where the plate is
-      known and from a shape classifier otherwise.</li>
+      Plates the DVSA lookup matched but that no current journey still
+      carries (misreads the confidence gate later rejected, parked cars) are
+      left out. <b>Colours</b> and <b>body types</b> count <i>journeys</i>;
+      both come from DVSA where the plate is known and from a classifier
+      reading the 4K photo otherwise. Journeys the colour classifier isn't
+      confident about count as <i>unknown</i> rather than being guessed from
+      the low-resolution tracking video, which tends to call light cars
+      black or blue.</li>
       <li><b>People</b> — the same treatment for pedestrians: one "walk" ≈ one
       person passing through view once, plus a breakdown into walkers,
       joggers, cyclists and dog-walkers. (Joggers are split from walkers by
@@ -251,6 +256,8 @@
 
 <div class="panel stat">
   <h3>Vehicle colours</h3>
+  <p class="hint">Journeys by colour: DVSA register colour for identified cars,
+    the colour classifier otherwise; <i>unknown</i> where neither is sure.</p>
   <div class="hbars" id="colours"></div>
 </div>
 
