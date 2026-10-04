@@ -50,7 +50,7 @@
   <div class="tile"><div class="big">{{ p.dwell.median_s }}s</div><div class="lbl">median time in view</div></div>
   {% if p.kinds and p.kinds.classified %}
   <div class="tile"><div class="big">{{ "{:,}".format(p.kinds.walks) }}</div><div class="lbl">distinct walks (splits merged)</div></div>
-  <div class="tile"><div class="big">{{ p.kinds.pct_joggers }}%</div><div class="lbl">joggers ({{ "{:,}".format(p.kinds.joggers) }})</div></div>
+  <div class="tile" title="Person tracks faster than 2.5 m/s. One speed calibration covers the whole frame, so walkers on the near pavement look about twice as fast as they are: most of these are near-pavement walkers, not joggers."><div class="big">{{ p.kinds.pct_joggers }}%</div><div class="lbl">fast movers ({{ "{:,}".format(p.kinds.joggers) }}) — mostly near-pavement walkers</div></div>
   <div class="tile"><div class="big">{{ "{:,}".format(p.kinds.cyclists) }}</div><div class="lbl">cyclists (since 13 Jun)</div></div>
   <div class="tile"><div class="big">{{ "{:,}".format(p.kinds.dog_walks) }}</div><div class="lbl">dog walks (since 7 Jul)</div></div>
   {% if p.kinds.round_trips %}
@@ -77,7 +77,10 @@
   {% if p.kinds and p.kinds.classified %}
   <div class="panel stat">
     <h3>Who's on foot</h3>
-    <p class="hint">Per person track, from the people enrichment. Dog walkers are a subset of walkers/joggers.</p>
+    <p class="hint">Per person track, from the people enrichment. Dog walkers are a subset of
+      walkers/fast movers. <b>Fast movers</b> are tracks faster than 2.5 m/s; one speed
+      calibration covers the whole frame, so walkers on the near pavement look about twice as
+      fast as they are, and most fast movers are those walkers rather than joggers.</p>
     <div class="hbars" id="pkinds"></div>
   </div>
   {% endif %}
@@ -85,9 +88,10 @@
 
 {% if p.habitual %}
 {% set khex = {"dog walk": "#8a6240", "jogger": "#e08a3d", "cyclist": "#5b9dff"} %}
+{% set kname = {"jogger": "fast mover"} %}
 <div class="panel stat">
   <h3>Recurring walk patterns</h3>
-  <p class="hint">Times of day when a dog walk, jog or ride recurs across many days — only
+  <p class="hint">Times of day when a dog walk, fast mover or ride recurs across many days — only
   slots that look like a single recurring walk qualify (rush-hour waves are filtered out).
   These are statistics about the street, not tracked individuals: no walk is ever linked to
   a walk on another day. "Typical time away" comes from same-day out-and-back estimates
@@ -98,7 +102,7 @@
     <tbody>
     {% for s in p.habitual %}
       <tr>
-        <td><span class="sw" style="background:{{ khex.get(s.kind, '#9aa3b2') }}"></span>{{ s.kind }}</td>
+        <td><span class="sw" style="background:{{ khex.get(s.kind, '#9aa3b2') }}"></span>{{ kname.get(s.kind, s.kind) }}</td>
         <td>~{{ s.time }}</td>
         <td>{{ "left → right" if s.dkey == "l2r" else "right → left" }}</td>
         <td>{{ s.days_seen }} of {{ s.days_covered }} days</td>
@@ -123,7 +127,7 @@
   pauses at night / in IR mode), so quiet periods may mean "not recording" rather
   than "no traffic". Each walk ≈ one pass; brief ID-switches can double-count.
   Riders detect as people: sessions since 2026-06-13 classify them as cyclists via
-  bicycle-track pairing, but earlier jogger counts include unfiltered riders
+  bicycle-track pairing, but earlier fast-mover counts include unfiltered riders
   (roughly +4pp). Dog-walk pairing counts from 2026-07-07, when the dog class went
   live. Out-and-back trips and recurring patterns are timing/kind/colour-agreement
   estimates, not identification; nothing is matched across days.
@@ -206,8 +210,8 @@ function renderPeople(){
   el("pheatmap").innerHTML = heatmapHtml(p.heatmap, "31,182,168");
   const k = p.kinds;
   if(k && k.classified && el("pkinds")){
-    const KIND_HEX = {"walkers":"#1fb6a8","joggers":"#e08a3d","cyclists":"#5b9dff","dog walks":"#8a6240"};
-    hbars("pkinds", [["walkers",k.walkers],["joggers",k.joggers],["cyclists",k.cyclists],["dog walks",k.dog_walks]],
+    const KIND_HEX = {"walkers":"#1fb6a8","fast movers":"#e08a3d","cyclists":"#5b9dff","dog walks":"#8a6240"};
+    hbars("pkinds", [["walkers",k.walkers],["fast movers",k.joggers],["cyclists",k.cyclists],["dog walks",k.dog_walks]],
       {swatch: n=>KIND_HEX[n], fill: n=>KIND_HEX[n]});
   }
 }
