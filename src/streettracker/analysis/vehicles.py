@@ -63,7 +63,12 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from streettracker.analysis.alpr.base import plate_conf_threshold
+from streettracker.analysis.alpr.gate import (
+    PlateGate,
+    load_plate_support,
+    plate_gate,
+    read_passes,
+)
 from streettracker.analysis.dvsa import is_canonical_uk_plate
 from streettracker.analysis.parked import (
     PARKED_MIN_READ_CONF,
@@ -461,6 +466,8 @@ def build_vehicles(
     session_dir: Path,
     *,
     conf_threshold: float | None = None,
+    gate: PlateGate | None = None,
+    support: Mapping[str, int] | None = None,
     include_unread: bool = True,
     fuzzy_ratio: int | None = FUZZY_RATIO_DEFAULT,
     canonical_only: bool = True,
@@ -470,11 +477,14 @@ def build_vehicles(
 ) -> list[Vehicle]:
     """Build per-vehicle aggregations from a closed session's outputs.
 
-    ``conf_threshold`` controls which ALPR reads are treated as
-    "anchor" plate identities; ``None`` (the default) uses the shared
-    plate setting (``configs/alpr.json``, else 0.9 -- see
-    :func:`streettracker.analysis.alpr.base.resolve_plate_conf_threshold`).
-    Reads below it are discarded and the track is treated as unread.
+    ``gate`` decides which ALPR reads are treated as "anchor" plate
+    identities; ``None`` (the default) uses the shared plate gate
+    (``configs/alpr.json``; see :mod:`streettracker.analysis.alpr.gate`).
+    ``conf_threshold`` forces a plain confidence gate instead. ``support``
+    (cross-session plate counts for the combined gate) is loaded from the
+    session's parent directory when the gate needs it and none is given.
+    Reads that fail the gate are discarded and the track is treated as
+    unread.
 
     ``include_unread`` controls whether tracks without an anchor read
     are emitted as plate=None vehicles. Set False to focus on the
@@ -537,13 +547,20 @@ def build_vehicles(
 
     # Stationary-beacon detection over the per-image reads. Empty
     # detection (no _alpr.json, or suppression disabled) is a no-op.
-    gate = plate_conf_threshold(conf_threshold)
+    if conf_threshold is not None:
+        gate = plate_gate(conf_threshold)
+    elif gate is None:
+        gate = plate_gate()
+    if support is None and gate.needs_support:
+        support = load_plate_support(session_dir.parent)
     detection = ParkedDetection()
     if suppress_parked:
         entries = load_alpr_entries(session_dir)
         if entries:
             # Every read that could anchor an identity must be clusterable.
-            detection = detect_parked(entries, data, min_read_conf=min(PARKED_MIN_READ_CONF, gate))
+            detection = detect_parked(
+                entries, data, min_read_conf=min(PARKED_MIN_READ_CONF, gate.min_conf)
+            )
 
     # tid -> anchor read dict. Use the per-image best as the default
     # anchor (max-conf single read). Substitute the consensus rollup
@@ -559,7 +576,7 @@ def build_vehicles(
     best_by_tid: dict[int, dict[str, Any]] = {}
     for t in alpr_rollup.get("tracks", []):
         best = t.get("best_preferred")
-        if not best or (best.get("ocr_conf") or 0) < gate:
+        if not best or not read_passes(gate, best, support):
             continue
         if canonical_only and not is_canonical_uk_plate(
             (best.get("ocr_text") or "").strip().upper().replace(" ", "")
@@ -585,10 +602,10 @@ def build_vehicles(
             fallback = best_unsuppressed_read(
                 detection.reads_by_track.get(tid, []),
                 detection.suppressed,
-                conf_threshold=gate,
+                conf_threshold=gate.min_conf,
                 canonical_only=canonical_only,
             )
-            if fallback is not None:
+            if fallback is not None and read_passes(gate, fallback, support):
                 best_by_tid[t["track_id"]] = fallback
             continue
         consensus = t.get("consensus_preferred")
@@ -769,11 +786,15 @@ def build_cross_session(
     """
     plated: list[tuple[str, Vehicle]] = []
     conf_by_plate: dict[str, float] = {}
-    gate = plate_conf_threshold(conf_threshold)  # one value for the whole cohort
+    gate = plate_gate(conf_threshold)  # one gate for the whole cohort
+    support = (
+        load_plate_support(session_dirs[0].parent) if gate.needs_support and session_dirs else None
+    )
     for d in session_dirs:
         for v in build_vehicles(
             d,
-            conf_threshold=gate,
+            gate=gate,
+            support=support,
             fuzzy_ratio=fuzzy_ratio,
             canonical_only=canonical_only,
             suppress_parked=suppress_parked,
@@ -955,9 +976,9 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help=(
-            "Minimum OCR confidence to treat a plate read as a "
-            "vehicle-identity anchor (default: plate_conf_threshold in "
-            "configs/alpr.json, else 0.9)."
+            "Force a plain confidence gate at this value for plate-identity "
+            "anchors (default: the plate gate in configs/alpr.json, else "
+            "conf >= 0.9)."
         ),
     )
     ap.add_argument(
@@ -1100,9 +1121,9 @@ def _print_cross_summary(cross: list[CrossVehicle], dirs: list[Path], out_path: 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     # Resolve the gate once up front: a malformed configs/alpr.json fails
-    # here with a clear message, and every session uses the same value.
+    # here with a clear message, and every session uses the same gate.
     try:
-        args.conf = plate_conf_threshold(args.conf)
+        plate_gate(args.conf)
     except ValueError as exc:
         print(f"[vehicles] {exc}", file=sys.stderr)
         return 2

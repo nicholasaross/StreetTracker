@@ -51,7 +51,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from streettracker.analysis.alpr.base import plate_conf_threshold
+from streettracker.analysis.alpr.gate import PlateGate, load_plate_support, plate_gate, read_passes
 from streettracker.analysis.dvsa import is_canonical_uk_plate
 from streettracker.analysis.makemodel.bodytype import body_type_for
 from streettracker.analysis.makemodel.colour import colour_class_for
@@ -738,9 +738,7 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
         "avg_l2r": _disp(sum(speeds_l2r) / len(speeds_l2r), factor) if speeds_l2r else 0,
         "avg_r2l": _disp(sum(speeds_r2l) / len(speeds_r2l), factor) if speeds_r2l else 0,
         "unit": unit,
-        "fastest": _build_fastest(
-            output_root, fastest_raw, factor, unit, plate_conf=plate_conf_threshold()
-        ),
+        "fastest": _build_fastest(output_root, fastest_raw, factor, unit, gate=plate_gate()),
     }
 
     makes = [[m, n] for m, n in Counter(makes_by_plate.values()).most_common(N_TOP_MAKES)]
@@ -889,17 +887,18 @@ def _build_fastest(
     factor: float | None,
     unit: str,
     *,
-    plate_conf: float,
+    gate: PlateGate,
 ) -> list[dict[str, Any]]:
     """Top-N fastest tracks, with existence-checked thumbnails and a plate link
-    when the track resolved to a canonical plate at or above ``plate_conf``
-    (the shared plate gate). The gate decides only the plate: the picture is
+    when the track resolved to a canonical plate that passes ``gate`` (the
+    shared plate gate). The gate decides only the plate: the picture is
     the best read's snap whatever its confidence, else the track's closest
     4K snap on disk (fast cars are the hardest plates to read, and sessions
     pulled ``--only-main`` have no tile to fall back on)."""
     top = sorted(fastest_raw, key=lambda x: x[0], reverse=True)[:N_FASTEST]
     if not top:
         return []
+    support = load_plate_support(output_root) if gate.needs_support else None
 
     # Best read for the top tracks from each session's alpr_by_track, loaded
     # once per session involved.
@@ -923,7 +922,7 @@ def _build_fastest(
         best = best_reads.get((sess, tid), {})
         plate = None
         plate_raw = best.get("ocr_text")
-        if plate_raw and (best.get("ocr_conf") or 0) >= plate_conf:
+        if plate_raw and read_passes(gate, best, support):
             norm = plate_raw.strip().upper().replace(" ", "")
             plate = norm if is_canonical_uk_plate(norm) else None
         prefix = r.get("asset_prefix") or "vehicle"

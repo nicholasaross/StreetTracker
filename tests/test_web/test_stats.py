@@ -322,6 +322,29 @@ def test_fastest_plate_follows_the_shared_plate_gate(
     assert build_stats(tmp_path).speed["fastest"][0]["plate"] == "AB12CDE"
 
 
+def test_fastest_plate_under_the_combined_gate(
+    tmp_path: Path, _isolated_plate_conf_config: Path
+) -> None:
+    # Combined gate: a lone 0.85 read stays unplated; once another session's
+    # track also reads the plate (support 2), the fastest car links it.
+    _isolated_plate_conf_config.parent.mkdir(parents=True)
+    _isolated_plate_conf_config.write_text(json.dumps({"plate_gate": "combined"}))
+    _mk_session(
+        tmp_path,
+        "session_20260526_090000",
+        [_track(1, speed=120.0)],
+        alpr=_alpr((1, "AB12CDE", 0.85)),
+    )
+    assert build_stats(tmp_path).speed["fastest"][0]["plate"] is None
+    _mk_session(
+        tmp_path,
+        "session_20260527_090000",
+        [_track(2, date="2026-05-27", speed=50.0)],
+        alpr=_alpr((2, "AB12CDE", 0.5)),
+    )
+    assert build_stats(tmp_path).speed["fastest"][0]["plate"] == "AB12CDE"
+
+
 def test_fastest_picture_does_not_depend_on_the_plate_gate(tmp_path: Path) -> None:
     # An --only-main session (no tile / hq): a 0.5 read is below the gate, so
     # no plate, but its snap is still the car's picture.

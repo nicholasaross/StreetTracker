@@ -19,9 +19,17 @@ colour at all is an IR (black-and-white) frame, where both plates look white.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 import numpy as np
+
+# Provenance stamp written into ``<session>_static_plates.json`` once a
+# session's reads carry ``plate_colour`` / ``colour_suspect`` (alpr-run since
+# 2026-10-04, or ``alpr-colour`` for older sessions).
+PLATE_COLOUR_METHOD = "hsv_v1"
 
 # The direction whose cars show the camera their FRONT (white) plate. Scene
 # geometry, not a property of UK plates: re-check if the camera moves.
@@ -85,3 +93,58 @@ def colour_consistent(label: str, direction: str | None) -> bool | None:
     if expected is None or label not in ("yellow", "white"):
         return None
     return label == expected
+
+
+def _crop_path(record: dict[str, Any], session_dir: Path) -> Path | None:
+    """``alpr_crops/<pipeline>/<image>`` in the session (portable if the
+    session moved), else the recorded path."""
+    name, pipeline = record.get("image"), record.get("pipeline")
+    if name and pipeline:
+        p = session_dir / "alpr_crops" / str(pipeline) / str(name)
+        if p.is_file():
+            return p
+    stored = record.get("crop_path")
+    if stored and Path(str(stored).replace("\\", "/")).is_file():
+        return Path(str(stored).replace("\\", "/"))
+    return None
+
+
+def mark_colour_suspects(
+    records: list[dict[str, Any]],
+    session_dir: Path,
+    direction_by_track: dict[int, str],
+) -> Counter[str]:
+    """Annotate the preferred pipeline's reads in place.
+
+    Every read with text and a saved crop gets ``plate_colour`` (the label)
+    and ``colour_suspect`` (``True`` when the colour contradicts the track's
+    direction). The by-track rollup then skips suspects exactly as it skips
+    ``static_suspect`` reads, so the track's best read falls back to one whose
+    plate is on the tracked car (or the track goes unread). Re-running is
+    safe: earlier annotations are replaced. Returns label counts plus
+    ``suspect`` and ``no_crop``.
+    """
+    import cv2
+
+    stats: Counter[str] = Counter()
+    for r in records:
+        r.pop("plate_colour", None)
+        r.pop("colour_suspect", None)
+        if r.get("pipeline") != "preferred" or not r.get("ocr_text"):
+            continue
+        path = _crop_path(r, session_dir)
+        img = cv2.imread(str(path)) if path is not None else None
+        if img is None:
+            stats["no_crop"] += 1
+            continue
+        label = classify_plate_colour(img).label
+        r["plate_colour"] = label
+        stats[label] += 1
+        try:
+            direction = direction_by_track.get(int(r["track_id"]))
+        except (KeyError, TypeError, ValueError):
+            direction = None
+        if colour_consistent(label, direction) is False:
+            r["colour_suspect"] = True
+            stats["suspect"] += 1
+    return stats

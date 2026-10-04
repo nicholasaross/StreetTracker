@@ -83,6 +83,10 @@ _GPU_KINDS = frozenset(
     {
         "alpr-run",
         "alpr-rescore",
+        # CPU-only, but it rewrites <session>_alpr.json: sharing the GPU lane
+        # keeps it from ever overlapping an alpr-run/alpr-rescore of the same
+        # session.
+        "alpr-colour",
         "makemodel",
         "bodytype",
         "colour",

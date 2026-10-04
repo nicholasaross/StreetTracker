@@ -11,6 +11,7 @@ Subcommands:
 - ``streettracker export-engine`` — ``.pt`` → ``.engine``
 - ``streettracker alpr-run <session>`` — run ALPR pipelines on a session
 - ``streettracker alpr-rescore <session>`` — recompute plate-read confidence from saved crops
+- ``streettracker alpr-colour <session>`` — plate-colour check on saved crops (E1.3)
 - ``streettracker alpr-score <session>`` — score ALPR pipelines vs labels
 - ``streettracker alpr-label <session>`` — interactive plate labeling
 - ``streettracker alpr-report <session>`` — render comparison HTML
@@ -49,6 +50,7 @@ commands:
   export-engine   export .pt to .engine via Ultralytics
   alpr-run        run ALPR pipelines over a session's main snaps
   alpr-rescore    recompute plate-read confidence from saved crops (2026-09-28 fix)
+  alpr-colour     plate-colour check on saved crops: drop other cars' plates (2026-10-04)
   alpr-score      score ALPR pipelines against labels
   alpr-label      interactive plate labeling
   alpr-report     render the ALPR comparison HTML
@@ -123,6 +125,10 @@ def main(argv: list[str] | None = None) -> int:
         from streettracker.cli.alpr_rescore import main as alpr_rescore_main
 
         return alpr_rescore_main(rest)
+    if head == "alpr-colour":
+        from streettracker.cli.alpr_colour import main as alpr_colour_main
+
+        return alpr_colour_main(rest)
     if head == "alpr-score":
         from streettracker.cli.alpr_score import main as alpr_score_main
 

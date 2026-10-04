@@ -326,13 +326,15 @@ def best_unsuppressed_read(
     canonical_only: bool = True,
 ) -> dict[str, Any] | None:
     """Re-anchor one track: its highest-conf per-image read that is not
-    beacon-suppressed (and clears the same conf + canonical-shape gates the
-    rollup anchor had to). ``None`` when nothing genuine remains — the
-    track is then treated as unread."""
+    beacon-suppressed or colour-suspect (and clears ``conf_threshold`` + the
+    canonical-shape gate the rollup anchor had to). ``None`` when nothing
+    genuine remains — the track is then treated as unread. The returned read
+    carries ``n_agree`` (the track's other usable reads of the same string) so
+    the combined plate gate can be applied to it."""
     best: dict[str, Any] | None = None
     for e in reads:
         conf = e.get("ocr_conf") or 0.0
-        if conf < conf_threshold:
+        if conf < conf_threshold or e.get("colour_suspect") or e.get("static_suspect"):
             continue
         key = _read_key(e)
         if key is None or key in suppressed:
@@ -346,6 +348,17 @@ def best_unsuppressed_read(
             best = e
     if best is None:
         return None
+    text = normalize_plate(best.get("ocr_text"))
+    n_agree = sum(
+        1
+        for e in reads
+        if e is not best
+        and not e.get("colour_suspect")
+        and not e.get("static_suspect")
+        and (k := _read_key(e)) is not None
+        and k not in suppressed
+        and normalize_plate(e.get("ocr_text")) == text
+    )
     return {
         "track_id": best.get("track_id"),
         "snap_index": best.get("snap_index"),
@@ -353,4 +366,5 @@ def best_unsuppressed_read(
         "ocr_text": best.get("ocr_text"),
         "ocr_conf": best.get("ocr_conf"),
         "det_conf": best.get("det_conf"),
+        "n_agree": n_agree,
     }

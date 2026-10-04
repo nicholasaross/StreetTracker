@@ -115,6 +115,7 @@ ALLOWED_JOB_KINDS = frozenset(
         "pull",
         "alpr-run",
         "alpr-rescore",
+        "alpr-colour",
         "dvsa-label",
         "dvsa-apply",
         "vehicles",

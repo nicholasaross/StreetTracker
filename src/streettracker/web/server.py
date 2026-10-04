@@ -47,7 +47,7 @@ from typing import Any
 import jinja2
 from aiohttp import web
 
-from streettracker.analysis.alpr.base import resolve_plate_conf_threshold
+from streettracker.analysis.alpr.gate import resolve_plate_gate
 from streettracker.web.aggregate import ShowcaseCar, build_showcase, discover_sessions
 from streettracker.web.classify import BUCKETS
 from streettracker.web.metadata import DEFAULT_FILENAME, MetadataStore, is_tagged
@@ -683,11 +683,11 @@ def main(argv: list[str] | None = None) -> int:
     # The plate gate is read from configs/alpr.json on every rebuild; check it
     # now so a malformed file stops startup instead of breaking a refresh.
     try:
-        plate_conf, plate_conf_source = resolve_plate_conf_threshold()
+        gate, gate_source = resolve_plate_gate()
     except ValueError as exc:
         print(f"[showcase] {exc}", file=sys.stderr)
         return 2
-    print(f"[showcase] plate confidence gate {plate_conf} ({plate_conf_source})")
+    print(f"[showcase] plate gate {gate.describe()} ({gate_source})")
     try:
         asyncio.run(_serve(args.output_root, args.host, args.port, args.metadata, m_per_px))
     except KeyboardInterrupt:
