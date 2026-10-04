@@ -159,22 +159,49 @@ step 6's E1.5(c) is the one Orin deploy. In order:
       but 78 % of them black or blue). E0.6 found no time-base anomaly (Orin
       `Europe/London`, NTP synced; `.claude/phase0_checks.py --checks e06`),
       and the BST repeat hour needs no fix: each pass counts once, and the
-      repeated hour just holds two clock-hours (E3.5 note). **The showcase
-      needs a restart to pick up the stats change.**
+      repeated hour just holds two clock-hours (E3.5 note). The showcase was
+      restarted on it 2026-10-04.
    2. **E1.5(c): persist per-snap fire/done timestamps and a thinned
       per-track trajectory.** A code-only Orin deploy, in the
       [schema-additive order](#schema-additive-config-changes). It only helps
       sessions recorded after it ships, and the Orin deletes 4K snaps after
-      7 days, so land it early. **Code written 2026-10-04** (new
-      `TrackRecord.main_snap_fire_unix` / `main_snap_done_unix`, and the
-      `{session}_trajectories.jsonl` sidecar); deploy = merge, `git pull` on
-      the Orin, restart (no `camera.json` change), then check the new
-      session's sidecar and timing fields.
-   3. **Phase 0 script:** E0.3, E0.4 (now on `uk_crops_0929_576` and the
-      fresh-session eval set), E0.5, E0.7, and the new E0.9 (DVSA colour vs
-      the colour CNN on post-corpus sessions, by read support).
-   4. **E1.3 plate-colour/direction check, and the combined gate** (snap
-      agreement + confidence: the step-3 follow-up, and E1.4's first cut).
+      7 days, so land it early. **Deployed 2026-10-04 09:52** (PR #123; the
+      Orin went from #89 to `5f4ceb4`, whose only runtime change is this;
+      rollback `git checkout 90e10df` + restart). `session_20261004_095219`
+      is the first session with `TrackRecord.main_snap_fire_unix` /
+      `main_snap_done_unix` and `{session}_trajectories.jsonl` (checked on
+      its first track: fire→done 703 ms, 32 trajectory rows). **Pull the
+      closed `session_20261001_190826` before ~2026-10-08**, when its first
+      snaps age out.
+   3. **Phase 0 script. Done 2026-10-04** (`.claude/phase0_checks.py`;
+      results in each experiment's row in the review, local report
+      `.claude/phase0_report.{json,txt}`, git-ignored because it holds
+      plates). E0.3: IR mode (no inference) took **41.7 % of September's
+      session time** (new finding R16). E0.5: **R2 is real**, two cars passing
+      share one plate on 1.3 % of gated read tracks. E0.9: **R3 is real**,
+      ~40 % of labels from a plate read on one track describe another car,
+      and cross-track support separates labels far better than confidence.
+      E0.4: 11 % of the "fresh" test cars are misreads of regulars. E0.7:
+      most "joggers" are near-pavement walkers.
+      - **3a. New: low light (review R16 + its update).** The camera has
+        been in **forced colour (`dayNight: Color`) since 2026-09-28**, so the
+        IR gap is mid-Aug to 28 Sep only. The live problem is that **rush-hour
+        plate reads collapse as the days shorten**: gated read rate at 17:00
+        was 54.5 % in July, 15.0 % in September and 5.2 % on 1 Oct; at 08:00,
+        43 % → 11 %. Forced colour doesn't help. Nights (21-05 h) show
+        0-7 cars/h in every mode (quiet, or missed?). **Capture running on
+        the Orin:** `~/ir_test` (`.claude/ir_capture.py --windows`) records
+        sub-stream + 4K every 2 s at 18:30 (20 min), 21:30 (30 min) and 07:00
+        (20 min) on 4-5 Oct. Pull it and check night detection and dusk/dawn
+        reads. Then choose a low-light option: a faster low-light shutter
+        (E2.8), or IR mode with inference in IR (needs a runtime switch and
+        `dayNight` back to Auto). That choice is the operator's: it changes the
+        camera or the live runtime.
+   4. **E1.3 plate-colour/direction check, and the combined gate.** E0.9
+      says to gate on cross-track support (≥ 2 tracks; ≥ 5 cleanest) or snap
+      agreement, with confidence secondary (E1.4's first cut). E1.3 also
+      settles E0.5's concurrent collisions: the plate's colour says which
+      track owns it.
    5. **E1.2 audit set** (extend `.claude/triage_rl.py`), stratified to
       over-represent what E0.5 and E1.3 flag; then calibrate E1.3 and the
       combined gate against it. It is the only check on whether a plate
@@ -183,11 +210,14 @@ step 6's E1.5(c) is the one Orin deploy. In order:
       cars, but `/stats` uses them on unplated ones), E2.1 capture-band
       curves, E2.3 ghost mask on/off, E2.7 colour augmentation. E1.5(a)/(b)
       can run at any point.
-   7. **E3.1 hand count, then the night A/B (E2.8), shutter-only.** The
-      runtime skips inference on monochrome frames, so an IR illuminator
-      would blind the tracker unless that changes.
-   8. **Retrain (E2.5)** once the E1.4 filter and cluster-aware exclusion
-      exist and fresh cars have built up.
+   7. **E3.1 hand count, then the night A/B (E2.8).** Reframed by R16:
+      after the IR switch nothing is recorded, so the A/B depends on step
+      3a's choice.
+   8. **Retrain (E2.5)** once the E1.4 filter and cluster-aware
+      `makemodel-compare` exclusion exist (E0.4: the fresh set holds
+      misreads of regulars) and fresh cars have built up.
+   Also from Phase 0: show joggers as "fast-moving person tracks" until E3.2
+   (E0.7).
 
    Also outstanding: upload the production `uk_make_0929_b6` to a new GitHub
    Release (see [Dev-box disaster recovery](#dev-box-disaster-recovery)).
@@ -195,14 +225,16 @@ step 6's E1.5(c) is the one Orin deploy. In order:
 **Cloud sessions have no `output/`**, so they can only do code work there:
 - step 6.1's fixes;
 - E1.5(c)'s runtime change (the Orin deploy itself runs from the dev box);
-- the Phase 0 script;
-- the E1.3 plate-colour script and the combined gate.
+- the R16 runtime option (an IR-mode inference switch);
+- the E1.3 plate-colour script and the combined gate;
+- cluster-aware exclusion in `makemodel-compare`.
 
 Anything that reads session data runs on the dev box, and the operator
 pastes the output back.
 
 **Live on the Orin** (#63 runtime bundle deployed 2026-06-13, service active,
-NRestarts=0):
+NRestarts=0; code updated to `5f4ceb4` on 2026-10-04 for E1.5(c), see step
+6.2 above):
 
 - **per-direction pipeline bands** `pipeline_t_usable_by_direction =
 {forward(R→L):[0.10,0.20], reverse(L→R):[0.30,0.60]}` (reverse lower edge
