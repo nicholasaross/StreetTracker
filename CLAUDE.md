@@ -183,12 +183,20 @@ step 6's E1.5(c) is the one Orin deploy. In order:
       and cross-track support separates labels far better than confidence.
       E0.4: 11 % of the "fresh" test cars are misreads of regulars. E0.7:
       most "joggers" are near-pavement walkers.
-      - **3a. New: decide R16 (IR mode).** Grab IR sub-stream frames and 4K
-        snaps at night, check YOLO recall and plate reads on them, then
-        choose: run inference in IR (configurable, tracks tagged), force
-        colour mode, or lower `dayNightThreshold` (review R16). This decides
-        E3.4's size and replaces E2.8's shutter A/B. The operator's call: it
-        changes the live runtime or the camera.
+      - **3a. New: low light (review R16 + its update).** The camera has
+        been in **forced colour (`dayNight: Color`) since 2026-09-28**, so the
+        IR gap is mid-Aug to 28 Sep only. The live problem is that **rush-hour
+        plate reads collapse as the days shorten**: gated read rate at 17:00
+        was 54.5 % in July, 15.0 % in September and 5.2 % on 1 Oct; at 08:00,
+        43 % → 11 %. Forced colour doesn't help. Nights (21-05 h) show
+        0-7 cars/h in every mode (quiet, or missed?). **Capture running on
+        the Orin:** `~/ir_test` (`.claude/ir_capture.py --windows`) records
+        sub-stream + 4K every 2 s at 18:30 (20 min), 21:30 (30 min) and 07:00
+        (20 min) on 4-5 Oct. Pull it and check night detection and dusk/dawn
+        reads. Then choose a low-light option: a faster low-light shutter
+        (E2.8), or IR mode with inference in IR (needs a runtime switch and
+        `dayNight` back to Auto). That choice is the operator's: it changes the
+        camera or the live runtime.
    4. **E1.3 plate-colour/direction check, and the combined gate.** E0.9
       says to gate on cross-track support (≥ 2 tracks; ≥ 5 cleanest) or snap
       agreement, with confidence secondary (E1.4's first cut). E1.3 also

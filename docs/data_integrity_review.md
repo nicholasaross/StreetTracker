@@ -453,8 +453,8 @@ through August to **41.7 % in September**; the share will grow into winter.
 In September, IR usually started 30-60 min after sunset (19:30-20:20) and
 ended around 06:00-06:35. But on 9 mornings it ran on to 08:44-10:46, through
 the morning rush. Some nights it started at 00:03 or 02:01 instead
-(street lights switched off part-way through the night?), and one night
-(30 Sep-1 Oct) it never started. Sunday 02:00-04:00 is 87-89 % IR against
+(street lights switched off part-way through the night?). From 28 Sep it stopped
+altogether (see the update below). Sunday 02:00-04:00 is 87-89 % IR against
 30-47 % on other nights (unexplained). The camera's ISP snapshot of 2026-07-09
 shows `dayNight: Auto`, `dayNightThreshold: 50`.
 
@@ -474,6 +474,44 @@ shutter alone can't help after the IR switch.
   This gives dim, noisy, blur-prone frames: the 2026-08-12 failure mode.
 - (c) **Lower `dayNightThreshold`**, so the camera leaves IR sooner on dull
   mornings. This only fixes the morning overruns.
+
+**Update (2026-10-04, later the same day): the camera is already in forced
+colour, and the bigger loss is low light at rush hour.**
+
+- `GetIsp` (read with the read-only account) shows the current value is
+  `dayNight: "Color"`, where the 2026-07-09 snapshot's value was "Auto".
+  The last IR period ended 2026-09-28 08:48, and the sessions since
+  (30 Sep onwards) have none. So the camera was switched to forced colour
+  on 28 Sep (option b), and the IR gap covers mid-August to 28 Sep only.
+  E3.4 still needs it for that stretch.
+- **Plate reads at rush hour fall away as the days shorten.** Share of
+  snapped cars with a read at the 0.90 gate, by hour (all sessions):
+
+  | hour | Jul | Aug | Sep | 1 Oct (forced colour) |
+  | --- | --- | --- | --- | --- |
+  | 07 | 28.7 % | 11.9 % | 2.5 % | 0.0 % |
+  | 08 | 43.3 % | 29.0 % | 11.1 % | 6.5 % |
+  | 09 | 56.5 % | 48.6 % | 23.1 % | 16.4 % |
+  | 12 | 50.4 % | 53.5 % | 51.9 % | 60.5 % |
+  | 16 | 56.0 % | 48.5 % | 30.7 % | 31.4 % |
+  | 17 | 54.5 % | 45.5 % | 15.0 % | 5.2 % |
+  | 18 | 49.0 % | 25.7 % | 3.3 % | 0.0 % |
+  | 19 | 23.4 % | 4.5 % | 0.5 % | — |
+
+  Midday is unchanged. The light-limited window, motion blur from long
+  exposures (2026-08-12), now covers both rush hours, 60-90 cars an hour,
+  and it will widen into winter. Forced colour doesn't help. This, not the
+  dark hours, is the main ANPR loss from here on.
+- **Nights look nearly empty in every mode:** 0-7 cars/h from 21:00 to 05:00,
+  in August colour and in forced colour alike. That's either genuinely quiet
+  or the detector missing cars in the dark; the data can't tell which.
+- **Test running:** `.claude/ir_capture.py --windows` is recording on the Orin
+  at 18:30 (20 min), 21:30 (30 min) and 07:00 (20 min), 4-5 Oct: the
+  sub-stream plus a 4K snap every 2 s, independent of the detector. It
+  answers whether nights are missed by the detector (21:30), and shows the
+  dusk and dawn snaps' blur. Comparing an IR-mode night needs the operator
+  to set `dayNight` back to Auto (or B&W) for a night, plus a runtime build
+  that infers in IR (option a).
 
 ### Checked and sound (no action)
 
@@ -577,12 +615,15 @@ and E1.5(c) has been live on the Orin since 2026-10-04 09:52. The Phase 0
 checks (`.claude/phase0_checks.py`; results in each experiment's row) change
 the rest of the order:
 
-- **New first item: decide R16.** IR mode left 41.7 % of September unobserved.
-  Grab IR sub-stream frames and 4K snaps at night, check YOLO recall and plate
-  reads on them, then choose R16's option (a), (b) or (c). This comes before
-  E2.8 and E3.4: running inference in IR would close most of E3.4's gap, and
-  E2.8's night A/B becomes "inference in IR vs not" (a faster shutter only
-  helps at dusk, before the camera switches).
+- **New first item: low light (R16 and its update).** IR mode left 41.7 % of
+  September unobserved, but the camera has been in forced colour since
+  28 Sep, so the live question is now low light. Plate reads at 07-09 h and
+  16-19 h have collapsed since July and will keep falling into winter.
+  Tonight's fixed-window capture checks whether nights are missed. Then
+  compare low-light options on rush-hour reads: forced colour with a faster
+  low-light shutter (E2.8), or IR mode with inference in IR (option a,
+  which needs a runtime switch and the operator to set `dayNight` back).
+  E3.4 still needs the mid-August to 28 Sep IR gap.
 - **R2 confirmed (E0.5).** E1.3 is the first instrument to build. The same
   check can settle collisions directly: when two concurrent tracks share a
   best plate, the plate's colour (front white for R→L, rear yellow for L→R)
