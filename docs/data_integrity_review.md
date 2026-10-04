@@ -637,6 +637,14 @@ highest-confidence read (now meaningful), not "most-supported string".
   and a decimated per-track trajectory (`[t, x1, y1, x2, y2]` every ~3rd frame,
   ~2 KB/track). Then fit the exposure offset per session by aligning
   fullframe-detected 4K car boxes to the interpolated trajectory.
+  **Code written 2026-10-04:** `TrackRecord.main_snap_fire_unix` /
+  `main_snap_done_unix` (parallel to `main_snaps`; fire decision and
+  JPEG-on-disk, wall clock), and a `{session}_trajectories.jsonl` sidecar
+  rather than a `TrackRecord` field, so `data.json` doesn't grow. Each line
+  holds every 3rd bbox plus the last, capped at ~200 rows, as `[dt, x1, y1,
+  x2, y2]` from `t0_unix`. Pull already copies `*.jsonl`, and prune only
+  deletes 4K JPEGs. The fit itself is still to write, once sessions carry
+  the data.
 - Deploy in the order in [Schema-additive config
   changes](../CLAUDE.md#schema-additive-config-changes). No `camera.json` change
   is needed, so this is a code-only deploy.
