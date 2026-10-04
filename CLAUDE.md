@@ -204,12 +204,17 @@ step 6's E1.5(c) is the one Orin deploy. In order:
         (E2.8), or IR mode with inference in IR (needs a runtime switch and
         `dayNight` back to Auto). That choice is the operator's: it changes the
         camera or the live runtime.
-   4. **E1.3 plate-colour/direction check, and the combined gate. Built
-      2026-10-04; apply with the panel's platecheck playbook** (set
-      `configs/alpr.json` to `"plate_gate": "combined"` first; restart the panel
-      and showcase so they load the new code). Simulated over all 49 sessions:
-      tracks labelled 36,078 → 41,923 (+16.2 %; 1,519 lose a label, 7,364 gain
-      one, 203 change plate), 581 new DVSA lookups. Classifier
+   4. **E1.3 plate-colour/direction check, and the combined gate. Live
+      2026-10-04.** `configs/alpr.json` is `"plate_gate": "combined"`, and the
+      panel's **platecheck** playbook ran on all 49 sessions (197/197 steps,
+      ~24 min; every session now badges Plates v4, every harvest records the
+      combined gate). **Car journeys with a DVSA label: 33,445 (35.9 %) →
+      39,499 (41.8 %)**; showcase 4,164 cars. Harvests attribute some non-car
+      tracks (vans as "truck", buses, bicycles) and tracks with no `data.json`
+      record; `dvsa-apply` writes car records only, so those never reach
+      `data.json` (expected; review R14). Re-run platecheck (or relabel) after
+      any change to `configs/alpr.json`. Simulated beforehand: tracks passing
+      36,078 → 41,923 (+16.2 %), 581 new DVSA lookups. Classifier
       `analysis/alpr/plate_colour.py` (R→L shows the white front plate, L→R
       the yellow rear). **2.5 % of gated best reads carry a plate whose colour
       contradicts the direction** (L→R 3.9 %, mostly oncoming cars' front
