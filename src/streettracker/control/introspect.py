@@ -26,6 +26,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import json
+import re
 import threading
 from collections import defaultdict
 from collections.abc import Callable
@@ -414,6 +415,9 @@ def _corpus_from_manifest(d: Path) -> CorpusInfo | None:
     )
 
 
+_CAPPED_CORPUS = re.compile(r"_cap\d+$")
+
+
 def corpus_info(corpus_dir: Path) -> CorpusInfo | None:
     """One corpus's stats from its manifest, or ``None`` without one."""
     if not (corpus_dir / "manifest.json").is_file():
@@ -424,12 +428,18 @@ def corpus_info(corpus_dir: Path) -> CorpusInfo | None:
 
 
 def latest_corpus(runs_dir: Path) -> CorpusInfo | None:
-    """The most recently built ``runs/uk_crops_*`` that carries a manifest."""
+    """The most recently built ``runs/uk_crops_*`` that carries a manifest.
+
+    Capped corpora (``..._capN``, built with a per-car crop cap for an A/B) are
+    subsamples of an uncapped build, so they're skipped while an uncapped one
+    exists: they would understate the corpus the retrain check measures."""
     if not runs_dir.is_dir():
         return None
     candidates = [
         p for p in runs_dir.glob("uk_crops_*") if p.is_dir() and (p / "manifest.json").is_file()
     ]
+    uncapped = [p for p in candidates if not _CAPPED_CORPUS.search(p.name)]
+    candidates = uncapped or candidates
     if not candidates:
         return None
     newest = max(candidates, key=lambda p: p.stat().st_mtime)
@@ -451,6 +461,9 @@ class ModelInfo:
     n_makes: int | None = None
     val_make_top1: float | None = None
     promoted_at: str | None = None
+    # The training run the checkpoint came from (sidecar "source_run", written
+    # at promotion), e.g. "uk_make_0929_b6"; None for checkpoint-only reads.
+    source_run: str | None = None
     trained_corpus: dict[str, Any] | None = None  # {n_cars, n_makes, n_crops, name}
     # How the model's training crops were made ("hint" | "plate"); None = not
     # recorded, i.e. every model before 2026-09 = the stale-hint crops.
@@ -544,6 +557,7 @@ def model_info(model_path: Path | None = None, *, allow_torch: bool = True) -> M
                 n_makes=data.get("n_makes"),
                 val_make_top1=data.get("val_make_top1"),
                 promoted_at=data.get("promoted_at"),
+                source_run=data.get("source_run"),
                 trained_corpus=data.get("trained_corpus"),
                 crop_mode=data.get("crop_mode"),
                 size=st.st_size,
@@ -900,9 +914,14 @@ def local_snapshot(
     corpus = latest_corpus(runs_dir)
     model = model_info(model_path, allow_torch=allow_torch)
     runs = training_runs(runs_dir)
+    # The corpus the production model actually trained on (named in its
+    # sidecar), for the model card -- not whichever corpus is newest.
+    trained_name = (model.trained_corpus or {}).get("name") if model else None
+    model_corpus = corpus_info(runs_dir / str(trained_name)) if trained_name else None
     return {
         "sessions": [s.to_json_dict() for s in sessions],
         "corpus": corpus.to_json_dict() if corpus else None,
+        "model_corpus": model_corpus.to_json_dict() if model_corpus else None,
         "model": model.to_json_dict() if model else None,
         "runs": [r.to_json_dict() for r in runs],
         "recommendations": {

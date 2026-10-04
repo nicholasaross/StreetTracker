@@ -532,3 +532,52 @@ def test_save_is_a_noop_when_nothing_changed(tmp_path):
     introspect._by_mtime(f, "t", lambda: 1)
     assert introspect.save_cache() == 1
     assert introspect.save_cache() == 0  # dirty flag cleared
+
+
+def _write_corpus(runs: Path, name: str, cars: list[str]) -> Path:
+    d = runs / name
+    d.mkdir(parents=True)
+    samples = [{"path": f"FORD/{c}.jpg", "make": "FORD", "car": c} for c in cars]
+    (d / "manifest.json").write_text(json.dumps({"makes": ["FORD"], "samples": samples}))
+    return d
+
+
+def test_latest_corpus_skips_capped_ab_builds(tmp_path: Path) -> None:
+    import os
+
+    runs = tmp_path / "runs"
+    full = _write_corpus(runs, "uk_crops_0929_576", ["A", "B", "C"])
+    capped = _write_corpus(runs, "uk_crops_1001_576_cap30", ["A", "B"])
+    os.utime(full, (1, 1))  # the capped build is the newest on disk
+    assert capped.stat().st_mtime > full.stat().st_mtime
+    corpus = introspect.latest_corpus(runs)
+    assert corpus is not None and corpus.name == "uk_crops_0929_576"
+    # Only capped corpora: fall back to them rather than reporting none.
+    other = tmp_path / "runs2"
+    _write_corpus(other, "uk_crops_1001_576_cap30", ["A"])
+    corpus = introspect.latest_corpus(other)
+    assert corpus is not None and corpus.name == "uk_crops_1001_576_cap30"
+
+
+def test_snapshot_names_production_run_and_its_corpus(tmp_path: Path) -> None:
+    import os
+
+    runs = tmp_path / "runs"
+    trained = _write_corpus(runs, "uk_crops_0929_576", ["A", "B", "C"])
+    _write_corpus(runs, "uk_crops_1002_576", ["A", "B", "C", "D"])  # newer, not trained on
+    os.utime(trained, (1, 1))
+    model = tmp_path / "makemodel_b0.pt"
+    model.write_bytes(b"x")
+    model.with_suffix(".meta.json").write_text(
+        json.dumps(
+            {
+                "arch": "efficientnet_b6",
+                "source_run": "uk_make_0929_b6",
+                "trained_corpus": {"name": "uk_crops_0929_576", "n_cars": 3},
+            }
+        )
+    )
+    snap = introspect.local_snapshot(tmp_path / "output", runs, model, allow_torch=False)
+    assert snap["model"]["source_run"] == "uk_make_0929_b6"
+    assert snap["model_corpus"]["name"] == "uk_crops_0929_576"
+    assert snap["corpus"]["name"] == "uk_crops_1002_576"  # newest, for the retrain check
