@@ -89,9 +89,11 @@ def test_scp_commands_only_main_uses_pattern_list(tmp_path: Path) -> None:
         local_parent=tmp_path,
         only_main=True,
     )
-    # one command per pattern; thumbs (<id>.jpg) and HQ (<id>_hq.jpg) excluded
+    # one command per pattern; tiles (<id>.jpg) and person HQ crops excluded,
+    # the vehicle HQ crops (the fastest board's pictures) included
     patterns_seen = [c[-2].split(":")[-1].rsplit("/", 1)[-1] for c in cmds]
     assert "*_main_*.jpg" in patterns_seen
+    assert "vehicle_*_hq.jpg" in patterns_seen
     assert "*.json" in patterns_seen
     assert "*.jsonl" in patterns_seen
     assert "*_summary.html" in patterns_seen
@@ -165,6 +167,15 @@ def test_remote_inventory_parses_main_bytes() -> None:
     assert inv.bytes == 1000
     assert inv.main_bytes == 600
     assert inv.main_snaps == 4
+
+
+def test_remote_inventory_parses_vehicle_crop_bytes() -> None:
+    """VHQBYTES sizes the vehicle HQ crops (--only-main and --crops-only)."""
+    with patch("streettracker.cli.pull.subprocess.run") as mock_run:
+        mock_run.return_value = _fake_completed("MAINBYTES 600\nVHQBYTES 25\n")
+        inv = pull.remote_inventory("orin", "u", "/k", "/x")
+        assert "-name 'vehicle_*_hq.jpg'" in mock_run.call_args.args[0][-1]
+    assert inv.vehicle_hq_bytes == 25
 
 
 def test_scp_pull_dry_run_does_not_invoke_subprocess(tmp_path: Path) -> None:
@@ -263,7 +274,7 @@ def test_main_dry_run_end_to_end(tmp_path: Path) -> None:
 
 
 def test_immutable_image_patterns_by_mode() -> None:
-    assert pull._immutable_image_patterns(only_main=True) == ("*_main_*.jpg",)
+    assert pull._immutable_image_patterns(only_main=True) == ("*_main_*.jpg", "vehicle_*_hq.jpg")
     assert pull._immutable_image_patterns(only_main=False) == ("*.jpg",)
 
 
@@ -567,8 +578,8 @@ def test_skip_existing_pull_routes_images_to_sftp_metadata_to_scp(tmp_path: Path
             only_main=True,
             dry_run=False,
         )
-    mock_sftp.assert_called_once()
-    assert mock_sftp.call_args.args[-1] == "*_main_*.jpg"  # the immutable glob
+    # the immutable globs: the 4K snaps, then the vehicle HQ crops
+    assert [c.args[-1] for c in mock_sftp.call_args_list] == ["*_main_*.jpg", "vehicle_*_hq.jpg"]
     scp_patterns = [t.rsplit("/", 1)[-1] for t in scp_targets]
     assert scp_patterns == ["*.json", "*.jsonl", "*_summary.html", "index.html"]
 
@@ -597,3 +608,52 @@ def test_main_skip_existing_dry_run(tmp_path: Path) -> None:
             ]
         )
     assert rc == 0
+
+
+def test_main_crops_only_fetches_vehicle_crops_and_no_metadata(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--crops-only name-diffs just the vehicle HQ crops: no snaps, and no
+    metadata scp that would overwrite an enriched session's data.json."""
+    fake_key = tmp_path / "id"
+    fake_key.write_text("not-a-real-key")
+    with (
+        patch("streettracker.cli.pull.subprocess.run") as mock_run,
+        patch("streettracker.cli.pull.sftp_get_missing", return_value=7) as mock_sftp,
+    ):
+        mock_run.return_value = _fake_completed("MAINBYTES 600\nVHQBYTES 25\n")
+        rc = pull.main(
+            [
+                "--key",
+                str(fake_key),
+                "--session",
+                "session_test",
+                "--target",
+                str(tmp_path / "out"),
+                "--crops-only",
+            ]
+        )
+    assert rc == 0
+    assert [c.args[-1] for c in mock_sftp.call_args_list] == ["vehicle_*_hq.jpg"]
+    assert mock_sftp.call_args.args[4] == (tmp_path / "out" / "session_test").resolve()
+    # the only ssh/scp call is the inventory -- nothing copies metadata
+    assert all(c.args[0][0] == "ssh" for c in mock_run.call_args_list)
+    out = capsys.readouterr().out
+    assert "size_bytes: 25" in out  # the panel's ETA counts just the crops
+    assert "skip-existing: 7 new image(s) fetched" in out
+
+
+def test_main_only_main_size_counts_vehicle_crops(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake_key = tmp_path / "id"
+    fake_key.write_text("not-a-real-key")
+    with patch("streettracker.cli.pull.subprocess.run") as mock_run:
+        mock_run.return_value = _fake_completed("BYTES 9000\nMAINBYTES 600\nVHQBYTES 25\n")
+        pull.main(["--key", str(fake_key), "--session", "s", "--only-main", "--dry-run"])
+    assert "size_bytes: 625" in capsys.readouterr().out
+
+
+def test_crops_only_and_only_main_are_exclusive(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        pull.main(["--key", str(tmp_path), "--only-main", "--crops-only"])

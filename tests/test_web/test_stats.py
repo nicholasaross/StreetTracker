@@ -378,6 +378,24 @@ def test_fastest_without_a_read_shows_the_closest_snap_on_disk(tmp_path: Path) -
     assert fast["thumb"] == "/images/session_20260526_090000/vehicle_1_main_2.jpg"
 
 
+def test_fastest_picture_is_the_trackers_crop_of_the_car(tmp_path: Path) -> None:
+    # A fast car has often left the frame before its 4K snap lands, so the
+    # thumbnail is the tracker's own crop: HQ first, then the tile; the 4K
+    # snap stays the full-size link.
+    d = _mk_session(
+        tmp_path,
+        "session_20260526_090000",
+        [_track(1, speed=120.0), _track(2, speed=110.0)],
+        alpr=_alpr((1, "AB12CDE", 0.97)),
+    )
+    (d / "vehicle_2_hq.jpg").unlink()
+    fast = build_stats(tmp_path).speed["fastest"]
+    base = "/images/session_20260526_090000"
+    assert fast[0]["thumb"] == f"{base}/vehicle_1_hq.jpg"
+    assert fast[0]["full"] == f"{base}/vehicle_1_main_1.jpg"
+    assert fast[1]["thumb"] == f"{base}/vehicle_2.jpg"
+
+
 def test_fastest_with_no_snap_on_disk_has_no_picture(tmp_path: Path) -> None:
     _mk_session(tmp_path, "session_20260526_090000", [_track(1, speed=120.0)], images=False)
     fast = build_stats(tmp_path).speed["fastest"][0]

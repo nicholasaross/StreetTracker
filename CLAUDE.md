@@ -537,6 +537,11 @@ Per finalized track:
 | `{prefix}_{id}_main_{N}.jpg` | 4K Reolink HTTP | ALPR / make-model      |
 
 `{prefix}` is `vehicle` or `person`. `N` is `1..max_snaps_per_track`.
+The Orin prunes only the 4K `_main_` snaps (7 days); tiles and HQ crops stay.
+The vehicle HQ crop (sharpest, largest sub-stream view) is the one picture
+sure to show the tracked car, so `pull --only-main` fetches it since
+2026-10-04 and the `/stats` fastest-cars board shows it; `pull --crops-only`
+backfills older sessions without touching their JSON.
 
 Session files:
 
@@ -678,7 +683,8 @@ uv run streettracker makemodel output/<session>          # CNN make/model infere
 uv run streettracker bodytype output/<session>           # CNN body-type inference -> _bodytype_by_track.json (pad_frac 0.1)
 uv run streettracker colour output/<session>             # CNN vehicle-colour inference -> _colour_by_track.json (pad_frac 0.1); beats HSV 42%->87% grouped vs DVSA
 # Mine the Orin -> grow the UK make-classifier corpus (run pull from PowerShell):
-uv run streettracker pull --session <S> --only-main      # pull a session's 4K snaps from the Orin
+uv run streettracker pull --session <S> --only-main      # pull a session's 4K snaps + vehicle HQ crops + JSON from the Orin
+uv run streettracker pull --session <S> --crops-only     # fetch just the missing vehicle HQ crops (never the JSON, so safe on an enriched session)
 uv run streettracker makemodel-build-uk runs/uk_crops --output-size 512  # DVSA-labelled UK make crops @512 (auto-discovers sessions); --crop-mode plate (default) = plate-anchored crops, needs alpr-run output
 uv run streettracker makemodel-compare runs/uk_crops --candidate runs/uk_make_X/best.pt  # head-to-head vs production on shared held-out cars -> runs/uk_make_X/compare.json (the report it replaces is kept as compare.prev.json); --target colour|body_type for the other heads (colour also reports a grouped score); --eval-session <S>... scores fresh sessions' cars instead of the corpus val split, minus every car in production's and the candidate's corpora (+ --include-trained-cars to keep those cars and score their new passes)
 uv run streettracker makemodel-train-uk runs/uk_crops --input-size 512   # train the UK make classifier (B0@512; +--backbone b4/b5). honest make@1 ~28% on 1229 cars (old "37.6%" was small-val optimism)
@@ -723,7 +729,9 @@ uv run streettracker showcase --output-root output   # http://127.0.0.1:8090/
   bucketed by camera-local `time_start`, so a multi-date session splits
   correctly): daily L→R/R→L journeys (click a day → its 15-min profile),
   day-of-week histogram, weekday×hour heatmap, speed distribution + fastest
-  cars, and make/colour mix. A **People** section aggregates person tracks
+  cars (pictured by the tracker's HQ crop of the car, then the tile, then a
+  4K snap: a fast car has often left the frame before its 4K snap lands),
+  and make/colour mix. A **People** section aggregates person tracks
   (footfall, dwell, heatmap) and — where sessions carry `_people.json` —
   rolls up walker/jogger/cyclist/dog-walk counts (cyclists classified since
   2026-06-13, dog walks since 2026-07-07; earlier jogger counts include
@@ -803,8 +811,9 @@ timeout-bounded in `control/orin.py`), `common.output`, and
   (`PYTHONUNBUFFERED`) so lines stream live, and a per-job **dir-watcher**
   samples the local session dir as it fills toward the remote byte total — a
   real transfer progress bar + ETA, not a spinner. `pull` prints a
-  machine-readable `size_bytes` (the **main-snap** payload under `--only-main`,
-  via `RemoteInventory.main_bytes`, so the denominator matches what's copied);
+  machine-readable `size_bytes` (the main snaps + vehicle HQ crops under
+  `--only-main`, via `RemoteInventory.main_bytes` + `vehicle_hq_bytes`, so the
+  denominator matches what's copied);
   `PullParser` turns the session/target/size_bytes lines into a generic
   `watch` directive the runner consumes.
 - `control/playbooks.py` — a **multi-step playbook engine** (`PlaybookRunner`):
