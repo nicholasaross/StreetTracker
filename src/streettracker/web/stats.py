@@ -56,6 +56,7 @@ from streettracker.analysis.dvsa import is_canonical_uk_plate
 from streettracker.analysis.makemodel.bodytype import body_type_for
 from streettracker.analysis.makemodel.colour import colour_class_for
 from streettracker.web.aggregate import discover_sessions, resolve_image_urls
+from streettracker.web.uk_makes import make_benchmark
 
 # m/s -> mph.
 MPH_PER_M_S = 2.2369362920544
@@ -137,6 +138,9 @@ class Stats:
     heatmap: list[list[int]]  # [weekday 0-6][hour 0-23]
     speed: dict[str, Any]
     makes: list[list[Any]]  # [[make, n_distinct_cars], ...]
+    # Top makes vs the UK (DfT licensed cars, age-matched to the street's
+    # registration years); see web/uk_makes.make_benchmark. None without data.
+    makes_benchmark: dict[str, Any] | None
     colours: list[list[Any]]  # [[colour, n_journeys], ...]
     bodytypes: list[list[Any]]  # [[body_type, n_journeys], ...]; DVSA-derived + CNN fallback
     fastest_makes: list[dict[str, Any]]  # makes ranked by mean speed; see _speed_ranking
@@ -461,6 +465,7 @@ def _empty_stats(unit: str) -> Stats:
         heatmap=[[0] * 24 for _ in range(7)],
         speed={"hist": [], "avg_all": 0, "avg_l2r": 0, "avg_r2l": 0, "unit": unit, "fastest": []},
         makes=[],
+        makes_benchmark=None,
         colours=[],
         bodytypes=[],
         fastest_makes=[],
@@ -495,6 +500,7 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
     colours: Counter[str] = Counter()
     bodytypes: Counter[str] = Counter()
     makes_by_plate: dict[str, str] = {}
+    years_by_plate: dict[str, int | None] = {}  # DVSA year of first registration
     # Per-track speeds grouped for the "fastest by make / colour" boards.
     # Same detection guard as the individual fastest board.
     speeds_by_make: dict[str, list[float]] = defaultdict(list)
@@ -562,6 +568,8 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
                 # track_ids (review R13/E0.2).
                 if make and row.get("track_ids") and plate not in makes_by_plate:
                     makes_by_plate[plate] = make
+                    year = row.get("year")
+                    years_by_plate[plate] = year if isinstance(year, int) else None
                 bt: str | None = body_type_for(row.get("make"), row.get("model"))
                 col = colour_class_for(row.get("primary_colour"))
                 for tid in row.get("track_ids", []):
@@ -742,6 +750,7 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
     }
 
     makes = [[m, n] for m, n in Counter(makes_by_plate.values()).most_common(N_TOP_MAKES)]
+    makes_benchmark = make_benchmark(makes_by_plate, years_by_plate, makes)
     colours_out = [[c, n] for c, n in colours.most_common(N_TOP_COLOURS)]
     bodytypes_out = [[b, n] for b, n in bodytypes.most_common()]
     fastest_makes = _speed_ranking(speeds_by_make, factor, unit)
@@ -782,6 +791,7 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
         heatmap=heatmap,
         speed=speed,
         makes=makes,
+        makes_benchmark=makes_benchmark,
         colours=colours_out,
         bodytypes=bodytypes_out,
         fastest_makes=fastest_makes,
