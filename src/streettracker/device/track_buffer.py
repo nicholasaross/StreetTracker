@@ -71,6 +71,13 @@ _HQ_SHARPNESS_TARGET_PX = 128  # downsample for sub-millisecond Laplacian
 # *consistently* wrong on a scene, hence this geometry cross-check.
 _PERSON_ASPECT_SUSPECT = 1.5
 
+# Persisted trajectory (``decimated_trajectory``): every 3rd frame is
+# ~3 samples/s at the sub-stream's ~9 fps -- enough to interpolate a car's
+# position at any instant to within a few pixels -- capped so a long dwell
+# can't bloat the sidecar (~30 bytes/row).
+_TRAJECTORY_STEP = 3
+_TRAJECTORY_MAX_SAMPLES = 200
+
 
 # ----------------------------------------------------------------------
 # Per-track state.
@@ -152,6 +159,11 @@ class BufferedTrack:
     # :attr:`TrackRecord.main_snap_bboxes_done`; offline hint
     # resolution prefers it over the fire-time bbox when present.
     snap_done_bboxes: dict[int, tuple[int, int, int, int]] = field(default_factory=dict)
+    # Per-snap-index wall-clock unix time of the fire decision and of the
+    # JPEG landing on disk. Persisted into ``TrackRecord.main_snap_fire_unix``
+    # / ``main_snap_done_unix`` for the exposure-timing fit (review E1.5(c)).
+    snap_fire_unix: dict[int, float] = field(default_factory=dict)
+    snap_done_unix: dict[int, float] = field(default_factory=dict)
     # Set in ``finalize_track`` to lock the prefix used for the
     # TrackRecord. ``None`` while the track is still active.
     final_prefix: str | None = None
@@ -243,6 +255,31 @@ def median_bbox_aspect(points: list[MotionPoint]) -> float:
     samples the threshold was measured on. 0.0 when unmeasurable."""
     ratios = sorted((p.x2 - p.x1) / (p.y2 - p.y1) for p in points if p.y2 > p.y1)
     return ratios[len(ratios) // 2] if ratios else 0.0
+
+
+def decimated_trajectory(
+    points: list[MotionPoint],
+    *,
+    step: int = _TRAJECTORY_STEP,
+    max_samples: int = _TRAJECTORY_MAX_SAMPLES,
+) -> list[list[float]]:
+    """Every ``step``-th bbox as ``[dt, x1, y1, x2, y2]``, plus the last.
+
+    ``dt`` is seconds since the first point (0.01 s resolution; the
+    sub-stream runs ~9 fps), coords are integer sub-stream pixels. The step
+    widens on long tracks so no track writes more than ``max_samples`` rows
+    (~30 bytes each). Persisted to ``{session}_trajectories.jsonl`` so
+    analysis can interpolate where the car was at a snap's exposure
+    (review E1.5(c)).
+    """
+    if not points:
+        return []
+    stride = max(step, -(-len(points) // max_samples))  # ceil division
+    picked = points[::stride]
+    if picked[-1] is not points[-1]:
+        picked.append(points[-1])
+    t0 = points[0].t
+    return [[round(p.t - t0, 2), int(p.x1), int(p.y1), int(p.x2), int(p.y2)] for p in picked]
 
 
 def total_displacement(points: list[MotionPoint]) -> float:
@@ -536,6 +573,23 @@ def compute_attributes(
         main_snap_bboxes_done=(
             [
                 list(track.snap_done_bboxes[n]) if n in track.snap_done_bboxes else None
+                for n in sorted(main_snaps)
+            ]
+            if main_snaps
+            else None
+        ),
+        # Parallel snap timing: fire decision and JPEG-on-disk, wall clock.
+        main_snap_fire_unix=(
+            [
+                round(track.snap_fire_unix[n], 3) if n in track.snap_fire_unix else None
+                for n in sorted(main_snaps)
+            ]
+            if main_snaps
+            else None
+        ),
+        main_snap_done_unix=(
+            [
+                round(track.snap_done_unix[n], 3) if n in track.snap_done_unix else None
                 for n in sorted(main_snaps)
             ]
             if main_snaps

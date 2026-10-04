@@ -38,7 +38,7 @@ import numpy as np
 import pytest
 
 from streettracker.common.config import StreetTrackerConfig
-from streettracker.common.output import EventLog
+from streettracker.common.output import EventLog, read_trajectories_jsonl
 from streettracker.common.schema import TrackRecord
 from streettracker.common.types import Detection
 from streettracker.device.ir_detector import IRDetector
@@ -130,6 +130,7 @@ def test_session_paths_returns_full_set_under_root(tmp_path: Path) -> None:
     paths = session_paths(tmp_path, "session_abc")
     assert paths["dir"] == tmp_path / "session_abc"
     assert paths["events_jsonl"].name == "session_abc_events.jsonl"
+    assert paths["trajectories_jsonl"].name == "session_abc_trajectories.jsonl"
     assert paths["data_json"].name == "session_abc_data.json"
     assert paths["meta_json"].name == "session_abc_meta.json"
     assert paths["hourly_json"].name == "session_abc_hourly.json"
@@ -415,6 +416,42 @@ def test_finalize_track_writes_record_to_event_log(tmp_path: Path) -> None:
     assert events_jsonl.exists()
     line = events_jsonl.read_text(encoding="utf-8").strip()
     assert json.loads(line)["track_id"] == 42
+
+
+def test_finalize_track_writes_trajectory_sidecar(tmp_path: Path) -> None:
+    """A kept track also writes its decimated bbox trajectory to the
+    trajectory log, keyed by track id with the first bbox's wall time."""
+    ctx = _build_ctx(tmp_path)
+    ctx.frame_h = _FRAME_H
+    ctx.trajectory_log = EventLog(ctx.output_dir / "trajectories.jsonl")
+    tr = _moving_track()
+    finalize_track(ctx, tr)
+    ctx.trajectory_log.close()
+    rows = read_trajectories_jsonl(ctx.output_dir / "trajectories.jsonl")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["track_id"] == 42
+    assert row["t0_unix"] == round(_T0_WALL + tr.points[0].t, 3)
+    assert row["points"][0][0] == 0.0
+    assert row["points"][-1][1:] == [
+        int(tr.points[-1].x1),
+        int(tr.points[-1].y1),
+        int(tr.points[-1].x2),
+        int(tr.points[-1].y2),
+    ]
+
+
+def test_finalize_track_dropped_track_writes_no_trajectory(tmp_path: Path) -> None:
+    ctx = _build_ctx(tmp_path)
+    ctx.frame_h = _FRAME_H
+    ctx.trajectory_log = EventLog(ctx.output_dir / "trajectories.jsonl")
+    tr = BufferedTrack(id=1, class_id=2)
+    tr.points.append(
+        MotionPoint(frame_idx=0, t=0.0, cx=100, cy=100, x1=80, y1=80, x2=120, y2=120, score=0.9)
+    )
+    finalize_track(ctx, tr)
+    ctx.trajectory_log.close()
+    assert read_trajectories_jsonl(ctx.output_dir / "trajectories.jsonl") == []
 
 
 def test_finalize_track_marks_html_dirty(tmp_path: Path) -> None:
@@ -1004,6 +1041,51 @@ def test_fire_snap_records_completion_time_bbox(tmp_path: Path) -> None:
     assert tr.snap_done_bboxes[2] == (650, 150, 750, 250)
     assert tr.snap_fire_bboxes[2] == (450, 150, 550, 250)  # untouched
     assert 2 in tr.snap_saved_indexes
+
+
+def test_fire_snap_records_fire_and_done_wall_times(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_fire_snap`` stamps the fire decision's wall time; the completion
+    callback stamps when the JPEG landed. A failed snap gets no done time."""
+
+    class _StubTask:
+        def __init__(self, ok: bool) -> None:
+            self.ok = ok
+            self._callbacks: list[Any] = []
+
+        def add_done_callback(self, cb: Any) -> None:
+            self._callbacks.append(cb)
+
+        def result(self) -> bool:
+            return self.ok
+
+        def fire_done(self) -> None:
+            for cb in self._callbacks:
+                cb(self)
+
+    class _StubSnapshotter:
+        def __init__(self) -> None:
+            self.tasks: list[_StubTask] = []
+
+        def submit(self, _path: Path) -> _StubTask:
+            self.tasks.append(_StubTask(ok=len(self.tasks) == 0))  # 1st ok, 2nd fails
+            return self.tasks[-1]
+
+    clock = iter([1000.0, 1000.4, 1000.75])
+    monkeypatch.setattr(time, "time", lambda: next(clock))
+    ctx = _build_ctx(tmp_path)
+    snapper = _StubSnapshotter()
+    ctx.snapshotter = cast("Any", snapper)
+    tr = _moving_track_with_id(15, class_id=2)
+
+    _fire_snap(ctx, tr, snap_index=1)  # fire @ 1000.0
+    _fire_snap(ctx, tr, snap_index=2)  # fire @ 1000.4
+    snapper.tasks[0].fire_done()  # lands @ 1000.75
+    snapper.tasks[1].fire_done()  # failed: no clock read
+
+    assert tr.snap_fire_unix == {1: 1000.0, 2: 1000.4}
+    assert tr.snap_done_unix == {1: 1000.75}
 
 
 def test_fire_snap_failed_task_records_no_done_bbox(tmp_path: Path) -> None:

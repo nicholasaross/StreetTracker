@@ -77,6 +77,7 @@ from streettracker.device.track_buffer import (
     BufferedTrack,
     TrackBuffer,
     compute_attributes,
+    decimated_trajectory,
     save_thumbnail,
     sharpness_score,
 )
@@ -142,6 +143,11 @@ class SessionContext:
     # that build a SessionContext directly can leave it ``None``; the
     # process_frame code path guards on it.
     ir_events_log: IREventLog | None = None
+    # Per-track decimated bbox trajectory sidecar
+    # (``{session}_trajectories.jsonl``, one fsynced line per kept track).
+    # Kept out of TrackRecord so data.json -- read by every analysis tool
+    # -- doesn't grow. Optional so directly-built test contexts can skip it.
+    trajectory_log: EventLog | None = None
 
     # Operator-traced door zone (configs/door_zone.json), loaded once at
     # session start. ``None`` when the install has no door zone -- then
@@ -223,6 +229,7 @@ def session_paths(output_root: Path, session_label: str) -> dict[str, Path]:
         "dir": base,
         "events_jsonl": base / f"{session_label}_events.jsonl",
         "ir_events_jsonl": base / f"{session_label}_ir_events.jsonl",
+        "trajectories_jsonl": base / f"{session_label}_trajectories.jsonl",
         "data_json": base / f"{session_label}_data.json",
         "meta_json": base / f"{session_label}_meta.json",
         "hourly_json": base / f"{session_label}_hourly.json",
@@ -462,6 +469,7 @@ def _fire_snap(ctx: SessionContext, track: BufferedTrack, snap_index: int) -> No
     if task is None:
         return  # snapshotter dropped (concurrency cap)
     track.snap_fire_prefixes[snap_index] = fire_prefix
+    track.snap_fire_unix[snap_index] = time.time()
     # Capture the BotSORT-tracked sub-stream bbox at the moment of
     # fire so analysis-side ALPR can pre-crop the 4K snap to the
     # tracked vehicle (vs largest-in-frame). Stored as integer pixel
@@ -482,6 +490,7 @@ def _fire_snap(ctx: SessionContext, track: BufferedTrack, snap_index: int) -> No
         with contextlib.suppress(Exception):
             if not t.result():
                 return
+            track.snap_done_unix[snap_index] = time.time()
             track.snap_saved_indexes.add(snap_index)
             # Re-capture the track's bbox at snap COMPLETION. The 4K
             # HTTP snap lands ~0.7-1.3s after the fire decision (p50
@@ -610,6 +619,14 @@ def finalize_track(ctx: SessionContext, track: BufferedTrack) -> None:
 
     # 5. Persist.
     ctx.event_log.append(record)
+    if ctx.trajectory_log is not None:
+        ctx.trajectory_log.append(
+            {
+                "track_id": record.track_id,
+                "t0_unix": round(ctx.t_start_wall + track.points[0].t, 3),
+                "points": decimated_trajectory(track.points),
+            }
+        )
     ctx.records.append(record)
     ctx.last_finalize_mono = time.monotonic()
     ctx.html_dirty = True
@@ -1006,6 +1023,7 @@ async def run_session(
         event_log=EventLog(paths["events_jsonl"]),
         is_file_source=bool(getattr(source, "is_file", False)),
         ir_events_log=IREventLog(paths["ir_events_jsonl"]),
+        trajectory_log=EventLog(paths["trajectories_jsonl"]),
         door_zone=door_zone,
     )
 
@@ -1085,6 +1103,8 @@ async def run_session(
             ctx.event_log.close()
             if ctx.ir_events_log is not None:
                 ctx.ir_events_log.close()
+            if ctx.trajectory_log is not None:
+                ctx.trajectory_log.close()
             if cleanup_task is not None:
                 cleanup_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):

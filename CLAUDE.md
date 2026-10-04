@@ -160,7 +160,11 @@ step 6's E1.5(c) is the one Orin deploy. In order:
       per-track trajectory.** A code-only Orin deploy, in the
       [schema-additive order](#schema-additive-config-changes). It only helps
       sessions recorded after it ships, and the Orin deletes 4K snaps after
-      7 days, so land it early.
+      7 days, so land it early. **Code written 2026-10-04** (new
+      `TrackRecord.main_snap_fire_unix` / `main_snap_done_unix`, and the
+      `{session}_trajectories.jsonl` sidecar); deploy = merge, `git pull` on
+      the Orin, restart (no `camera.json` change), then check the new
+      session's sidecar and timing fields.
    3. **Phase 0 script:** E0.3, E0.4 (now on `uk_crops_0929_576` and the
       fresh-session eval set), E0.5, E0.7, and the new E0.9 (DVSA colour vs
       the colour CNN on post-corpus sessions, by read support).
@@ -475,6 +479,12 @@ Per finalized track:
 Session files:
 
 - `{session}_events.jsonl` — appended line-per-track (crash-safe)
+- `{session}_trajectories.jsonl` — one line per kept track:
+  `{"track_id", "t0_unix", "points": [[dt, x1, y1, x2, y2], ...]}`, every
+  3rd sub-stream bbox plus the last (≤ ~200 rows). With
+  `TrackRecord.main_snap_fire_unix` / `main_snap_done_unix` it lets analysis
+  fit when each 4K snap was exposed (review E1.5(c); sessions recorded from
+  the 2026-10 deploy on; `common.output.read_trajectories_jsonl`)
 - `{session}_data.json` — array of records, written at session end
 - `{session}_meta.json` — session-level metadata + IR periods + snap_stats
 - `{session}_hourly.json` — per-hour rollup

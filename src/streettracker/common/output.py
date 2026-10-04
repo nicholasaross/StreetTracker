@@ -194,6 +194,28 @@ class IREventLog:
         self.close()
 
 
+def read_trajectories_jsonl(path: Path) -> list[dict[str, Any]]:
+    """Read a ``{session}_trajectories.jsonl`` written by the runtime.
+
+    One row per kept track, in finalize order:
+    ``{"track_id": int, "t0_unix": float, "points": [[dt, x1, y1, x2, y2], ...]}``
+    where ``t0_unix + dt`` is the wall-clock time of each sub-stream bbox
+    (the same clock as ``TrackRecord.main_snap_fire_unix``). Same torn-tail
+    tolerance as :func:`read_events_jsonl`; sessions recorded before
+    2026-10-04 have no such file.
+    """
+    out: list[dict[str, Any]] = []
+    for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            logger.warning("[output] skipping torn trajectory line %d in %s: %s", n, path, exc)
+    return out
+
+
 def read_ir_events_jsonl(path: Path) -> list[dict[str, Any]]:
     """Read an ``_ir_events.jsonl`` produced by :class:`IREventLog`.
 

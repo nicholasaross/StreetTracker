@@ -22,6 +22,7 @@ from streettracker.device.track_buffer import (
     MotionPoint,
     TrackBuffer,
     compute_attributes,
+    decimated_trajectory,
     median_bbox_aspect,
     safe_crop,
     sharpness_score,
@@ -631,6 +632,64 @@ def test_compute_attributes_done_bboxes_parallel_to_main_snaps() -> None:
     assert result is not None
     assert result.main_snap_bboxes == [[50, 80, 150, 180], [250, 80, 350, 180]]
     assert result.main_snap_bboxes_done == [[90, 80, 190, 180], None]
+
+
+def test_compute_attributes_snap_timing_parallel_to_main_snaps() -> None:
+    """Fire / done wall-clock times ride lists parallel to ``main_snaps``
+    (rounded to the millisecond); a missing entry stays ``None``."""
+    tr = _track_with_motion([(0.0, 100, 100), (1.0, 300, 100)])
+    tr.snap_fire_unix[1] = _T0_WALL + 0.1234
+    tr.snap_done_unix[1] = _T0_WALL + 0.8765
+    tr.snap_fire_unix[3] = _T0_WALL + 0.5  # landed, but no done time recorded
+
+    result = compute_attributes(
+        tr,
+        frame_h=_FRAME_H,
+        min_duration_s=0.5,
+        parked_disp_px=10.0,
+        color="red",
+        t_start_wall=_T0_WALL,
+        main_snaps=[3, 1],
+    )
+
+    assert result is not None
+    assert result.main_snap_fire_unix == [round(_T0_WALL + 0.1234, 3), _T0_WALL + 0.5]
+    assert result.main_snap_done_unix == [round(_T0_WALL + 0.8765, 3), None]
+
+
+def test_compute_attributes_snap_timing_none_without_snaps() -> None:
+    tr = _track_with_motion([(0.0, 100, 100), (1.0, 300, 100)])
+    result = compute_attributes(
+        tr,
+        frame_h=_FRAME_H,
+        min_duration_s=0.5,
+        parked_disp_px=10.0,
+        color="red",
+        t_start_wall=_T0_WALL,
+    )
+    assert result is not None
+    assert result.main_snap_fire_unix is None and result.main_snap_done_unix is None
+
+
+def test_decimated_trajectory_every_third_plus_last() -> None:
+    """Every 3rd bbox as [dt, x1, y1, x2, y2] (dt from the first point,
+    integer coords), and the final bbox always included."""
+    tr = _track_with_motion([(1.0 + 0.1 * i, 100 + 10 * i, 100) for i in range(8)])
+    rows = decimated_trajectory(tr.points)
+    assert [r[0] for r in rows] == [0.0, 0.3, 0.6, 0.7]  # points 0, 3, 6 + last (7)
+    assert rows[0] == [0.0, 50, 50, 150, 150]
+    assert rows[-1] == [0.7, 120, 50, 220, 150]
+
+
+def test_decimated_trajectory_caps_long_tracks() -> None:
+    tr = _track_with_motion([(0.1 * i, 100 + i, 100) for i in range(5000)])
+    rows = decimated_trajectory(tr.points, max_samples=200)
+    assert len(rows) <= 201  # the stride widens; +1 for the appended last point
+    assert rows[-1][0] == round(0.1 * 4999, 2)
+
+
+def test_decimated_trajectory_empty() -> None:
+    assert decimated_trajectory([]) == []
 
 
 # ----------------------------------------------------------------------

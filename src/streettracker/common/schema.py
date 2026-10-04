@@ -32,6 +32,7 @@ class TrackRecord:
         attrs:     color, make/model/year (off-device DVSA/CNN enrichment)
         assets:    main_snaps (list of int N values whose _main_N.jpg landed)
                    main_snap_bboxes (parallel list of sub-stream bboxes at fire time)
+                   main_snap_fire_unix / main_snap_done_unix (parallel snap timing)
     """
 
     track_id: int
@@ -74,6 +75,16 @@ class TrackRecord:
     # ``main_snap_bboxes``. ``None`` for sessions written before the
     # field existed.
     main_snap_bboxes_done: list[list[int] | None] | None = None
+    # Parallel to ``main_snaps``: wall-clock unix time when the runtime
+    # decided to fire that snap, and when its JPEG finished writing to disk
+    # (the same span ``snap_stats`` latency measures). With the per-track
+    # trajectory in ``{session}_trajectories.jsonl`` these let analysis fit
+    # when the 4K image was actually exposed relative to the sub-stream
+    # track (review E1.5(c)), instead of assuming the done-bbox is where the
+    # car sits in the image. ``None`` per element if not recorded; outer
+    # ``None`` for tracks without snaps and sessions before 2026-10-04.
+    main_snap_fire_unix: list[float | None] | None = None
+    main_snap_done_unix: list[float | None] | None = None
     # Make/model/year enrichment, filled OFF-DEVICE by a post-process
     # pass (never the live runtime). ``make_model_source`` is "dvsa"
     # when set from the DVSA MOT harvest (``streettracker dvsa-apply``)
