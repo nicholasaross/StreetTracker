@@ -187,20 +187,27 @@
 
   // ---------- Model & corpus panel ----------
   function modelHtml(local){
-    const m = local.model, c = local.corpus, runs = local.runs || [];
+    const m = local.model, runs = local.runs || [];
+    // The card describes the production model, so its corpus block shows the
+    // corpus that model trained on (named in its sidecar). The newest corpus
+    // on disk -- what the retrain check measures -- is noted separately.
+    const c = local.model_corpus || local.corpus, latest = local.corpus;
+    const isTrained = !!local.model_corpus;
     let h = "";
     if (m){
       h += `<div class="metrics">
         <div class="metric"><div class="k">make@1 <span class="info" title="${esc(MAKE1_TIP)}">i</span></div><div class="v">${fmtPct(m.val_make_top1)}</div></div>
         <div class="metric"><div class="k">makes <span class="info" title="Manufacturer classes the model can predict.">i</span></div><div class="v">${fmtInt(m.n_makes)}</div></div>
       </div>
+      ${m.source_run?`<div class="kv"><span>Production model:</span> <span class="pill mono" title="The training run whose checkpoint is in production (from the model's sidecar).">${esc(m.source_run)}</span></div>`:""}
       <div class="kv muted"><span>Model:</span> <span class="wrap">${esc(prettyArch(m.arch))}${m.input_size?(" · "+esc(m.input_size)+"px"):""} · source ${esc(m.source)}${m.promoted_at?(" · promoted "+esc(m.promoted_at)):""}</span></div>`;
     } else {
       h += '<div class="empty">no production model found</div>';
     }
     if (c){
-      h += `<div class="kv" style="margin-top:16px"><span class="pill mono" title="UK make-classifier crop dataset, built from DVSA-labelled local sessions. The name encodes the build date and crop pixel size.">${esc(c.name)}</span></div>
-        <div class="muted" style="margin-top:4px;font-size:12px">${esc(corpusSubtitle(c.name))}</div>
+      h += `<div class="kv" style="margin-top:16px"><span>${isTrained?"Trained on:":"Newest corpus:"}</span> <span class="pill mono" title="UK make-classifier crop dataset, built from DVSA-labelled local sessions. The name encodes the build date and crop pixel size.">${esc(c.name)}</span></div>
+        <div class="muted" style="margin-top:4px;font-size:12px">${esc(corpusSubtitle(c.name))}${isTrained?"":" · production's training corpus isn't recorded"}</div>
+        ${isTrained && latest && latest.name !== c.name ? `<div class="muted" style="margin-top:4px;font-size:12px" title="The retrain recommendation compares this corpus against the one production trained on.">Newest corpus on disk: <span class="mono">${esc(latest.name)}</span> (${fmtInt(latest.n_crops)} crops, ${fmtInt(latest.n_cars)} cars)</div>` : ""}
         <div class="metrics" style="margin-top:12px">
           <div class="metric"><div class="k">crops <span class="info" title="Training images — cropped vehicle photos fed to the classifier.">i</span></div><div class="v">${fmtInt(c.n_crops)}</div></div>
           <div class="metric"><div class="k">cars <span class="info" title="Distinct physical vehicles (by plate) the crops came from.">i</span></div><div class="v">${fmtInt(c.n_cars)}</div></div>
@@ -216,7 +223,8 @@
       h += '<div class="empty" style="margin-top:12px">no corpus under runs/ — build one with makemodel-build-uk</div>';
     }
     if (runs.length){
-      const prod = m ? runs.find(r => Math.abs((r.best_val_make_top1||0) - (m.val_make_top1||-1)) < 1e-6) : null;
+      const prod = m ? (runs.find(r => r.name === m.source_run)
+        || runs.find(r => Math.abs((r.best_val_make_top1||0) - (m.val_make_top1||-1)) < 1e-6)) : null;
       h += `<div class="muted" style="margin:18px 0 7px;font-size:11px;text-transform:uppercase;letter-spacing:.5px">Training runs · validation make@1 <span class="info" title="${esc(MAKE1_TIP)}">i</span></div>`;
       const items = runs.slice(0,8).map(r=>({
         label: r.name.replace(/^uk_make_/,""),
