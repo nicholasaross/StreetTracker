@@ -628,6 +628,20 @@ async def test_people_page_renders(client: TestClient) -> None:
     assert "renderPeople" in html
 
 
+async def test_people_page_labels_fast_movers_not_joggers(tmp_path: Path) -> None:
+    """The > 2.5 m/s person class is mostly near-pavement walkers under the
+    single m/px factor (review E0.7), so the page calls it "fast movers"."""
+    d = _mk_session(
+        tmp_path, "session_a", [_track(1, cls="person"), _track(2, cls="person")], images=False
+    )
+    (d / "session_a_people.json").write_text(json.dumps(_people_json(6, 3, 1, 2)))
+    async with TestClient(TestServer(build_app(tmp_path))) as c:
+        html = await (await c.get("/people")).text()
+    assert "fast movers (3)" in html
+    assert "joggers (3)" not in html
+    assert '["fast movers",k.joggers]' in html
+
+
 async def test_people_moved_off_stats_page(client: TestClient) -> None:
     """The People charts now live on /people; /stats should link out to them
     rather than carry the block itself."""

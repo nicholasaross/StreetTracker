@@ -156,21 +156,25 @@
       the low-resolution tracking video, which tends to call light cars
       black or blue.</li>
       <li><b>People</b> — the same treatment for pedestrians: one "walk" ≈ one
-      person passing through view once, plus a breakdown into walkers,
-      joggers, cyclists and dog-walkers. (Joggers are split from walkers by
-      speed; cyclist and dog detection were switched on partway through, so
-      older data lumps riders in with joggers and shows zero dog walks.)</li>
+      person passing through view once, plus a breakdown into walkers, fast
+      movers, cyclists and dog-walkers. (Fast movers are split from walkers
+      by speed, above 2.5 m/s. One speed calibration covers the whole frame,
+      so walkers on the near pavement look about twice as fast as they are:
+      most fast movers are those walkers, not joggers, until speeds are
+      measured on the ground plane. Cyclist and dog detection were switched
+      on partway through, so older data lumps riders in with fast movers and
+      shows zero dog walks.)</li>
       <li><b>Out-and-back trips</b> — an estimate: a walk is matched with a
       later walk in the opposite direction of the same kind (dog walk with
-      dog walk, jog with jog) within a couple of hours, when clothing
+      dog walk, fast mover with fast mover) within a couple of hours, when clothing
       colours don't disagree. On a busy pavement two different people
       satisfy that rule constantly, so the headline subtracts a control:
       the same matching run on time-shuffled data tells us how many pairs
       pure coincidence produces (roughly three quarters of candidates
       here), and only the excess is reported as "likely" trips. Matching
       only ever happens within a single day.</li>
-      <li><b>Recurring walk patterns</b> — times of day when dog walks, jogs
-      or rides keep happening across many days (e.g. "a dog walk goes
+      <li><b>Recurring walk patterns</b> — times of day when dog walks, fast
+      movers or rides keep happening across many days (e.g. "a dog walk goes
       left-to-right around 07:50 most mornings"). These are computed purely
       from timing: nothing links a walk on one day to a walk on another, so
       a pattern describes the street's rhythm, not a tracked person.</li>
