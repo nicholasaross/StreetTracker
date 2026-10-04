@@ -773,7 +773,11 @@ highest-confidence read (now meaningful), not "most-supported string".
   seen once is labelled only when two of its snaps agree.
 - **Gate H built 2026-10-04** (`analysis/alpr/gate.py`, `configs/alpr.json`
   `"plate_gate": "combined"`): dvsa-label, vehicles, the showcase and the
-  stats page all apply it. Validate it on E1.2 when that exists.
+  stats page all apply it. Simulated end to end over all 49 sessions (colour
+  fallback, then the gate, after parked-beacon suppression, as dvsa-label
+  runs it): tracks labelled 36,078 → 41,923 (+16.2 %), 1,519 tracks lose a
+  label, 7,364 gain one, 203 move to a different plate; 581 plates need a
+  first DVSA lookup. Validate it on E1.2 when that exists.
 
 - Compute, per labelled plate:
   - read support (E0.4);

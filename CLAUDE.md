@@ -204,8 +204,12 @@ step 6's E1.5(c) is the one Orin deploy. In order:
         (E2.8), or IR mode with inference in IR (needs a runtime switch and
         `dayNight` back to Auto). That choice is the operator's: it changes the
         camera or the live runtime.
-   4. **E1.3 plate-colour/direction check, and the combined gate.
-      Measured 2026-10-04; pipeline change not built yet.** Classifier
+   4. **E1.3 plate-colour/direction check, and the combined gate. Built
+      2026-10-04; apply with the panel's platecheck playbook** (set
+      `configs/alpr.json` to `"plate_gate": "combined"` first; restart the panel
+      and showcase so they load the new code). Simulated over all 49 sessions:
+      tracks labelled 36,078 → 41,923 (+16.2 %; 1,519 lose a label, 7,364 gain
+      one, 203 change plate), 581 new DVSA lookups. Classifier
       `analysis/alpr/plate_colour.py` (R→L shows the white front plate, L→R
       the yellow rear). **2.5 % of gated best reads carry a plate whose colour
       contradicts the direction** (L→R 3.9 %, mostly oncoming cars' front
@@ -215,11 +219,9 @@ step 6's E1.5(c) is the one Orin deploy. In order:
       agrees, or ≥ 2 tracks read the plate) and conf ≥ 0.80 and plate colour
       not wrong**. It labels 15.5 % more tracks than today's conf ≥ 0.90, with
       not-on-register 2.1 → 1.4 %, unseen colour mismatch 4.1 → 3.6 % and
-      misattributed plates 2.5 % → 0. To build: flag colour-inconsistent reads
-      as suspects (like `static_suspect`) so a track's best read falls back;
-      put H into the shared gate (dvsa-label, vehicles, showcase, stats); then
-      backfill existing sessions with a panel playbook. Newly admitted plates
-      cost some DVSA lookups.
+      misattributed plates 2.5 % → 0. Built as: colour-inconsistent reads are
+      `colour_suspect` (the best read falls back), and H is the shared gate's
+      `combined` mode (dvsa-label, vehicles, showcase, stats).
    5. **E1.2 audit set** (extend `.claude/triage_rl.py`), stratified to
       over-represent what E0.5 and E1.3 flag; then calibrate E1.3 and the
       combined gate against it. It is the only check on whether a plate
