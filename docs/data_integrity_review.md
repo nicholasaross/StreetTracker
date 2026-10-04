@@ -102,6 +102,7 @@ the review is that it holds.
 | R13 | derived artefacts don't track their inputs (stale caches, stale labels, orphan plates on `/stats`) | Medium | **Confirmed** | `/stats` make chart, vehicle-box cache, `data.json` make fields |
 | R14 | non-car classes flow through "vehicle" pipelines; `lane` means frame thirds | Low | **Confirmed** | CNN sidecars, hourly `by_lane` |
 | R15 | durations use the wall clock; Orin clock sync and DST unverified | Low | Hypothesis | speed, durations, time-of-day stats |
+| R16 | the camera's IR mode stops inference entirely: 41.7 % of session time in September (added 2026-10-04, from E0.3) | **High** | **Confirmed** | every count after dusk and on dull mornings, night ANPR, R12's first crossing, "night ≈ 15 % of traffic" |
 
 ---
 
@@ -439,6 +440,41 @@ British Summer Time ends on **2026-10-25**, when local 01:00–02:00 repeats.
 the repeated hour counts each pass once. It holds two clock-hours, not
 double-counted passes; see E3.5.)*
 
+### R16 — IR mode stops the tracker (confirmed 2026-10-04)
+
+`device/runtime.py:699` skips inference on every frame `IRDetector` calls IR,
+so nothing is tracked or snapped. The detector is strict: a frame counts as
+IR only if no sampled pixel's colour channels differ by more than 8
+(`device/ir_detector.py`). So these periods are the camera's black-and-white
+mode, not false alarms.
+
+E0.3 measured 505 h of IR, rising from 4.8-11.0 % of session time a month
+through August to **41.7 % in September**; the share will grow into winter.
+In September, IR usually started 30-60 min after sunset (19:30-20:20) and
+ended around 06:00-06:35. But on 9 mornings it ran on to 08:44-10:46, through
+the morning rush. Some nights it started at 00:03 or 02:01 instead
+(street lights switched off part-way through the night?), and one night
+(30 Sep-1 Oct) it never started. Sunday 02:00-04:00 is 87-89 % IR against
+30-47 % on other nights (unexplained). The camera's ISP snapshot of 2026-07-09
+shows `dayNight: Auto`, `dayNightThreshold: 50`.
+
+The 2026-08-12 night-blur analysis measured dusk and dark plates while the
+camera still stayed in colour (August sessions had little IR). From
+mid-September, everything after dusk is simply unrecorded, so a faster night
+shutter alone can't help after the IR switch.
+
+**Options** (test before choosing):
+
+- (a) **Run inference in IR mode.** Make the skip configurable
+  (schema-additive), and tag tracks recorded in IR so the colour heads and
+  the HSV voter skip them. UK plates are retroreflective, which is why ANPR
+  cameras use IR, so IR 4K snaps may read *better* than dim colour ones.
+  First check YOLO recall and plate reads on IR frames.
+- (b) **Force colour mode** (`dayNight: Color`; needs the admin account).
+  This gives dim, noisy, blur-prone frames: the 2026-08-12 failure mode.
+- (c) **Lower `dayNightThreshold`**, so the camera leaves IR sooner on dull
+  mornings. This only fixes the morning overruns.
+
 ### Checked and sound (no action)
 
 - Pull integrity: `pull._is_intact_jpeg` catches the SOI/EOI gaps.
@@ -536,6 +572,33 @@ promoted on fresh-session head-to-heads. What that taught:
 The rest of Phase 3 (E3.2-E3.4; E3.4 waits on E0.3's coverage map) and Phase 4
 follow unchanged.
 
+**After Phase 0 (2026-10-04).** Steps 1-3 are done: the step 1 fixes shipped,
+and E1.5(c) has been live on the Orin since 2026-10-04 09:52. The Phase 0
+checks (`.claude/phase0_checks.py`; results in each experiment's row) change
+the rest of the order:
+
+- **New first item: decide R16.** IR mode left 41.7 % of September unobserved.
+  Grab IR sub-stream frames and 4K snaps at night, check YOLO recall and plate
+  reads on them, then choose R16's option (a), (b) or (c). This comes before
+  E2.8 and E3.4: running inference in IR would close most of E3.4's gap, and
+  E2.8's night A/B becomes "inference in IR vs not" (a faster shutter only
+  helps at dusk, before the camera switches).
+- **R2 confirmed (E0.5).** E1.3 is the first instrument to build. The same
+  check can settle collisions directly: when two concurrent tracks share a
+  best plate, the plate's colour (front white for R→L, rear yellow for L→R)
+  says which track owns it, and the other falls back to its next read.
+- **R3 confirmed (E0.9), and cross-track support is the signal.** About 40 %
+  of labels from a plate read on one track describe another car. E1.4's first
+  cut should gate on support (≥ 2 tracks, with ≥ 5 cleanest) or snap
+  agreement, with confidence secondary. Build it before the next retrain.
+  The `/stats` make chart and the showcase join the same labels, so they
+  should use it too.
+- **R7: the fresh-car test set is contaminated (E0.4).** 11 % of "fresh" cars
+  are misreads of regulars, so `makemodel-compare` should exclude by fuzzy
+  cluster (from E2.5) before the next head-to-head.
+- **R10 (E0.7).** Show joggers as "fast-moving person tracks", or hide the
+  split, until E3.2.
+
 ### Phase 0 — read-only checks on existing outputs (dev box, ~1 day, no GPU)
 
 These confirm or kill several findings in minutes. They only read `output/` and
@@ -545,13 +608,13 @@ These confirm or kill several findings in minutes. They only read `output/` and
 | --- | --- | --- | --- |
 | **E0.1** (R1) | Is `ocr_conf` saturated in practice? | **Superseded:** `alpr-rescore` prints the share of reads at ≥ 0.9 before and after, plus the tracks that pass the DVSA gate before and after. | Use that output to size the impact on DVSA labels; see E1.1. |
 | **E0.2** (R13) | How much of the `/stats` make chart is orphan or stale plates? | Per session: labels with empty `track_ids`, and labels whose plate is no read in the current `_alpr_by_track.json`. Recompute the make chart with and without them. | **2026-10-04: ship the `track_ids` filter without measuring** (it is right by construction). Was: any top-12 make shifting > 2 pp → ship it. **Shipped 2026-10-04.** 10,071 of 29,053 per-session label rows with a make had no `track_ids`; the top-12 makes went from 6,467 to 3,196 distinct cars. Largest share shifts: Toyota 9.6 → 11.9 %, Vauxhall 10.1 → 8.4 %, Kia 6.1 → 7.1 %, BMW 6.6 → 5.7 %, so the old rule would have fired too. |
-| **E0.3** (R8) | How much time is actually observed? | Per session: start/end, IR periods (`_meta.json`), gaps > 120 s between consecutive track starts during 07:00–19:00 (outage proxy), `frames_processed / pipe_fps` vs wall duration. Build an hour-by-hour coverage map across all dates. | Any date or weekday-hour cell < 95 % covered → build E3.4 before quoting daily means or heatmaps. IR periods non-empty → count them as unobserved. |
-| **E0.4** (R3, R7) | How much of the corpus is single-read or split across OCR variants? | In the production corpus manifest (`uk_crops_0929_576` since 2026-10-01; was `uk_crops_0924_576`): cluster plates with the `vehicles` fuzzy rule (ratio ≥ 85, same length). Count clusters spanning train and val, and their share of val crops. Count per-plate read support from `_alpr.json`. Also count the "fresh" cars in a `makemodel-compare --eval-session` run that fuzzy-match a corpus plate (added 2026-10-04). | Leakage > 2 % of val tracks → re-run `makemodel-compare` with cluster-aware exclusion (cheap). Single-read plates > 10 % of corpus cars → prioritise E1.4. |
-| **E0.5** (R2, R9) | Do plates collide across simultaneous tracks? | Same canonical plate (fuzzy ≥ 85) as best read on ≥ 2 tracks whose [start, end] windows are within 10 s. Split into opposite direction (misattribution) and same direction, adjacent (BotSORT split). | Opposite-direction collisions > 1 % of read tracks → R2 is real, prioritise E1.2/E1.3. The same-direction rate is the first car split-rate estimate. |
+| **E0.3** (R8) | How much time is actually observed? | Per session: start/end, IR periods (`_meta.json`), gaps > 120 s between consecutive track starts during 07:00–19:00 (outage proxy), `frames_processed / pipe_fps` vs wall duration. Build an hour-by-hour coverage map across all dates. | Any date or weekday-hour cell < 95 % covered → build E3.4 before quoting daily means or heatmaps. IR periods non-empty → count them as unobserved. **Done 2026-10-04: E3.4 is needed, and IR is the main gap (new R16).** Over 2026-05-24..10-01 (3,144 h), sessions cover 98.7 % of hours; minus IR, 82.6 %. IR (the camera's night mode, during which the runtime skips inference) took 505 h: 4.8-11.0 % of session time a month through August, then **41.7 % in September**. 74 of 131 dates and 106 of 168 weekday-hour cells are under 95 %; nights are 30-47 % IR, and Sunday 02-04 h 87-89 % (unexplained). The daytime > 120 s gap proxy flags 512 h, but a quiet two minutes is common on this street, so treat that only as an upper bound on outages. The `frames_processed / pipe_fps` check is circular and was dropped. |
+| **E0.4** (R3, R7) | How much of the corpus is single-read or split across OCR variants? | In the production corpus manifest (`uk_crops_0929_576` since 2026-10-01; was `uk_crops_0924_576`): cluster plates with the `vehicles` fuzzy rule (ratio ≥ 85, same length). Count clusters spanning train and val, and their share of val crops. Count per-plate read support from `_alpr.json`. Also count the "fresh" cars in a `makemodel-compare --eval-session` run that fuzzy-match a corpus plate (added 2026-10-04). | Leakage > 2 % of val tracks → re-run `makemodel-compare` with cluster-aware exclusion (cheap). Single-read plates > 10 % of corpus cars → prioritise E1.4. **Done 2026-10-04.** `uk_crops_0929_576`: 4,347 cars, 872 val; 396 fuzzy pairs (297 of 336 clusters are pairs, none large), 134 across train/val; val cars with a train neighbour hold 16.1 % of val tracks. That is an upper bound on identity leakage: 89 of the 396 pairs share a make, ~3x chance, which fits sequentially registered fleet cars, i.e. real neighbours. Read support: 7.1 % of cars on ≤ 1 snap (under the 10 % rule), 16.0 % on ≤ 1 track. **The fresh-car evaluation set is contaminated:** of 118 "fresh" labelled cars in the two post-corpus sessions, 13 (11 %) are one character from a corpus car, and their DVSA colour disagrees with the colour CNN 57 % of the time (8/14 tracks) vs 8.7 % for the rest, so most are misreads of regulars carrying another car's label. Both rules point at `makemodel-compare` excluding by fuzzy cluster (E2.5); E0.9 settles E1.4. |
+| **E0.5** (R2, R9) | Do plates collide across simultaneous tracks? | Same canonical plate (fuzzy ≥ 85) as best read on ≥ 2 tracks whose [start, end] windows are within 10 s. Split into opposite direction (misattribution) and same direction, adjacent (BotSORT split). | Opposite-direction collisions > 1 % of read tracks → R2 is real, prioritise E1.2/E1.3. The same-direction rate is the first car split-rate estimate. **Done 2026-10-04: R2 is real.** Over 35,130 gated read tracks (53,135 UK-shaped), pairs were split by whether both tracks were live for > 1 s together. **Concurrent opposite-direction: 1.3 % of gated read tracks** (230 pairs). These are two cars passing each other with one car's plate on both tracks: consecutive track ids, 3-10 s overlap, both 4-15 s long, the same plate at ~0.95. Those are only the visible cases; where the other track's own plate went unread, the misattribution can't be seen this way. Sequential opposite: 0.1 % (a split whose second fragment got the wrong direction). Same direction: concurrent 1.5 % (double-tracking, or a convoy sharing the lead car's plate), sequential 0.5 % (ID-switch splits). |
 | **E0.6** (R15) | Is the time base sane? | `timedatectl` on the Orin (NTP synced?). Scan `data.json` for `duration_visible < 0`, `time_start` non-monotone in `events.jsonl`, and session label vs first-track time. | Any anomaly → switch durations to the monotonic clock and log sync state in meta. Run it with E3.5's DST fix, before BST ends on 2026-10-25. **Done 2026-10-04 (`.claude/phase0_checks.py --checks e06 --orin streettracker@orin`): no anomaly.** Orin `Timezone=Europe/London`, NTP synced, RTC in UTC. 48 sessions / 186,487 tracks: every `time_start` carries an offset and agrees with `time_start_unix`; no negative durations or end-before-start; label vs `session_start_unix` within 1 s; largest backward step in finalize order 2.0 s. No monotonic-clock switch needed. |
-| **E0.7** (R10) | Is the jogger mode just the near pavement? | Split person speeds (≥ 6 detections) by pavement, using the median y of entry and exit points (post-07-19 sessions) or a y threshold on the hq tile. Plot per-pavement histograms. | Each pavement unimodal, modes differing by ~the perspective ratio → the jogger class is an artifact; suspend the jogger/dog-jog stats until E3.2. |
+| **E0.7** (R10) | Is the jogger mode just the near pavement? | Split person speeds (≥ 6 detections) by pavement, using the median y of entry and exit points (post-07-19 sessions) or a y threshold on the hq tile. Plot per-pavement histograms. | Each pavement unimodal, modes differing by ~the perspective ratio → the jogger class is an artifact; suspend the jogger/dog-jog stats until E3.2. **Done 2026-10-04: mostly an artifact.** 45,703 person tracks; Otsu split at y = 0.358 (the y histogram has three bands, near 0.1, 0.3 and 0.5). Far pavement: median 1.01 m/s, one peak (0.88), 7.0 % ≥ 2.5 m/s. Near pavement: median 2.08 m/s, peaks at 1.38 and 2.12, **29.8 % ≥ 2.5 m/s**. Person bbox height near/far 3.63, median speed ratio 2.05. The single global m/px roughly doubles near-pavement speeds, so most "joggers" are near-pavement walkers; the near pavement's second peak may still hold real joggers. Recommendation: show joggers as "fast-moving person tracks" or hide the split until E3.2. |
 | **E0.8** (R11) | What is the colour chart made of? | Re-run the stats colour loop, tagging each car track's colour source (DVSA / CNN / HSV / unknown). Cross-tab source × colour. | **2026-10-04: render HSV-sourced tracks as "unknown" without measuring.** Was: HSV share > 10 %, or black/blue over-represented in HSV rows → do so. **Shipped 2026-10-04, in the mix chart and the fastest-by-colour board.** Measured over 93,232 car tracks: DVSA 35.9 %, CNN 57.4 %, HSV 5.5 %, unknown 1.2 %. The HSV share was well under R11's estimate, but 78 % of its tracks were black or blue vs ~39 % from DVSA or the CNN, so the bias clause held. "Unknown" rose from 1.2 % to 6.7 % of journeys; black 20.5 → 18.1 %, blue 19.1 → 17.1 %. |
-| **E0.9** (R3; added 2026-10-04) | How often does a DVSA label describe a different real car? | On sessions recorded after `uk_crops_0929_576` was built (no head trained on them), compare each labelled track's DVSA `primary_colour` group with the colour CNN's per-track read, split by read support (agreeing snaps) and confidence group. The CNN crops the car whose plate was read, so a misread that lands on another real car shows up as a mismatch. Add the not-on-register rate among plates old enough to have an MOT (`.claude/ocr_conf_calibration.py`). | Single-read labels mismatching well above multi-read labels (and above the CNN's own fresh-car error, ~17 % exact) → the excess estimates the misread-to-real-car rate; adopt the E1.4 filter before the next retrain. |
+| **E0.9** (R3; added 2026-10-04) | How often does a DVSA label describe a different real car? | On sessions recorded after `uk_crops_0929_576` was built (no head trained on them), compare each labelled track's DVSA `primary_colour` group with the colour CNN's per-track read, split by read support (agreeing snaps) and confidence group. The CNN crops the car whose plate was read, so a misread that lands on another real car shows up as a mismatch. Add the not-on-register rate among plates old enough to have an MOT (`.claude/ocr_conf_calibration.py`). | Single-read labels mismatching well above multi-read labels (and above the CNN's own fresh-car error, ~17 % exact) → the excess estimates the misread-to-real-car rate; adopt the E1.4 filter before the next retrain. **Done 2026-10-04: adopt the filter; cross-track support is the signal.** Sessions `20260924_104939` + `20260930_211033`, 2,373 UK-shaped best reads. Colour-group mismatch by cross-track support (tracks anywhere whose best read is the plate): **1 track 27.3 % (18/66)**, 2-4 tracks 11.9 % (30/252), ≥ 5 tracks 2.8 % (43/1,528); floor (≥ 5 tracks, a snap agrees, conf ≥ 0.95) 1.1 %. A misread landing on a random car keeps the same colour group about a third of the time, so roughly **~40 % of single-track labels and ~15 % of 2-4-track labels describe another car**. By snap agreement: agrees 2.7 %, no snap agrees 8.2 %. By min-char confidence: ≥ 0.95 3.7 %, 0.90-0.95 4.4 %, < 0.90 7.2 %, a much weaker separator. Not on register: 1 track 33.9 %, 2-4 9.2 %, ≥ 5 1.6 %; agrees 1.5 % vs not 8.3 %. (The in-corpus split is circular for not-on-register, since corpus cars are on the register by construction.) |
 
 ### Phase 1 — build the instruments (week 1)
 
@@ -637,7 +700,8 @@ highest-confidence read (now meaningful), not "most-supported string".
   and a decimated per-track trajectory (`[t, x1, y1, x2, y2]` every ~3rd frame,
   ~2 KB/track). Then fit the exposure offset per session by aligning
   fullframe-detected 4K car boxes to the interpolated trajectory.
-  **Code written 2026-10-04:** `TrackRecord.main_snap_fire_unix` /
+  **Live on the Orin since 2026-10-04 09:52** (`session_20261004_095219`
+  onwards): `TrackRecord.main_snap_fire_unix` /
   `main_snap_done_unix` (parallel to `main_snaps`; fire decision and
   JPEG-on-disk, wall clock), and a `{session}_trajectories.jsonl` sidecar
   rather than a `TrackRecord` field, so `data.json` doesn't grow. Each line
