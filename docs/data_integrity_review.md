@@ -9,8 +9,10 @@ capture → ALPR → DVSA labels → training corpus → evaluation → analytic
 Every finding below cites the code that makes the assumption. Each one is marked
 **confirmed** (verified from the code, and reproduced where possible) or
 **hypothesis** (plausible, unmeasured; an experiment is specified). No experiment
-has been run on real session data yet: this repo checkout has no `output/`, so
-every experiment is written to run on the dev box.
+had been run on real session data when this was written: this repo checkout has
+no `output/`, so every experiment is written to run on the dev box. What has run
+since, and how it changed the plan, is in [§4's 2026-10-04
+revision](#revision-2026-10-04).
 
 ## Summary
 
@@ -453,6 +455,80 @@ build one small human-verified ground-truth set that several experiments
 share.** Each experiment states the question, the method, the cost and a
 decision rule.
 
+### Revision (2026-10-04)
+
+Between 2026-09-28 and 2026-10-04 (CLAUDE.md handoff steps 1-5), every
+session was re-scored with the min-character confidence (E1.1). The plate gate
+was calibrated label-free to 0.90 and applied. The corpus was rebuilt on the
+post-gate labels (`uk_crops_0929_576`), and all three heads were retrained and
+promoted on fresh-session head-to-heads. What that taught:
+
+1. **Fixing a measurement beat every tuning change.** The stale-hint fix, the
+   full-frame crops, the clean crops (+22.5 pp make@1) and the clean labels
+   (+4 to +7 pp on the fresh week) were all instrument fixes. The ordering
+   principle above stands.
+2. **The DVSA register checks OCR, not attribution.** It calibrated the gate
+   without hand labels. But it can't see an oncoming car's plate pinned on the
+   tracked car, because that plate is real. Nor can it see a misread that lands
+   on another real car (R3). So the 2.0 % not-on-register rate at 0.90 is a
+   lower bound on label error. E1.2 is still the only way to measure
+   attribution and to turn that bound into a rate.
+3. **Snap agreement beats confidence.** Reads at 0.85-0.90 that another snap
+   agrees with are 1.0 % not-on-register; reads at 0.90-0.95 that no snap
+   agrees with are 7.0 % (`.claude/ocr_calibration.json`, `agreement_rescue`).
+   This is E1.4's support signal, and it makes E2.4's consensus question
+   largely the same question.
+4. **About 88 % of cars are regulars.** A week yields only ~100 cars that are
+   in no training corpus, so heads are now judged with `makemodel-compare
+   --eval-session` (fresh cars) plus `--include-trained-cars`. R7 now affects
+   that fresh set: a misspelt read of a regular can pass as a "fresh" car.
+5. **The per-car crop cap doesn't help** (tested 2026-10-01).
+6. **The IR half of the night fix conflicts with the runtime.** The runtime
+   skips inference whenever frames turn monochrome (`device/runtime.py:699`,
+   `device/ir_detector.py`). A supplementary IR illuminator only helps once
+   the camera drops its IR-cut filter, which makes the frames mono, so the
+   tracker would record nothing.
+
+**What changes.**
+
+- *Ship without measuring:* E0.2, because the `track_ids` filter is right by
+  construction and step 4 already cleared 12,672 stale labels. E0.8, because
+  R11 already puts the HSV share near 22 %, past the 10 % rule.
+- *Done or retired:* E0.1 (superseded); E2.4 (folded into E1.4); E2.5's
+  corpus rebuild and `--max-per-car` run (done; the cap stays as an option).
+- *Pulled forward:*
+  - the DST repeat-hour fix from E3.5, with E0.6 (BST ends 2026-10-25);
+  - E1.5(c), because it only produces data for sessions recorded after it
+    ships, and the Orin deletes 4K snaps after 7 days;
+  - a label-free first cut of E1.4: the combined agreement + confidence gate;
+  - E2.6(a), because all three heads were promoted on plated cars but `/stats`
+    shows them for unplated ones.
+- *Reordered:* E0.5 and E1.3 run before E1.2, so E1.2's sample can
+  over-represent the reads they flag.
+- *Retargeted:* E0.4 now reads `uk_crops_0929_576` and also checks the
+  fresh-session evaluation set.
+- *Added:* E0.9 (R3 rate from colour agreement) and E2.8 (night capture,
+  shutter-only unless the runtime changes).
+
+**Revised order.**
+
+1. Small code fixes: E0.2's `/stats` filter, E0.8's HSV-as-unknown, the DST
+   repeat hour (E3.5), and the E0.6 check.
+2. E1.5(c) runtime persistence: a code-only Orin deploy, in the
+   schema-additive order.
+3. Phase 0 script: E0.3, E0.4, E0.5, E0.7, E0.9.
+4. E1.3 plate colour, and the combined gate (E1.4's first cut).
+5. E1.2 audit set, stratified to over-represent flagged reads; then calibrate
+   E1.3 and the combined gate against it.
+6. E2.6 (plate-blind first), E2.1, E2.3, E2.7. E1.5(a) and (b) can run at any
+   point.
+7. E3.1 hand count, then E2.8 at dusk.
+8. Retrain (E2.5) once the E1.4 filter and cluster-aware exclusion exist and
+   fresh cars have built up.
+
+The rest of Phase 3 (E3.2-E3.4; E3.4 waits on E0.3's coverage map) and Phase 4
+follow unchanged.
+
 ### Phase 0 — read-only checks on existing outputs (dev box, ~1 day, no GPU)
 
 These confirm or kill several findings in minutes. They only read `output/` and
@@ -461,18 +537,20 @@ These confirm or kill several findings in minutes. They only read `output/` and
 | ID | Question | Method | Decision rule |
 | --- | --- | --- | --- |
 | **E0.1** (R1) | Is `ocr_conf` saturated in practice? | **Superseded:** `alpr-rescore` prints the share of reads at ≥ 0.9 before and after, plus the tracks that pass the DVSA gate before and after. | Use that output to size the impact on DVSA labels; see E1.1. |
-| **E0.2** (R13) | How much of the `/stats` make chart is orphan or stale plates? | Per session: labels with empty `track_ids`, and labels whose plate is no read in the current `_alpr_by_track.json`. Recompute the make chart with and without them. | Any top-12 make shifting > 2 pp → ship the `track_ids` filter (a one-line fix). |
+| **E0.2** (R13) | How much of the `/stats` make chart is orphan or stale plates? | Per session: labels with empty `track_ids`, and labels whose plate is no read in the current `_alpr_by_track.json`. Recompute the make chart with and without them. | **2026-10-04: ship the `track_ids` filter without measuring** (it is right by construction). Was: any top-12 make shifting > 2 pp → ship it. |
 | **E0.3** (R8) | How much time is actually observed? | Per session: start/end, IR periods (`_meta.json`), gaps > 120 s between consecutive track starts during 07:00–19:00 (outage proxy), `frames_processed / pipe_fps` vs wall duration. Build an hour-by-hour coverage map across all dates. | Any date or weekday-hour cell < 95 % covered → build E3.4 before quoting daily means or heatmaps. IR periods non-empty → count them as unobserved. |
-| **E0.4** (R3, R7) | How much of the corpus is single-read or split across OCR variants? | In the `uk_crops_0924_576` manifest: cluster plates with the `vehicles` fuzzy rule (ratio ≥ 85, same length). Count clusters spanning train and val, and their share of val crops. Count per-plate read support from `_alpr.json`. | Leakage > 2 % of val tracks → re-run `makemodel-compare` with cluster-aware exclusion (cheap). Single-read plates > 10 % of corpus cars → prioritise E1.4. |
+| **E0.4** (R3, R7) | How much of the corpus is single-read or split across OCR variants? | In the production corpus manifest (`uk_crops_0929_576` since 2026-10-01; was `uk_crops_0924_576`): cluster plates with the `vehicles` fuzzy rule (ratio ≥ 85, same length). Count clusters spanning train and val, and their share of val crops. Count per-plate read support from `_alpr.json`. Also count the "fresh" cars in a `makemodel-compare --eval-session` run that fuzzy-match a corpus plate (added 2026-10-04). | Leakage > 2 % of val tracks → re-run `makemodel-compare` with cluster-aware exclusion (cheap). Single-read plates > 10 % of corpus cars → prioritise E1.4. |
 | **E0.5** (R2, R9) | Do plates collide across simultaneous tracks? | Same canonical plate (fuzzy ≥ 85) as best read on ≥ 2 tracks whose [start, end] windows are within 10 s. Split into opposite direction (misattribution) and same direction, adjacent (BotSORT split). | Opposite-direction collisions > 1 % of read tracks → R2 is real, prioritise E1.2/E1.3. The same-direction rate is the first car split-rate estimate. |
-| **E0.6** (R15) | Is the time base sane? | `timedatectl` on the Orin (NTP synced?). Scan `data.json` for `duration_visible < 0`, `time_start` non-monotone in `events.jsonl`, and session label vs first-track time. | Any anomaly → switch durations to the monotonic clock and log sync state in meta. |
+| **E0.6** (R15) | Is the time base sane? | `timedatectl` on the Orin (NTP synced?). Scan `data.json` for `duration_visible < 0`, `time_start` non-monotone in `events.jsonl`, and session label vs first-track time. | Any anomaly → switch durations to the monotonic clock and log sync state in meta. Run it with E3.5's DST fix, before BST ends on 2026-10-25. |
 | **E0.7** (R10) | Is the jogger mode just the near pavement? | Split person speeds (≥ 6 detections) by pavement, using the median y of entry and exit points (post-07-19 sessions) or a y threshold on the hq tile. Plot per-pavement histograms. | Each pavement unimodal, modes differing by ~the perspective ratio → the jogger class is an artifact; suspend the jogger/dog-jog stats until E3.2. |
-| **E0.8** (R11) | What is the colour chart made of? | Re-run the stats colour loop, tagging each car track's colour source (DVSA / CNN / HSV / unknown). Cross-tab source × colour. | HSV share > 10 %, or black/blue over-represented in HSV rows → render HSV-sourced tracks as "unknown". |
+| **E0.8** (R11) | What is the colour chart made of? | Re-run the stats colour loop, tagging each car track's colour source (DVSA / CNN / HSV / unknown). Cross-tab source × colour. | **2026-10-04: render HSV-sourced tracks as "unknown" without measuring** (R11 already puts the HSV share near 22 %). Was: HSV share > 10 %, or black/blue over-represented in HSV rows → do so. |
+| **E0.9** (R3; added 2026-10-04) | How often does a DVSA label describe a different real car? | On sessions recorded after `uk_crops_0929_576` was built (no head trained on them), compare each labelled track's DVSA `primary_colour` group with the colour CNN's per-track read, split by read support (agreeing snaps) and confidence group. The CNN crops the car whose plate was read, so a misread that lands on another real car shows up as a mismatch. Add the not-on-register rate among plates old enough to have an MOT (`.claude/ocr_conf_calibration.py`). | Single-read labels mismatching well above multi-read labels (and above the CNN's own fresh-car error, ~17 % exact) → the excess estimates the misread-to-real-car rate; adopt the E1.4 filter before the next retrain. |
 
 ### Phase 1 — build the instruments (week 1)
 
-**E1.1 — Fix the OCR confidence (R1). Done 2026-09-28**, except the
-threshold calibration, which waits on E1.2. What shipped differs from the
+**E1.1 — Fix the OCR confidence (R1). Done 2026-09-28.** The threshold was
+calibrated label-free the same day (0.90, from the DVSA not-on-register rate by
+confidence group); E1.2 confirms or moves it. What shipped differs from the
 plan below in one respect: the per-track best read is still the
 highest-confidence read (now meaningful), not "most-supported string".
 
@@ -521,6 +599,11 @@ highest-confidence read (now meaningful), not "most-supported string".
   - Use the check as a standing per-session health metric in the panel.
 
 **E1.4 — DVSA label-quality signals (R3).**
+
+- **First cut now, label-free (2026-10-04):** a plate gate that combines snap
+  agreement with min-character confidence, since agreement separates the
+  not-on-register rate better than confidence alone (see the revision above).
+  Build it into the shared gate, then validate it on E1.2.
 
 - Compute, per labelled plate:
   - read support (E0.4);
@@ -580,11 +663,19 @@ highest-confidence read (now meaningful), not "most-supported string".
 - *Decision:* if verified reads rise and the static filter still suppresses
   FD61PVX-style beacons, drop the mask from the enrich playbook.
 
-**E2.4 — Consensus re-test (R5).** Re-run `measure_consensus.py` on fullframe
+**E2.4 — Consensus re-test (R5). Folded into E1.4's combined gate
+(2026-10-04):** snap agreement is consensus at the string level. Re-run `measure_consensus.py` on fullframe
 sessions with E1.1 confidences against E1.2 truth. The Step 13b negative was
 measured on crops of different physical plates, with all weights 1.0.
 
 **E2.5 — Rebuild and retrain on clean labels and identities (R3, R7).**
+
+*Partly done 2026-10-01/03:* the corpus was rebuilt on post-gate labels
+(`uk_crops_0929_576`) and all three heads retrained and promoted; the
+`--max-per-car` run didn't help. Still to do: the E1.4 filter and
+cluster-aware splits and exclusion. Judge with `makemodel-compare
+--eval-session` (fresh cars) plus `--include-trained-cars`, since val-split
+head-to-heads shrink to ~67 cars once corpora share most of their cars.
 
 - Rebuild the corpus with:
   - the E1.4 label filter;
@@ -616,6 +707,24 @@ measured on crops of different physical plates, with all weights 1.0.
 **E2.7 — Colour-head augmentation A/B (R11).** Retrain colour with brightness
 jitter off (keep contrast or none). Compare white/silver/grey confusion with
 `makemodel-compare --target colour`.
+
+**E2.8 — Night capture A/B (R5, R9; added 2026-10-04).** The 2026-08-12
+analysis found night plates detected but smeared by motion (CLAUDE.md
+Next-steps item 5).
+
+- Test a night-scheduled faster shutter alone, on alternating dusks (19-21 h).
+  Score with verified reads (E1.3 plus the combined gate): canonical-shape
+  night rates are probably overstated (R5).
+- Don't add an IR illuminator without a runtime change. It only helps once the
+  camera switches to IR mode, and the runtime skips inference on monochrome
+  frames (`device/runtime.py:699`), so the tracker would go blind. Either make
+  the IR skip configurable (after checking YOLO recall on IR frames) or leave
+  IR out.
+- Run E3.1's dusk and dark hand counts first: "night ≈ 15 % of traffic" comes
+  from the detector that struggles at night (R9), and it bounds what this can
+  win.
+- *Decision:* keep the night schedule if verified dusk reads rise and day reads
+  don't fall.
 
 ### Phase 3 — analytics semantics (weeks 3–4)
 
@@ -649,7 +758,9 @@ walker/jogger boundary and backfill `_people.json`.
 - Normalise per-day, heatmap and schedule-miner rates by observed hours, and
   grey out uncovered cells.
 
-**E3.5 — Hygiene (R13–R15).**
+**E3.5 — Hygiene (R13–R15).** The `/stats` make-chart filter and the DST
+repeat hour are pulled forward to the first step of the revised order
+(2026-10-04); `dvsa-apply` has cleared before writing since PR #111.
 
 - The `/stats` make chart counts only plates with current `track_ids`.
 - Key the vehicle-box cache by (name, size, mtime).
@@ -682,7 +793,7 @@ walker/jogger boundary and backfill `_people.json`.
 | Quote | Replace with |
 | --- | --- |
 | "R→L 69.7 % / L→R 66.8 % read rate" | "canonical-shape read rate; correctness unverified (see R2)" |
-| "`ocr_conf ≥ 0.9`" on a session flagged **Plates v2** | "UK-shaped" (the old confidence gate was inert, R1). After re-scoring: "every character ≥ 0.9, threshold uncalibrated" |
+| "`ocr_conf ≥ 0.9`" on a session flagged **Plates v2** | "UK-shaped" (the old confidence gate was inert, R1). After re-scoring: "every character ≥ 0.9; threshold calibrated on the DVSA register, which misses misreads that land on a real car" |
 | "make@1 60.4 %" | "60.4 % per track on plated held-out cars; unplated accuracy unmeasured (R6); labels unaudited (R3)" |
 | daily means / heatmap | "raw counts; observation time not normalised (R8)" |
 | joggers | "fast-moving person tracks; may be a near-pavement artifact (R10)" |

@@ -42,11 +42,11 @@ and `_dvsa_labels.json` records the `conf_threshold` it used. Rebuild the
 make/colour/body corpus afterwards so training labels drop the misreads.
 
 **⮕ NEXT SESSION — start here (handoff written 2026-09-28; steps 1-5 done
-by 2026-10-04, so start at step 6).** PR #110 (the
+by 2026-10-04, so start at step 6, revised 2026-10-04).** PR #110 (the
 review doc, the R1 OCR-confidence fix + `alpr-rescore` + panel **rescore**
 playbook, `.claude/ocr_conf_calibration.py`, the shared plate gate
-`configs/alpr.json`) is **merged**. Nothing here touches the Orin; it is all
-dev-box analysis code. In order:
+`configs/alpr.json`) is **merged**. Steps 1-5 were all dev-box analysis code;
+step 6's E1.5(c) is the one Orin deploy. In order:
 
 1. **Land the branch.** Done (PR #110 merged; it changed no dependencies, so
    no `uv sync` was needed).
@@ -148,17 +148,46 @@ dev-box analysis code. In order:
    session re-run with both heads via the panel (2026-10-03, 96 jobs, then
    a showcase refresh). **Step 5 is complete** — all three heads now train
    on the label-clean corpus.
-6. **Then the review's plan** (`docs/data_integrity_review.md` §4):
-   - Phase 0 read-only checks (E0.2–E0.8), written as one script.
-   - E1.2 audit set (extend `.claude/triage_rl.py`) and the E1.3
-     plate-colour/direction check.
-   - E1.5 sub-stream ↔ 4K registration and timing.
+6. **Then the review's plan, revised 2026-10-04**
+   (`docs/data_integrity_review.md` §4, "Revision (2026-10-04)" has the
+   reasoning). In order:
+   1. **Small code fixes.** The `/stats` make chart counts only plates with
+      current `track_ids` (E0.2; `web/stats.py:559` still counts every plate
+      ever labelled). HSV-sourced colours show as "unknown" (E0.8). The
+      repeated hour at the clock change stops double-counting (part of E3.5;
+      **BST ends 2026-10-25**). Run the E0.6 time-base check.
+   2. **E1.5(c): persist per-snap fire/done timestamps and a thinned
+      per-track trajectory.** A code-only Orin deploy, in the
+      [schema-additive order](#schema-additive-config-changes). It only helps
+      sessions recorded after it ships, and the Orin deletes 4K snaps after
+      7 days, so land it early.
+   3. **Phase 0 script:** E0.3, E0.4 (now on `uk_crops_0929_576` and the
+      fresh-session eval set), E0.5, E0.7, and the new E0.9 (DVSA colour vs
+      the colour CNN on post-corpus sessions, by read support).
+   4. **E1.3 plate-colour/direction check, and the combined gate** (snap
+      agreement + confidence: the step-3 follow-up, and E1.4's first cut).
+   5. **E1.2 audit set** (extend `.claude/triage_rl.py`), stratified to
+      over-represent what E0.5 and E1.3 flag; then calibrate E1.3 and the
+      combined gate against it. It is the only check on whether a plate
+      belongs to the tracked car: the DVSA register can't see that.
+   6. **E2.6** (plate-blind test first: the heads were promoted on plated
+      cars, but `/stats` uses them on unplated ones), E2.1 capture-band
+      curves, E2.3 ghost mask on/off, E2.7 colour augmentation. E1.5(a)/(b)
+      can run at any point.
+   7. **E3.1 hand count, then the night A/B (E2.8), shutter-only.** The
+      runtime skips inference on monochrome frames, so an IR illuminator
+      would blind the tracker unless that changes.
+   8. **Retrain (E2.5)** once the E1.4 filter and cluster-aware exclusion
+      exist and fresh cars have built up.
+
+   Also outstanding: upload the production `uk_make_0929_b6` to a new GitHub
+   Release (see [Dev-box disaster recovery](#dev-box-disaster-recovery)).
 
 **Cloud sessions have no `output/`**, so they can only do code work there:
+- step 6.1's fixes;
+- E1.5(c)'s runtime change (the Orin deploy itself runs from the dev box);
 - the Phase 0 script;
-- the E1.3 plate-colour script;
-- the remaining R13 quick fix: the `/stats` make chart should count only
-  plates with current `track_ids`.
+- the E1.3 plate-colour script and the combined gate.
 
 Anything that reads session data runs on the dev box, and the operator
 pastes the output back.
@@ -336,7 +365,10 @@ no person-specific snap gate needed. Both ancestor repos archived
    full dark is harder + lower volume; night is ~15 % of traffic so net gain is
    bounded. Next: night-shutter + IR-fill A/B on a dusk soak (Reolink day/night
    ISP schedule; `SetIsp` needs admin — `cv` acct is read-only — helpers
-   `.claude/setexp*.py`).
+   `.claude/setexp*.py`). **⮕ 2026-10-04: shutter-only for now.** An IR
+   illuminator only helps in the camera's IR mode, whose monochrome frames
+   make the runtime skip inference (`device/runtime.py:699`), so the tracker
+   would go blind. See review E2.8.
 6. **JP7:** wheel gate re-checked 2026-07-07 — still no jp7 index.
    Re-run `scripts/check_jp7_wheel.ps1` before any flash; stay on JP6.
 7. **Parked by choice — people P0 (retention policy).** Deliberately
@@ -1260,7 +1292,7 @@ imagery are deliberately kept out):
 | Operator-traced **scene geometry** (`.claude/{ghost_mask,snap_gate,triggers_proposal,road_polygon_user,road_zones,road_polygon,reolink_isp_current}.json` + `sketch_me_done.png`) | **In repo** (gitignore negations)                                    | Irreplaceable without the physical camera + operator re-sketch + weeks of band re-tuning |
 | **Analysis / measurement scripts** (`.claude/*.py` — verdict/band/eval/bakeoff/coverage)                                                                                          | **In repo**                                                          | Re-derive methodology from scratch                                                       |
 | **Small inference models** (`bodytype_b0.pt` 16 MB, ALPR `license_plate_detector.pt` 6 MB) + all `*.meta.json` sidecars                                                           | **In repo**                                                          | 12 h train / hard to reacquire                                                           |
-| **Production make model** `makemodel_b0.pt` (164 MB, B6)                                                                                                                          | **GitHub Release `models-2026-07-09`** holds the OLD 0707 B6; the promoted clean-crop `uk_make_0924_b6` (2026-09-25) is **not yet uploaded** — add a new release | ~1.5 days train on a months-built corpus                                                 |
+| **Production make model** `makemodel_b0.pt` (164 MB, B6)                                                                                                                          | **GitHub Release `models-2026-07-09`** holds the OLD 0707 B6; production since 2026-10-01 is `uk_make_0929_b6`, **not yet uploaded** — add a new release | ~1.5 days train on a months-built corpus                                                 |
 
 Still **NOT** in GitHub — keep a private/external backup (too big, or
 PII, or secret):
