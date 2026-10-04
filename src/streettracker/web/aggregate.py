@@ -194,14 +194,17 @@ def resolve_image_urls(
     *,
     prefix: str = "vehicle",
     best_image: str | None = None,
+    prefer_hq: bool = False,
 ) -> tuple[str | None, str | None, bool]:
     """Existence-checked ``(thumb, full, thumb_small)`` for one track's snaps.
 
-    Sessions pulled with ``--only-main`` ship the 4K ``_main_N.jpg`` snaps but
-    not the ``_hq``/tile crops, so we stat each candidate and only reference
-    files that are actually on disk: ``thumb`` is the smallest present
-    (tile -> hq -> the 4K ``best_image``), ``full`` the largest. ``thumb_small``
-    is True when ``thumb`` is a real small crop (not a downscaled 4K snap).
+    Sessions pulled with ``--only-main`` before 2026-10-04 ship the 4K
+    ``_main_N.jpg`` snaps but not the ``_hq``/tile crops, so we stat each
+    candidate and only reference files that are actually on disk: ``thumb``
+    is the smallest present (tile -> hq -> the 4K ``best_image``), ``full``
+    the largest. ``thumb_small`` is True when ``thumb`` is a real small crop
+    (not a downscaled 4K snap). ``prefer_hq`` puts the HQ crop (the tracker's
+    largest, sharpest view of the car) ahead of the tile (its midpoint view).
     Shared with :mod:`streettracker.web.stats` (fastest-car thumbnails)."""
     base = output_root / session
 
@@ -211,7 +214,7 @@ def resolve_image_urls(
     tile = _url(f"{prefix}_{track_id}.jpg")
     hq = _url(f"{prefix}_{track_id}_hq.jpg")
     best = _url(best_image)
-    small = tile or hq
+    small = (hq or tile) if prefer_hq else (tile or hq)
     return small or best, best or hq or tile, small is not None
 
 

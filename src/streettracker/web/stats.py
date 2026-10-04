@@ -901,10 +901,16 @@ def _build_fastest(
 ) -> list[dict[str, Any]]:
     """Top-N fastest tracks, with existence-checked thumbnails and a plate link
     when the track resolved to a canonical plate that passes ``gate`` (the
-    shared plate gate). The gate decides only the plate: the picture is
-    the best read's snap whatever its confidence, else the track's closest
-    4K snap on disk (fast cars are the hardest plates to read, and sessions
-    pulled ``--only-main`` have no tile to fall back on)."""
+    shared plate gate). The gate decides only the plate.
+
+    The thumbnail is the tracker's own crop of the car (the HQ crop, else the
+    tile): a fast car has often left the frame, or shrunk to a speck, by the
+    time its 4K snap lands ~0.7 s after the fire, and a box picked from the
+    4K frame can be the wrong vehicle. Without a crop on disk (an
+    ``--only-main`` session pulled before 2026-10-04 and not backfilled with
+    ``pull --crops-only``) it falls back to the best read's snap whatever its
+    confidence, else the track's closest 4K snap on disk. ``full`` is the 4K
+    snap."""
     top = sorted(fastest_raw, key=lambda x: x[0], reverse=True)[:N_FASTEST]
     if not top:
         return []
@@ -938,7 +944,7 @@ def _build_fastest(
         prefix = r.get("asset_prefix") or "vehicle"
         snap = _track_snap(output_root / sess, prefix, tid, r, preferred=best.get("image"))
         thumb, full, _small = resolve_image_urls(
-            output_root, sess, tid, prefix=prefix, best_image=snap
+            output_root, sess, tid, prefix=prefix, best_image=snap, prefer_hq=True
         )
         dt = datetime.fromisoformat(r["time_start"])
         out.append(

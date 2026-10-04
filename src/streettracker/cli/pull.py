@@ -20,6 +20,8 @@ Idempotent: re-running over an existing local copy overwrites with the
 latest remote state (scp merges into the existing session dir). With
 ``--skip-existing`` only image files missing locally are fetched (snaps
 are write-once), so re-pulling a grown or still-live session is cheap.
+``--crops-only`` fetches just the missing vehicle HQ crops and never
+touches the metadata, so it can backfill an already-enriched session.
 """
 
 from __future__ import annotations
@@ -44,6 +46,11 @@ DEFAULT_LOCAL_PARENT = "./output"
 # 8 -> x1.70. Four is the knee -- doubling again buys ~5 % for twice the
 # sshd sessions on a device that is also running the live tracker.
 DEFAULT_JOBS = 4
+# The tracker's sharpest, largest sub-stream crop of each vehicle track
+# (~20 KB). The device never prunes these (only the 4K ``*_main_*.jpg``
+# snaps age out), and they are the one picture guaranteed to show the
+# tracked car: a fast car has often left the frame before its 4K snap lands.
+VEHICLE_CROP_PATTERN = "vehicle_*_hq.jpg"
 
 
 @dataclass(slots=True)
@@ -54,7 +61,8 @@ class RemoteInventory:
     files: int = 0
     main_snaps: int = 0  # all *_main_*.jpg (vehicle + person)
     vehicle_main_snaps: int = 0  # vehicle_*_main_*.jpg only (person = main - vehicle)
-    main_bytes: int = 0  # summed size of *_main_*.jpg (the --only-main payload)
+    main_bytes: int = 0  # summed size of *_main_*.jpg
+    vehicle_hq_bytes: int = 0  # summed size of vehicle_*_hq.jpg
     hq_crops: int = 0
     jsonl: int = 0
 
@@ -109,6 +117,8 @@ def remote_inventory(host: str, user: str, key: str, remote_path: str) -> Remote
         "find . -maxdepth 1 -name 'vehicle_*_main_*.jpg' | wc -l | awk '{print \"VEHMAIN \" $1}' ; "
         "find . -maxdepth 1 -name '*_main_*.jpg' -printf '%s\\n' 2>/dev/null"
         " | awk '{s+=$1} END{print \"MAINBYTES \" s+0}' ; "
+        f"find . -maxdepth 1 -name '{VEHICLE_CROP_PATTERN}' -printf '%s\\n' 2>/dev/null"
+        " | awk '{s+=$1} END{print \"VHQBYTES \" s+0}' ; "
         "find . -maxdepth 1 -name '*_hq.jpg'     | wc -l | awk '{print \"HQ \" $1}' ; "
         "find . -maxdepth 1 -name '*.jsonl'      | wc -l | awk '{print \"JSONL \" $1}'"
     )
@@ -120,6 +130,7 @@ def remote_inventory(host: str, user: str, key: str, remote_path: str) -> Remote
         "MAIN": "main_snaps",
         "VEHMAIN": "vehicle_main_snaps",
         "MAINBYTES": "main_bytes",
+        "VHQBYTES": "vehicle_hq_bytes",
         "HQ": "hq_crops",
         "JSONL": "jsonl",
     }
@@ -151,10 +162,10 @@ def _scp_commands(
 ) -> list[list[str]]:
     """Build the list of scp invocations to execute.
 
-    With ``only_main``, we issue per-pattern scps for just the main snaps
-    + JSON metadata (skipping thumbs / HQ / HTML). Per-pattern scp keeps
-    the include list simple without needing rsync (Windows OpenSSH does
-    not bundle it).
+    With ``only_main``, we issue per-pattern scps for just the main snaps,
+    the vehicle HQ crops and the JSON metadata (skipping tiles, person HQ
+    crops and most HTML). Per-pattern scp keeps the include list simple
+    without needing rsync (Windows OpenSSH does not bundle it).
     """
     if not only_main:
         remote_target = f"{user}@{host}:{remote_path}"
@@ -165,6 +176,7 @@ def _scp_commands(
     local_session.mkdir(parents=True, exist_ok=True)
     patterns = (
         "*_main_*.jpg",
+        VEHICLE_CROP_PATTERN,
         "*.json",
         "*.jsonl",
         "*_summary.html",
@@ -203,11 +215,12 @@ def scp_pull(
 
 
 def _immutable_image_patterns(only_main: bool) -> tuple[str, ...]:
-    """Globs whose files are write-once -- 4K snaps are never rewritten
-    once saved, so a remote-minus-local *name* diff is exact and needs no
-    checksum. ``--only-main`` fetches just the main snaps; a full pull
-    treats every ``*.jpg`` (tile / HQ / main) as immutable."""
-    return ("*_main_*.jpg",) if only_main else ("*.jpg",)
+    """Globs whose files are write-once -- 4K snaps and crops are never
+    rewritten once saved, so a remote-minus-local *name* diff is exact and
+    needs no checksum. ``--only-main`` fetches the main snaps and the
+    vehicle HQ crops; a full pull treats every ``*.jpg`` (tile / HQ / main)
+    as immutable."""
+    return ("*_main_*.jpg", VEHICLE_CROP_PATTERN) if only_main else ("*.jpg",)
 
 
 def _remote_entries(
@@ -469,11 +482,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Local parent directory to receive the session (session subdir is created inside)",
     )
     parser.add_argument("--session", default=None, help="Specific session label (default: latest)")
-    parser.add_argument(
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument(
         "--only-main",
         action="store_true",
-        help="Pull only main-stream snaps + JSON metadata "
-        "(skip thumbnails / HQ crops / summary HTML)",
+        help="Pull only main-stream snaps + vehicle HQ crops + JSON metadata "
+        "(skip tiles / person HQ crops / summary HTML)",
+    )
+    scope.add_argument(
+        "--crops-only",
+        action="store_true",
+        help=f"Fetch only the vehicle HQ crops ({VEHICLE_CROP_PATTERN}) missing "
+        "locally: no snaps, no metadata, so it is safe on an enriched session "
+        "(a metadata re-pull would overwrite its dvsa-apply'd data.json). "
+        "Backfills sessions pulled --only-main before the crops were included",
     )
     parser.add_argument(
         "--skip-existing",
@@ -521,17 +543,40 @@ def main(argv: list[str] | None = None) -> int:
         f"({inv.main_snaps} main snaps, {inv.hq_crops} HQ crops, {inv.jsonl} jsonl)"
     )
     # Machine-readable transfer total for the control panel's progress watcher:
-    # the bytes that *this* pull will copy (just the main snaps under
-    # --only-main, the whole dir otherwise), so the ETA tracks reality.
-    pull_total = inv.main_bytes if (args.only_main and inv.main_bytes) else inv.bytes
+    # the bytes that *this* pull will copy (the main snaps + vehicle crops
+    # under --only-main, the crops alone under --crops-only, the whole dir
+    # otherwise), so the ETA tracks reality.
+    if args.crops_only:
+        pull_total = inv.vehicle_hq_bytes
+    elif args.only_main and inv.main_bytes:
+        pull_total = inv.main_bytes + inv.vehicle_hq_bytes
+    else:
+        pull_total = inv.bytes
     print(f"[pull] size_bytes: {pull_total}", flush=True)
-    if args.only_main:
-        print("[pull] mode:    --only-main (skipping thumbs + HQ + HTML)")
+    if args.crops_only:
+        print("[pull] mode:    --crops-only (vehicle HQ crops; metadata untouched)")
+    elif args.only_main:
+        print("[pull] mode:    --only-main (skipping tiles + person HQ + HTML)")
 
-    if args.skip_existing:
-        if args.jobs < 1:
-            print("[pull] --jobs must be >= 1", file=sys.stderr)
-            return 1
+    if (args.skip_existing or args.crops_only) and args.jobs < 1:
+        print("[pull] --jobs must be >= 1", file=sys.stderr)
+        return 1
+    if args.crops_only:
+        local_session = local_parent / session
+        local_session.mkdir(parents=True, exist_ok=True)
+        n_new = sftp_get_missing(
+            args.host,
+            args.user,
+            key,
+            remote_path,
+            local_session,
+            VEHICLE_CROP_PATTERN,
+            dry_run=args.dry_run,
+            jobs=args.jobs,
+        )
+        if not args.dry_run:
+            print(f"[pull] skip-existing: {n_new} new image(s) fetched")
+    elif args.skip_existing:
         skip_existing_pull(
             args.host,
             args.user,
