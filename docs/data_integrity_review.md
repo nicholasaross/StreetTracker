@@ -384,7 +384,9 @@ directions use lanes at different depths. A homography helper already exists
 else the HSV `color` field. About 22 % of passes have a blank CNN colour, so at
 least a fifth of unplated tracks are coloured by the HSV voter. That voter is
 documented at ~40 % grouped accuracy and drifts light cars to black and blue, so
-the chart is biased that way.
+the chart is biased that way. *(Measured 2026-10-04, E0.8: with the
+2026-10-03 colour head, HSV coloured only 5.5 % of car tracks, but 78 % of
+those came out black or blue. Fixed: such tracks now show as unknown.)*
 
 Separately, the colour head trains with `ColorJitter(brightness=0.2,
 contrast=0.2)` (`analysis/makemodel/dataset.py:242`, shared by all heads).
@@ -433,6 +435,9 @@ without a synced clock mislabels a session.
 
 British Summer Time ends on **2026-10-25**, when local 01:00–02:00 repeats.
 `/stats` buckets on the local ISO string, so that hour double-counts.
+*(Checked 2026-10-04, E0.6: the clock is NTP-synced on `Europe/London`, and
+the repeated hour counts each pass once. It holds two clock-hours, not
+double-counted passes; see E3.5.)*
 
 ### Checked and sound (no action)
 
@@ -493,7 +498,9 @@ promoted on fresh-session head-to-heads. What that taught:
 
 - *Ship without measuring:* E0.2, because the `track_ids` filter is right by
   construction and step 4 already cleared 12,672 stale labels. E0.8, because
-  R11 already puts the HSV share near 22 %, past the 10 % rule.
+  the HSV voter's black/blue bias is documented. (Both shipped 2026-10-04 and
+  were measured anyway; see their rows. The HSV share turned out to be 5.5 %,
+  not R11's ~22 %, but the bias clause of E0.8's rule still held.)
 - *Done or retired:* E0.1 (superseded); E2.4 (folded into E1.4); E2.5's
   corpus rebuild and `--max-per-car` run (done; the cap stays as an option).
 - *Pulled forward:*
@@ -537,13 +544,13 @@ These confirm or kill several findings in minutes. They only read `output/` and
 | ID | Question | Method | Decision rule |
 | --- | --- | --- | --- |
 | **E0.1** (R1) | Is `ocr_conf` saturated in practice? | **Superseded:** `alpr-rescore` prints the share of reads at ≥ 0.9 before and after, plus the tracks that pass the DVSA gate before and after. | Use that output to size the impact on DVSA labels; see E1.1. |
-| **E0.2** (R13) | How much of the `/stats` make chart is orphan or stale plates? | Per session: labels with empty `track_ids`, and labels whose plate is no read in the current `_alpr_by_track.json`. Recompute the make chart with and without them. | **2026-10-04: ship the `track_ids` filter without measuring** (it is right by construction). Was: any top-12 make shifting > 2 pp → ship it. |
+| **E0.2** (R13) | How much of the `/stats` make chart is orphan or stale plates? | Per session: labels with empty `track_ids`, and labels whose plate is no read in the current `_alpr_by_track.json`. Recompute the make chart with and without them. | **2026-10-04: ship the `track_ids` filter without measuring** (it is right by construction). Was: any top-12 make shifting > 2 pp → ship it. **Shipped 2026-10-04.** 10,071 of 29,053 per-session label rows with a make had no `track_ids`; the top-12 makes went from 6,467 to 3,196 distinct cars. Largest share shifts: Toyota 9.6 → 11.9 %, Vauxhall 10.1 → 8.4 %, Kia 6.1 → 7.1 %, BMW 6.6 → 5.7 %, so the old rule would have fired too. |
 | **E0.3** (R8) | How much time is actually observed? | Per session: start/end, IR periods (`_meta.json`), gaps > 120 s between consecutive track starts during 07:00–19:00 (outage proxy), `frames_processed / pipe_fps` vs wall duration. Build an hour-by-hour coverage map across all dates. | Any date or weekday-hour cell < 95 % covered → build E3.4 before quoting daily means or heatmaps. IR periods non-empty → count them as unobserved. |
 | **E0.4** (R3, R7) | How much of the corpus is single-read or split across OCR variants? | In the production corpus manifest (`uk_crops_0929_576` since 2026-10-01; was `uk_crops_0924_576`): cluster plates with the `vehicles` fuzzy rule (ratio ≥ 85, same length). Count clusters spanning train and val, and their share of val crops. Count per-plate read support from `_alpr.json`. Also count the "fresh" cars in a `makemodel-compare --eval-session` run that fuzzy-match a corpus plate (added 2026-10-04). | Leakage > 2 % of val tracks → re-run `makemodel-compare` with cluster-aware exclusion (cheap). Single-read plates > 10 % of corpus cars → prioritise E1.4. |
 | **E0.5** (R2, R9) | Do plates collide across simultaneous tracks? | Same canonical plate (fuzzy ≥ 85) as best read on ≥ 2 tracks whose [start, end] windows are within 10 s. Split into opposite direction (misattribution) and same direction, adjacent (BotSORT split). | Opposite-direction collisions > 1 % of read tracks → R2 is real, prioritise E1.2/E1.3. The same-direction rate is the first car split-rate estimate. |
-| **E0.6** (R15) | Is the time base sane? | `timedatectl` on the Orin (NTP synced?). Scan `data.json` for `duration_visible < 0`, `time_start` non-monotone in `events.jsonl`, and session label vs first-track time. | Any anomaly → switch durations to the monotonic clock and log sync state in meta. Run it with E3.5's DST fix, before BST ends on 2026-10-25. |
+| **E0.6** (R15) | Is the time base sane? | `timedatectl` on the Orin (NTP synced?). Scan `data.json` for `duration_visible < 0`, `time_start` non-monotone in `events.jsonl`, and session label vs first-track time. | Any anomaly → switch durations to the monotonic clock and log sync state in meta. Run it with E3.5's DST fix, before BST ends on 2026-10-25. **Done 2026-10-04 (`.claude/phase0_checks.py --checks e06 --orin streettracker@orin`): no anomaly.** Orin `Timezone=Europe/London`, NTP synced, RTC in UTC. 48 sessions / 186,487 tracks: every `time_start` carries an offset and agrees with `time_start_unix`; no negative durations or end-before-start; label vs `session_start_unix` within 1 s; largest backward step in finalize order 2.0 s. No monotonic-clock switch needed. |
 | **E0.7** (R10) | Is the jogger mode just the near pavement? | Split person speeds (≥ 6 detections) by pavement, using the median y of entry and exit points (post-07-19 sessions) or a y threshold on the hq tile. Plot per-pavement histograms. | Each pavement unimodal, modes differing by ~the perspective ratio → the jogger class is an artifact; suspend the jogger/dog-jog stats until E3.2. |
-| **E0.8** (R11) | What is the colour chart made of? | Re-run the stats colour loop, tagging each car track's colour source (DVSA / CNN / HSV / unknown). Cross-tab source × colour. | **2026-10-04: render HSV-sourced tracks as "unknown" without measuring** (R11 already puts the HSV share near 22 %). Was: HSV share > 10 %, or black/blue over-represented in HSV rows → do so. |
+| **E0.8** (R11) | What is the colour chart made of? | Re-run the stats colour loop, tagging each car track's colour source (DVSA / CNN / HSV / unknown). Cross-tab source × colour. | **2026-10-04: render HSV-sourced tracks as "unknown" without measuring.** Was: HSV share > 10 %, or black/blue over-represented in HSV rows → do so. **Shipped 2026-10-04, in the mix chart and the fastest-by-colour board.** Measured over 93,232 car tracks: DVSA 35.9 %, CNN 57.4 %, HSV 5.5 %, unknown 1.2 %. The HSV share was well under R11's estimate, but 78 % of its tracks were black or blue vs ~39 % from DVSA or the CNN, so the bias clause held. "Unknown" rose from 1.2 % to 6.7 % of journeys; black 20.5 → 18.1 %, blue 19.1 → 17.1 %. |
 | **E0.9** (R3; added 2026-10-04) | How often does a DVSA label describe a different real car? | On sessions recorded after `uk_crops_0929_576` was built (no head trained on them), compare each labelled track's DVSA `primary_colour` group with the colour CNN's per-track read, split by read support (agreeing snaps) and confidence group. The CNN crops the car whose plate was read, so a misread that lands on another real car shows up as a mismatch. Add the not-on-register rate among plates old enough to have an MOT (`.claude/ocr_conf_calibration.py`). | Single-read labels mismatching well above multi-read labels (and above the CNN's own fresh-car error, ~17 % exact) → the excess estimates the misread-to-real-car rate; adopt the E1.4 filter before the next retrain. |
 
 ### Phase 1 — build the instruments (week 1)
@@ -758,9 +765,15 @@ walker/jogger boundary and backfill `_people.json`.
 - Normalise per-day, heatmap and schedule-miner rates by observed hours, and
   grey out uncovered cells.
 
-**E3.5 — Hygiene (R13–R15).** The `/stats` make-chart filter and the DST
-repeat hour are pulled forward to the first step of the revised order
-(2026-10-04); `dvsa-apply` has cleared before writing since PR #111.
+**E3.5 — Hygiene (R13–R15).** The `/stats` make-chart filter shipped
+2026-10-04; `dvsa-apply` has cleared before writing since PR #111. **The DST
+repeat hour needs no code fix (checked 2026-10-04).** The Orin runs
+`Europe/London` and `format_wall()` writes each timestamp's own offset, so
+every pass is counted once, on its own local date and hour. The repeated
+local hour on 2026-10-25 simply holds two clock-hours of traffic (a test
+pins this). That is an observed-hours denominator question, which belongs to
+E3.4, not a double count. Gaps and round trips use unix time, so they are
+unaffected.
 
 - The `/stats` make chart counts only plates with current `track_ids`.
 - Key the vehicle-box cache by (name, size, mtime).
