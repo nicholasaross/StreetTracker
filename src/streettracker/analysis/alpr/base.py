@@ -26,10 +26,13 @@ if TYPE_CHECKING:
 # 2026-09-28 fix and need ``alpr-rescore``.
 OCR_CONF_METHOD = "min_char"
 
-# The one plate-read confidence gate: a read whose ``ocr_conf`` is at
-# least this counts as a plate. Used by dvsa-label (which plates get
-# looked up and label tracks), vehicles + the showcase (plate identity),
-# alpr-rescore's summary and the stats page's fastest-car plates. 0.9 is
+# The plate-read confidence threshold of the plain ``conf`` gate. The gate
+# itself (conf, or the combined agreement/support gate of 2026-10-04) lives
+# in ``analysis.alpr.gate``; this threshold is one of its settings. A read
+# whose ``ocr_conf`` is at least this counts as a plate under ``conf``.
+# Used by dvsa-label (which plates get looked up and label tracks),
+# vehicles + the showcase (plate identity), alpr-rescore's summary and the
+# stats page's fastest-car plates. 0.9 is
 # carried over from the pre-2026-09-28 always-~1.0 score, not chosen for
 # the current one: calibrate with .claude/ocr_conf_calibration.py and set
 # the result in ``configs/alpr.json`` as ``{"plate_conf_threshold": X}``.
@@ -38,6 +41,8 @@ DEFAULT_PLATE_CONF_THRESHOLD = 0.9
 # it away from a real per-install file.
 PLATE_CONF_CONFIG = Path("configs/alpr.json")
 _PLATE_CONF_KEY = "plate_conf_threshold"
+# The combined gate's settings (``analysis.alpr.gate``) share the file.
+_GATE_KEYS = ("plate_gate", "supported_conf_threshold", "min_support")
 
 
 def _valid_threshold(value: object, where: str) -> float:
@@ -68,9 +73,10 @@ def resolve_plate_conf_threshold(override: float | None = None) -> tuple[float, 
         raise ValueError(f"{path}: unreadable ({exc})") from exc
     if not isinstance(cfg, dict):
         raise ValueError(f"{path}: expected a JSON object")
-    unknown = sorted(k for k in cfg if k != _PLATE_CONF_KEY and not k.startswith("_"))
+    allowed = {_PLATE_CONF_KEY, *_GATE_KEYS}
+    unknown = sorted(k for k in cfg if k not in allowed and not k.startswith("_"))
     if unknown:
-        raise ValueError(f"{path}: unknown key(s) {unknown}; expected {_PLATE_CONF_KEY!r}")
+        raise ValueError(f"{path}: unknown key(s) {unknown}; expected some of {sorted(allowed)}")
     if _PLATE_CONF_KEY not in cfg:
         return DEFAULT_PLATE_CONF_THRESHOLD, "default"
     return _valid_threshold(cfg[_PLATE_CONF_KEY], str(path)), str(path)

@@ -11,9 +11,9 @@ alpr-run``), picks the tracks whose best preferred-pipeline OCR read
 clears the plate confidence gate, and calls the DVSA MOT history API
 for each distinct plate. Writes the harvest to
 ``<session>_dvsa_labels.json``, recording the gate it used. The gate is
-the shared plate setting (``configs/alpr.json``, else 0.9; see
-:func:`streettracker.analysis.alpr.base.resolve_plate_conf_threshold`);
-``--conf-threshold`` overrides it for one run. Re-running at a different
+the shared plate gate (``configs/alpr.json``: conf >= 0.9 by default, or the
+combined agreement/support gate; see :mod:`streettracker.analysis.alpr.gate`);
+``--conf-threshold`` forces a plain confidence gate for one run. Re-running at a different
 gate re-attributes tracks from the cached labels without new lookups.
 
 Re-running is idempotent: by default, plates already present in the
@@ -40,7 +40,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from streettracker.analysis.alpr.base import resolve_plate_conf_threshold
+from streettracker.analysis.alpr.gate import (
+    PlateGate,
+    load_plate_support,
+    read_passes,
+    resolve_plate_gate,
+)
 from streettracker.analysis.dvsa import (
     DvsaClient,
     DvsaConfig,
@@ -82,9 +87,9 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help=(
-            "Minimum preferred-pipeline OCR confidence to attempt a lookup "
-            "(default: plate_conf_threshold in configs/alpr.json, else 0.9). "
-            "Below this we treat the plate as unread."
+            "Force a plain confidence gate at this value for one run "
+            "(default: the plate gate in configs/alpr.json, else conf >= 0.9). "
+            "Reads that fail the gate count as unread."
         ),
     )
     ap.add_argument(
@@ -142,8 +147,10 @@ class _PlateRequest:
 
 def _collect_plate_requests(
     by_track: dict[str, Any],
-    conf_threshold: float,
+    gate: PlateGate | float | None = None,
     *,
+    conf_threshold: float | None = None,
+    support: dict[str, int] | None = None,
     canonical_only: bool = True,
     detection: ParkedDetection | None = None,
 ) -> tuple[list[_PlateRequest], list[str]]:
@@ -158,6 +165,11 @@ def _collect_plate_requests(
     billing them to DVSA. Set ``False`` to recover the pre-2026-05-29
     behaviour.
     """
+    if conf_threshold is not None:
+        gate = PlateGate(conf_threshold=float(conf_threshold))
+    elif not isinstance(gate, PlateGate):
+        # A bare threshold is the plain confidence gate.
+        gate = PlateGate(conf_threshold=float(gate) if gate is not None else 0.9)
     by_plate: dict[str, _PlateRequest] = {}
     skipped_non_canonical: set[str] = set()
     for track in by_track.get("tracks", []):
@@ -176,14 +188,14 @@ def _collect_plate_requests(
                 best = best_unsuppressed_read(
                     detection.reads_by_track.get(key[0], []),
                     detection.suppressed,
-                    conf_threshold=conf_threshold,
+                    conf_threshold=gate.min_conf,
                     canonical_only=canonical_only,
                 )
                 if best is None:
                     continue
         plate = (best.get("ocr_text") or "").strip().upper().replace(" ", "")
         conf = float(best.get("ocr_conf") or 0.0)
-        if not plate or conf < conf_threshold:
+        if not plate or not read_passes(gate, best, support):
             continue
         if canonical_only and not is_canonical_uk_plate(plate):
             skipped_non_canonical.add(plate)
@@ -253,6 +265,7 @@ def _write_output(
     skipped_non_canonical: list[str],
     n_high_conf_plates: int,
     conf_threshold: float | None = None,
+    gate: PlateGate | None = None,
 ) -> None:
     payload: dict[str, Any] = {
         "session": session_label,
@@ -262,6 +275,8 @@ def _write_output(
         "n_high_conf_plates": n_high_conf_plates,
         # The confidence gate this harvest's track attributions reflect.
         "conf_threshold": conf_threshold,
+        # The full plate gate (mode + settings) since 2026-10-04.
+        "plate_gate": gate.to_json() if gate is not None else None,
         "n_labelled": len(labels),
         "n_unknown": len(unknown),
         "n_skipped_non_canonical": len(skipped_non_canonical),
@@ -300,10 +315,14 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        conf_threshold, conf_source = resolve_plate_conf_threshold(args.conf_threshold)
+        gate, conf_source = resolve_plate_gate(args.conf_threshold)
     except ValueError as exc:
         print(f"[dvsa-label] {exc}", file=sys.stderr)
         return 2
+    conf_threshold = gate.min_conf
+    # Cross-session plate support for the combined gate: every session's rollup
+    # under the output root (the session's parent directory).
+    support = load_plate_support(session_dir.parent) if gate.needs_support else None
 
     cfg = DvsaConfig.from_json_file(args.config)
     by_track = json.loads(by_track_path.read_text(encoding="utf-8"))
@@ -337,14 +356,15 @@ def main(argv: list[str] | None = None) -> int:
 
     requests_, skipped_non_canonical = _collect_plate_requests(
         by_track,
-        conf_threshold,
+        gate,
+        support=support,
         canonical_only=not args.include_non_canonical,
         detection=detection,
     )
     n_tracks_billed = sum(len(r.track_ids) for r in requests_)
     print(
-        f"[dvsa-label] {len(requests_)} distinct high-conf plates "
-        f"(>= {conf_threshold}, {conf_source}) across {n_tracks_billed} tracks"
+        f"[dvsa-label] {len(requests_)} distinct plates passing the gate "
+        f"({gate.describe()}; {conf_source}) across {n_tracks_billed} tracks"
         + (
             f"; skipping {len(skipped_non_canonical)} non-canonical "
             f"(use --include-non-canonical to query them)"
@@ -434,6 +454,7 @@ def main(argv: list[str] | None = None) -> int:
             skipped_non_canonical=sorted(existing_skipped),
             n_high_conf_plates=len(requests_),
             conf_threshold=conf_threshold,
+            gate=gate,
         )
 
     # Final flush: ensures the output is updated even when the loop
@@ -447,6 +468,7 @@ def main(argv: list[str] | None = None) -> int:
         skipped_non_canonical=sorted(existing_skipped),
         n_high_conf_plates=len(requests_),
         conf_threshold=conf_threshold,
+        gate=gate,
     )
 
     print(

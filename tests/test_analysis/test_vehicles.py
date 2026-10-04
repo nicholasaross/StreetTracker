@@ -1207,3 +1207,31 @@ def test_parked_suppression_disabled_restores_phantom_visits(
     assert lx.n_visits == 6  # the pre-fix phantom behaviour
     assert lx.parked_episodes == []
     assert "AB12CDE" not in by_plate
+
+
+def test_build_vehicles_combined_gate_from_config(
+    tmp_path: Path,
+    sample_track: TrackRecord,
+    _isolated_plate_conf_config: Path,
+) -> None:
+    """Under the combined gate a 0.85 read counts when another snap agrees
+    (``n_agree``) or another track anywhere read the same plate; a lone
+    read doesn't, however confident."""
+    alpr = _alpr_one(42, "AA15AAA", 0.85)
+    session = _write_session(tmp_path, [sample_track], alpr)
+    _isolated_plate_conf_config.parent.mkdir(parents=True)
+    _isolated_plate_conf_config.write_text(json.dumps({"plate_gate": "combined"}))
+
+    def plates() -> list[str | None]:
+        return [v.plate for v in build_vehicles(session)]
+
+    assert plates() == [None]  # lone read, support 1 (itself)
+    alpr["tracks"][0]["best_preferred"]["n_agree"] = 1
+    (session / "session_test_alpr_by_track.json").write_text(json.dumps(alpr))
+    assert plates() == ["AA15AAA"]  # another snap agrees
+    alpr["tracks"][0]["best_preferred"]["n_agree"] = 0
+    (session / "session_test_alpr_by_track.json").write_text(json.dumps(alpr))
+    # Plate support is counted over every session_* rollup under the output
+    # root: a second session whose track also read the plate makes it 2.
+    _write_named_session(tmp_path, "session_other", [sample_track], _alpr_one(7, "AA15AAA", 0.6))
+    assert plates() == ["AA15AAA"]

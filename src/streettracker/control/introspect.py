@@ -208,6 +208,10 @@ class SessionInfo:
     # "min_char" since the 2026-09-28 fix. None = the read confidences are
     # the old max-over-slots value (~1.0 for everything); run alpr-rescore.
     alpr_ocr_conf: str | None
+    # Whether the reads carry the plate-colour check (review E1.3), from the
+    # same stamp: "hsv_v1" since 2026-10-04 (alpr-run, or alpr-colour for
+    # older sessions). None = not checked; run the platecheck playbook.
+    alpr_plate_colour: str | None
     n_dvsa_labels: int  # 0 if dvsa-label hasn't run
     has_vehicles: bool
     has_makemodel: bool
@@ -352,6 +356,7 @@ def session_info(session_dir: Path) -> SessionInfo:
         has_alpr=(session_dir / f"{label}_alpr_by_track.json").is_file(),
         alpr_crop_mode=alpr_stamp(session_dir, label, "crop_mode"),
         alpr_ocr_conf=alpr_stamp(session_dir, label, "ocr_conf"),
+        alpr_plate_colour=alpr_stamp(session_dir, label, "plate_colour"),
         n_dvsa_labels=_dvsa_label_count(session_dir, label),
         has_vehicles=(session_dir / f"{label}_vehicles.json").is_file(),
         has_makemodel=(session_dir / f"{label}_makemodel_by_track.json").is_file(),

@@ -672,6 +672,41 @@ def relabel_steps(ctx: PlaybookContext) -> list[Step]:
     return steps
 
 
+def platecheck_steps(ctx: PlaybookContext) -> list[Step]:
+    """Apply the plate-colour check (review E1.3) and the current plate gate
+    (``configs/alpr.json``, e.g. the combined gate of E1.4) to every
+    session with ALPR output: ``alpr-colour`` on every session first -- the
+    combined gate counts plate support across all sessions' rollups, so they
+    must all be updated before any DVSA harvest -- then dvsa-label ->
+    dvsa-apply -> vehicles per session, then a showcase refresh. Plates newly
+    passing the gate cost DVSA lookups; cached plates cost none. Raises
+    ``ValueError`` when no session has ALPR output."""
+    sessions = [
+        d
+        for d in introspect.discover_session_dirs(ctx.output_root)
+        if (d / f"{d.name}_alpr.json").is_file()
+    ]
+    if not sessions:
+        raise ValueError("nothing to check: no session has ALPR output yet")
+    steps = [
+        Step(f"Plate-colour check: {d.name}", job=JobSpec("alpr-colour", [str(d)]))
+        for d in sessions
+    ]
+    for d in sessions:
+        sd = str(d)
+        steps += [
+            Step(f"DVSA lookup: {d.name}", job=JobSpec("dvsa-label", [sd])),
+            Step(f"Apply DVSA labels: {d.name}", job=JobSpec("dvsa-apply", [sd])),
+            Step(f"Per-vehicle aggregation: {d.name}", job=JobSpec("vehicles", [sd])),
+        ]
+
+    async def refresh() -> StepResult:
+        return await refresh_showcase(ctx.showcase_url)
+
+    steps.append(Step("Refresh showcase", action=refresh))
+    return steps
+
+
 # name -> metadata for the launcher + the server's validation/gating.
 PLAYBOOKS: dict[str, dict[str, Any]] = {
     "enrich": {"label": "Enrich a session", "needs_session": True, "destructive": False},
@@ -698,6 +733,11 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
     },
     "relabel": {
         "label": "Re-apply plate gate (all sessions)",
+        "needs_session": False,
+        "destructive": False,
+    },
+    "platecheck": {
+        "label": "Plate-colour check + plate gate (all sessions)",
         "needs_session": False,
         "destructive": False,
     },
@@ -748,11 +788,16 @@ def build_playbook(
         return "Re-infer all sessions + refresh showcase", reinfer_steps(ctx)
     if name == "rescore":
         return "Re-score plate confidence + DVSA", rescore_steps(ctx)
-    if name == "relabel":
-        from streettracker.analysis.alpr.base import resolve_plate_conf_threshold
+    if name in ("relabel", "platecheck"):
+        from streettracker.analysis.alpr.gate import resolve_plate_gate
 
         # Resolve the gate now so a malformed configs/alpr.json is refused at
         # submit, not after the first DVSA step.
-        gate, source = resolve_plate_conf_threshold()
-        return f"Re-apply plate gate {gate} ({source})", relabel_steps(ctx)
+        gate, source = resolve_plate_gate()
+        if name == "relabel":
+            return f"Re-apply plate gate: {gate.describe()} ({source})", relabel_steps(ctx)
+        return (
+            f"Plate-colour check + plate gate: {gate.describe()} ({source})",
+            platecheck_steps(ctx),
+        )
     raise ValueError(f"unknown playbook: {name!r}")

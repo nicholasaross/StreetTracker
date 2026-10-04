@@ -40,6 +40,13 @@ set the value where the rates level off. Then re-run `dvsa-label` →
 track clearing is reversible (labels are cached), so this costs no API calls,
 and `_dvsa_labels.json` records the `conf_threshold` it used. Rebuild the
 make/colour/body corpus afterwards so training labels drop the misreads.
+**⮕ 2026-10-04: the gate is now pluggable** (`analysis/alpr/gate.py`,
+`PlateGate`; `configs/alpr.json` `"plate_gate": "conf" | "combined"`). The
+**combined** gate (review E1.4) counts a read at min-char conf >= 0.80 that
+another snap of the track agrees with (`n_agree` on the rollup's best read) or
+that >= 2 tracks anywhere share (cross-session support from every rollup);
+plate colour runs upstream (`colour_suspect` reads never become a best read).
+Apply/re-apply with the panel's **platecheck** playbook.
 
 **⮕ NEXT SESSION — start here (handoff written 2026-09-28; steps 1-5 done
 by 2026-10-04, so start at step 6, revised 2026-10-04).** PR #110 (the
@@ -542,14 +549,22 @@ Session files:
     probability of the weakest decoded character, with the per-character
     probabilities in `ocr_char_probs`, when `_static_plates.json` carries
     `"ocr_conf": "min_char"`; without that stamp it is the pre-2026-09-28
-    always-~1.0 value (run `alpr-rescore`).
+    always-~1.0 value (run `alpr-rescore`). Since 2026-10-04 each read with a
+    saved crop carries `plate_colour` (yellow/white/mono/unsure) and
+    `colour_suspect: true` when the colour contradicts the track's direction
+    (R→L shows the white front plate, L→R the yellow rear); suspects are left
+    out of the rollup like `static_suspect`, and each best read carries
+    `n_agree` (other snaps reading the same string). Stamp
+    `"plate_colour": "hsv_v1"` in `_static_plates.json` (`alpr-run`, or
+    `alpr-colour` for older sessions).
 - `{session}_vehicles.json` — per-vehicle plate-anchored aggregation
   (after running `vehicles`); carries DVSA `make`/`model`/`year` once
   `dvsa-label` has harvested for the session
 - `{session}_dvsa_labels.json` — DVSA MOT `make`/`model`/`year` per
   plate (after `dvsa-label`); `dvsa-apply` folds it onto `data.json` +
   `events.jsonl` per-track records. `conf_threshold` records the plate gate
-  the track attributions reflect (absent on harvests before 2026-09-28)
+  the track attributions reflect (absent on harvests before 2026-09-28), and
+  `plate_gate` the full gate (mode + settings) since 2026-10-04
 - `cross_session_repeats.json` — repeat vehicles pooled across a cohort
   of sessions (after `vehicles --across`; written to the output root)
 - `{session}_makemodel.json` + `{session}_makemodel_by_track.json` —
@@ -645,7 +660,8 @@ uv run streettracker batch sample.mp4                    # batch dev-box
 uv run streettracker export-engine yolov8m.pt            # build TRT on device
 uv run streettracker alpr-run output/<session>           # offline ALPR
 uv run streettracker alpr-rescore output/<session>       # recompute plate-read confidence from saved crops (2026-09-28 fix); --dry-run to preview
-uv run streettracker dvsa-label output/<session>         # DVSA make/model harvest (needs configs/dvsa.json; plate gate from configs/alpr.json, default 0.9)
+uv run streettracker alpr-colour output/<session>        # plate-colour check on saved crops (E1.3): drop other cars' plates from the rollup; --dry-run to preview
+uv run streettracker dvsa-label output/<session>         # DVSA make/model harvest (needs configs/dvsa.json; plate gate from configs/alpr.json: conf >= 0.9 by default, or the combined gate)
 uv run streettracker dvsa-apply output/<session>         # fold DVSA make/model onto per-track records
 uv run streettracker vehicles output/<session>           # per-vehicle aggregation (+ DVSA make/model)
 uv run streettracker vehicles output/<a> --across output/<b> ...  # cross-session repeat vehicles
@@ -814,7 +830,15 @@ ctx, …)` dispatches, `PlaybookContext` carries paths + device config):
     every session whose ALPR stamp lacks `"ocr_conf": "min_char"` → showcase
     refresh) — applies the 2026-09-28 OCR-confidence fix to already-enriched
     sessions. The sessions table badges them **Plates v2** (amber) until done,
-    **Plates v3** (green) after.
+    **Plates v3** after.
+  - **platecheck** (`alpr-colour` on every session with ALPR output first --
+    the combined gate counts plate support across all rollups -- then
+    `dvsa-label` → `dvsa-apply` → `vehicles` per session → showcase refresh)
+    -- applies the 2026-10-04 plate-colour check and the current plate gate.
+    Sessions badge **Plates v3** (amber) until colour-checked, **Plates v4**
+    (green) after. `alpr-colour` shares the GPU lane so it never overlaps an
+    `alpr-run` writing the same `_alpr.json`. Plates newly passing the gate
+    cost DVSA lookups.
   - `/api/playbooks` routes (localhost submit/cancel; name + session validated,
     destructive-confirm gated) + a **Playbooks** dashboard panel: step list with
     live status, the running/failed step's job **inlined** (progress bar /

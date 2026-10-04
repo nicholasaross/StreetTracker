@@ -195,3 +195,15 @@ def test_load_alpr_entries_absent_file(tmp_path: Path) -> None:
     session = tmp_path / "session_test"
     session.mkdir()
     assert load_alpr_entries(session) == []
+
+
+def test_best_unsuppressed_read_skips_colour_suspects_and_counts_agreement() -> None:
+    reads = [
+        {**_entry(1, 1, "AB12CDE", 0.97, 900, 700), "colour_suspect": True},  # another car's
+        _entry(1, 2, "CD34EFG", 0.92, 900, 700),
+        _entry(1, 3, "CD34EFG", 0.85, 905, 702),
+        {**_entry(1, 4, "CD34EFG", 0.83, 910, 704), "colour_suspect": True},  # not counted
+    ]
+    best = best_unsuppressed_read(reads, set(), conf_threshold=0.8)
+    assert best is not None
+    assert (best["ocr_text"], best["snap_index"], best["n_agree"]) == ("CD34EFG", 2, 1)

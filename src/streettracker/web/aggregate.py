@@ -36,6 +36,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from streettracker.analysis.alpr.gate import load_plate_support, plate_gate
 from streettracker.analysis.vehicles import (
     FUZZY_RATIO_DEFAULT,
     Vehicle,
@@ -342,9 +343,12 @@ def build_showcase(
     extras_by_plate: dict[str, dict[str, Any]] = {}
     colours_by_plate: dict[str, Counter] = {}
     cnn_by_session: dict[str, dict[int, str]] = {}
+    # One plate gate (and its cross-session support) for every session.
+    gate = plate_gate()
+    gate_support = load_plate_support(output_root) if gate.needs_support else None
     for d in sessions:
         cnn_by_session[d.name] = _load_colour_by_track(d)
-        for v in build_vehicles(d, fuzzy_ratio=fuzzy_ratio):
+        for v in build_vehicles(d, fuzzy_ratio=fuzzy_ratio, gate=gate, support=gate_support):
             if v.plate is None:
                 continue
             plated.append((d.name, v.plate, v))

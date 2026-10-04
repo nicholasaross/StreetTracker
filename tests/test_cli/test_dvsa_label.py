@@ -641,3 +641,35 @@ def test_main_clears_track_ids_on_orphaned_labelled_plates(tmp_path: Path) -> No
     assert orphan["make"] == "DACIA"              # DVSA data retained
     # The still-present plate's track_ids reflect the current rollup.
     assert payload["labels"]["AE13SJX"]["track_ids"] == [1]
+
+
+def test_collect_plate_requests_combined_gate() -> None:
+    """The combined gate keeps a read at >= 0.8 that another snap agrees with
+    or that >= 2 tracks share, and drops a lone read however confident."""
+    from streettracker.analysis.alpr.gate import PlateGate
+
+    def best(tid: int, plate: str, conf: float, n_agree: int) -> dict:
+        return {
+            "track_id": tid,
+            "best_preferred": {
+                "track_id": tid,
+                "snap_index": 1,
+                "image": f"vehicle_{tid}_main_1.jpg",
+                "ocr_text": plate,
+                "ocr_conf": conf,
+                "n_agree": n_agree,
+            },
+        }
+
+    by_track = {
+        "tracks": [
+            best(1, "AB12CDE", 0.85, 1),  # a snap agrees -> kept
+            best(2, "LA68EWY", 0.99, 0),  # lone read, support 1 -> dropped
+            best(3, "GL74JYW", 0.82, 0),  # 2 tracks read it -> kept
+            best(4, "HN74AUC", 0.70, 5),  # below the confidence floor -> dropped
+        ]
+    }
+    reqs, _ = dvsa_label._collect_plate_requests(
+        by_track, PlateGate(mode="combined"), support={"LA68EWY": 1, "GL74JYW": 2}
+    )
+    assert [r.plate for r in reqs] == ["AB12CDE", "GL74JYW"]

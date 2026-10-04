@@ -572,3 +572,27 @@ def test_build_train_cap_reaches_the_build_and_gets_its_own_dirs(tmp_path: Path)
 def test_build_train_rejects_a_bad_cap(tmp_path: Path, bad: object) -> None:
     with pytest.raises(ValueError, match="max_per_car"):
         build_playbook("build-train", _ctx(tmp_path), max_per_car=bad)  # type: ignore[arg-type]
+
+
+def test_platecheck_colours_every_session_before_any_dvsa(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The combined gate counts plate support across every session's rollup,
+    so all alpr-colour steps must run before the first DVSA harvest."""
+    from streettracker.analysis.alpr import base
+    from streettracker.control.jobs import _lane_for
+
+    monkeypatch.setattr(base, "PLATE_CONF_CONFIG", tmp_path / "alpr.json")
+    ctx = _ctx(tmp_path)
+    with pytest.raises(ValueError, match="nothing to check"):
+        build_playbook("platecheck", ctx)
+    _alpr_session(ctx.output_root, "session_20260101_000000", {"crop_mode": "fullframe"})
+    _alpr_session(ctx.output_root, "session_20260102_000000", {"ocr_conf": "min_char"})
+    (ctx.output_root / "session_20260103_000000").mkdir()  # never ALPR'd: left out
+    label, steps = build_playbook("platecheck", ctx)
+    kinds = [s.job.kind for s in steps if s.job]
+    assert kinds == ["alpr-colour"] * 2 + ["dvsa-label", "dvsa-apply", "vehicles"] * 2
+    assert "conf >= 0.9" in label
+    assert steps[-1].action is not None  # the showcase refresh
+    # Shares the GPU lane with alpr-run so the two never write one _alpr.json.
+    assert _lane_for("alpr-colour") == "gpu"

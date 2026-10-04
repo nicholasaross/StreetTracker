@@ -24,6 +24,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from streettracker.analysis.alpr.base import OCR_CONF_METHOD, atomic_write_text
+from streettracker.analysis.alpr.plate_colour import PLATE_COLOUR_METHOD, mark_colour_suspects
 from streettracker.analysis.alpr.runner import PipelineRunner
 from streettracker.analysis.snap_assets import (
     discover_vehicle_snaps as _discover_snaps,
@@ -196,6 +197,17 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     ap.add_argument(
+        "--no-colour-check",
+        action="store_true",
+        help=(
+            "Disable the plate-colour check. By default each read's plate "
+            "crop is classified white (front) or yellow (rear); a read "
+            "whose colour contradicts its track's direction belongs to "
+            "another car, so it is marked colour_suspect and excluded "
+            "from the per-track rollup (review E1.3, 2026-10-04)."
+        ),
+    )
+    ap.add_argument(
         "--ghost-mask",
         type=Path,
         default=None,
@@ -333,6 +345,15 @@ def main(argv: list[str] | None = None) -> int:
             f"[alpr] static-plate filter: {len(spots)} static spot(s), "
             f"{n_suspect} detection(s) marked static_suspect "
             f"(excluded from the by-track rollup); map -> {spots_path.name}"
+        )
+
+    if not args.no_colour_check:
+        colour = mark_colour_suspects(all_records, session_dir, _direction_by_track(session_dir))
+        _stamp(session_dir, plate_colour=PLATE_COLOUR_METHOD)
+        print(
+            f"[alpr] plate-colour check: {colour['suspect']} read(s) marked colour_suspect "
+            f"(plate colour contradicts the track's direction; excluded from the rollup); "
+            f"labels { {k: v for k, v in colour.items() if k != 'suspect'} }"
         )
 
     out_path = session_dir / f"{session_label}_alpr.json"
@@ -522,6 +543,36 @@ def _build_pipelines(args: argparse.Namespace) -> list[PipelineRunner]:
     return pipelines
 
 
+def _direction_by_track(session_dir: Path) -> dict[int, str]:
+    """``track_id -> direction`` from the session's ``data.json`` (empty
+    when it's missing, which leaves every read unflagged)."""
+    path = session_dir / f"{session_dir.name}_data.json"
+    try:
+        records = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    out: dict[int, str] = {}
+    for r in records if isinstance(records, list) else []:
+        try:
+            out[int(r["track_id"])] = str(r.get("direction") or "")
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def _stamp(session_dir: Path, **stamps: str) -> None:
+    """Merge provenance stamps into ``<session>_static_plates.json``."""
+    path = session_dir / f"{session_dir.name}_static_plates.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data.update(stamps)
+    atomic_write_text(path, json.dumps(data, indent=2))
+
+
 def _rollup_by_track(records: list[dict]) -> dict:
     """Per-track best-of-N + consensus rollup.
 
@@ -546,11 +597,13 @@ def _rollup_by_track(records: list[dict]) -> dict:
         tid = r["track_id"]
         if not r.get("ocr_text"):
             continue
-        if r.get("static_suspect"):
+        if r.get("static_suspect") or r.get("colour_suspect"):
             # Static-plate reads (parked cars / fixed scene objects
-            # swept into the crop window) must not become a track's
+            # swept into the crop window) and reads whose plate colour
+            # contradicts the track's direction (another car's plate:
+            # analysis.alpr.plate_colour) must not become a track's
             # best read or vote in its consensus -- that's exactly the
-            # mis-attribution the filter exists to stop.
+            # mis-attribution these filters exist to stop.
             continue
         cur_best = by_pipe_track[p].get(tid)
         if cur_best is None or (r.get("ocr_conf") or 0) > (cur_best.get("ocr_conf") or 0):
@@ -573,6 +626,13 @@ def _rollup_by_track(records: list[dict]) -> dict:
     tracks: dict[int, dict] = {}
     for pipe, by_tid in by_pipe_track.items():
         for tid, best in by_tid.items():
+            # Other snaps of the track that read exactly the same string:
+            # corroboration for the combined plate gate (analysis.alpr.gate).
+            best["n_agree"] = sum(
+                1
+                for r in by_pipe_track_all[pipe].get(tid, [])
+                if r.get("ocr_text") == best["ocr_text"] and r["snap_index"] != best["snap_index"]
+            )
             tracks.setdefault(tid, {"track_id": tid})[f"best_{pipe}"] = best
     for pipe, by_tid_reads in by_pipe_track_all.items():
         for tid, reads in by_tid_reads.items():

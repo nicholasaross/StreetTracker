@@ -738,6 +738,12 @@ highest-confidence read (now meaningful), not "most-supported string".
     *direction* is wrong (e.g. a car reversing). Rejecting them costs a
     correct identity but never adds a wrong label, so the trade is safe for
     labels.
+  - **Built 2026-10-04:** `alpr-run` marks colour-contradicting reads
+    `colour_suspect`, the rollup skips them like `static_suspect` (the best
+    read falls back), and `alpr-colour` applies the same to existing
+    sessions (panel **platecheck** playbook). Still to do from the decision
+    list: the standing per-session health metric in the panel, and the
+    candidate-selection changes inside `TrajectoryCropDetector`.
 
 **E1.4 — DVSA label-quality signals (R3).**
 
@@ -765,6 +771,9 @@ highest-confidence read (now meaningful), not "most-supported string".
   misattributed plates 2.5 % → 0. C/I are cleanest on the register but keep
   fewer tracks than today. Support is computed over every session, so a car
   seen once is labelled only when two of its snaps agree.
+- **Gate H built 2026-10-04** (`analysis/alpr/gate.py`, `configs/alpr.json`
+  `"plate_gate": "combined"`): dvsa-label, vehicles, the showcase and the
+  stats page all apply it. Validate it on E1.2 when that exists.
 
 - Compute, per labelled plate:
   - read support (E0.4);
