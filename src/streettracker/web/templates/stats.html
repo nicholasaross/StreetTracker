@@ -37,6 +37,16 @@
   .hbar .track { background: var(--panel-2); border-radius: 5px; overflow: hidden; }
   .hbar .fill { height: 16px; border-radius: 5px; background: var(--accent); }
   .hbar .n { color: var(--muted); text-align: right; }
+  /* Top makes vs the UK: share bar + a tick at the UK (age-matched) share. */
+  .hbar.mb { grid-template-columns: 144px 1fr 104px; }
+  .hbar .track.rel { position: relative; overflow: visible; }
+  .hbar .track .uk { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px;
+    background: var(--text); border-radius: 1px; }
+  .hbar.mb .n b { color: var(--text); font-weight: 600; }
+  .mblegend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin: 2px 0 8px; }
+  .mblegend i { display: inline-block; vertical-align: middle; margin-right: 5px; }
+  .mblegend .sq { width: 12px; height: 10px; border-radius: 3px; background: var(--accent); }
+  .mblegend .tk { width: 2px; height: 14px; background: var(--text); }
   .sw { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; border: 1px solid #0006; }
   /* speed leaderboards (fastest by make / colour) — zoomed non-zero axis so the
      compressed spread is legible, with a 95%-margin whisker on each bar. */
@@ -231,8 +241,17 @@
   </div>
   <div class="panel stat">
     <h3>Top makes</h3>
-    <p class="hint">Distinct identified cars, from DVSA labels.</p>
+    <p class="hint">Distinct identified cars, from DVSA labels{% if stats.makes_benchmark %}, as a share of
+      all {{ "{:,}".format(stats.makes_benchmark.n_cars) }} identified. The tick is each make's share of UK
+      licensed cars, age-matched to the registration years of the cars seen here (DfT,
+      licensed cars at the {{ stats.makes_benchmark.by_year_period }}); hover a row for its share of
+      all UK licensed cars ({{ stats.makes_benchmark.latest_period }}). DfT publishes no regional figures
+      by make, so a South East comparison isn't possible{% endif %}.</p>
+    {% if stats.makes_benchmark %}<div class="mblegend"><span><i class="sq"></i>this street</span><span><i class="tk"></i>UK (age-matched)</span></div>{% endif %}
     <div class="hbars" id="makes"></div>
+    {% if stats.makes_benchmark %}<p class="hint" style="margin-top:8px;font-size:11px">UK figures: Department for
+      Transport vehicle licensing statistics. Contains public sector information licensed under the Open
+      Government Licence v3.0.</p>{% endif %}
   </div>
 </div>
 
@@ -402,6 +421,25 @@ function hbars(container, rows, opts){
   }).join("") || '<p class="hint">No data.</p>';
 }
 
+// Top makes vs the UK: bar = the make's share of identified cars here, tick =
+// its UK share age-matched to the street's registration years (both on one
+// scale), so a bar ending past its tick means the make is over-represented.
+function makebars(container, b){
+  const rows = b.rows || [];
+  if(!rows.length){ el(container).innerHTML = '<p class="hint">No data.</p>'; return; }
+  const pc = v => (100*v).toFixed(1);
+  const max = Math.max(...rows.map(r => Math.max(r.share, r.uk_share || 0))) * 1.08;
+  el(container).innerHTML = rows.map(r => {
+    const tick = r.uk_share != null ? `<span class="uk" style="left:${(100*r.uk_share/max).toFixed(1)}%"></span>` : "";
+    const uk = r.uk_share != null ? `${pc(r.uk_share)}%` : "n/a";
+    const all = r.uk_share_all != null ? `${pc(r.uk_share_all)}%` : "n/a";
+    const tip = `${r.make}: ${r.n} cars, ${pc(r.share)}% of identified cars here. UK ${uk} (age-matched), ${all} of all UK licensed cars.`;
+    return `<div class="hbar mb" title="${tip}"><div>${makeIcon(r.make)}${r.make}</div>`
+      + `<div class="track rel"><div class="fill" style="width:${(100*r.share/max).toFixed(1)}%"></div>${tick}</div>`
+      + `<div class="n"><b>${pc(r.share)}%</b> · UK ${r.uk_share != null ? pc(r.uk_share) + "%" : "–"}</div></div>`;
+  }).join("");
+}
+
 // Speed leaderboard: rows [{name,n,mean,margin,unit}], already fastest-first.
 // Axis is zoomed to [floor(min low), ceil(max high)] so the small spread reads;
 // each bar shows the mean as a fill from the axis floor plus a 95%-margin
@@ -499,7 +537,8 @@ function init(){
   const def = (STATS.overall.busiest_date && STATS.overall.busiest_date.date) || (STATS.daily.at(-1)||{}).date;
   if(def){ sel.value=def; }
   renderDaily(); renderDow(); renderQuarter(sel.value); renderHeatmap(); renderSpeed();
-  hbars("makes", STATS.makes, {prefix: makeIcon});
+  if (STATS.makes_benchmark) makebars("makes", STATS.makes_benchmark);
+  else hbars("makes", STATS.makes, {prefix: makeIcon});
   hbars("colours", STATS.colours, {swatch: colHex, fill: colHex});
   if ((STATS.fastest_makes && STATS.fastest_makes.length) ||
       (STATS.fastest_colours && STATS.fastest_colours.length)) {

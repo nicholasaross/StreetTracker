@@ -420,6 +420,32 @@ def test_make_dedupe_across_sessions(tmp_path: Path) -> None:
     assert makes == {"FORD": 1, "FIAT": 1, "VOLKSWAGEN": 1}
 
 
+def test_make_chart_carries_the_uk_benchmark(tmp_path: Path) -> None:
+    """Top makes come with each make's share of identified cars and its UK
+    share (DfT licensed cars, age-matched to the identified cars' years)."""
+    _mk_session(
+        tmp_path,
+        "session_20260526_090000",
+        [_track(1), _track(2)],
+        dvsa={
+            "labels": {
+                "AB12CDE": {"make": "FORD", "year": 2019, "track_ids": [1]},
+                "LA68EWY": {"make": "TOYOTA", "year": 2023, "track_ids": [2]},
+            }
+        },
+    )
+    b = build_stats(tmp_path).makes_benchmark
+    assert b is not None and b["n_cars"] == 2 and b["n_with_year"] == 2
+    rows = {r["make"]: r for r in b["rows"]}
+    assert rows["FORD"]["share"] == 0.5
+    assert 0 < rows["FORD"]["uk_share"] < 0.2 and 0 < rows["TOYOTA"]["uk_share"] < 0.2
+
+
+async def test_stats_page_draws_the_uk_ticks(client: TestClient) -> None:
+    html = await (await client.get("/stats")).text()
+    assert "function makebars" in html
+
+
 def test_make_chart_skips_orphan_labels(tmp_path: Path) -> None:
     """A cached DVSA label with no current track_ids (cleared by the plate
     gate, beacon suppression or re-enrichment) is not a car on the street --
