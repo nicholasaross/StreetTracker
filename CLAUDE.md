@@ -41,8 +41,8 @@ track clearing is reversible (labels are cached), so this costs no API calls,
 and `_dvsa_labels.json` records the `conf_threshold` it used. Rebuild the
 make/colour/body corpus afterwards so training labels drop the misreads.
 
-**⮕ NEXT SESSION — start here (handoff written 2026-09-28; steps 1-4 done
-the same night, start at step 5).** PR #110 (the
+**⮕ NEXT SESSION — start here (handoff written 2026-09-28; steps 1-5 done
+by 2026-10-04, so start at step 6).** PR #110 (the
 review doc, the R1 OCR-confidence fix + `alpr-rescore` + panel **rescore**
 playbook, `.claude/ocr_conf_calibration.py`, the shared plate gate
 `configs/alpr.json`) is **merged**. Nothing here touches the Orin; it is all
