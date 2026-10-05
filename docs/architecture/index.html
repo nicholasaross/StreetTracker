@@ -1,0 +1,1337 @@
+<title>StreetTracker Architecture</title>
+<meta name="description" content="System architecture of StreetTracker: hardware, live Orin pipeline, offline enrichment, training, storage and web apps, with discussion IDs.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+/* Layout: a wiring loom. A sticky index of discussion IDs on the left, one reading column,
+   diagrams and tables break out into their own scroll boxes. Dark-first, like the project's sites. */
+:root {
+  --bg: #0f1115;
+  --panel: #171b22;
+  --panel-2: #1f2430;
+  --line: #2c3340;
+  --line-2: #3b4456;
+  --text: #e6e8ec;
+  --muted: #9aa3b2;
+  --faint: #6f788a;
+  --l2r: #5b9dff;          /* left → right traffic (rear plate) */
+  --r2l: #1fb6a8;          /* right → left traffic (front plate) */
+  --plate: #f2c200;        /* UK rear plate yellow: IDs and the masthead */
+  --plate-ink: #1b2026;
+  --amber: #f59e0b;
+  --bad: #ff6b6b;
+  --good: #3fb950;
+  --edge: #566079;
+  --shadow: 0 18px 60px rgba(0,0,0,.45);
+  --f-display: "Barlow Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
+  --f-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --f-mono: "IBM Plex Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f3f5f8; --panel: #ffffff; --panel-2: #eef1f6; --line: #d7dce5; --line-2: #c3cad6;
+    --text: #151a22; --muted: #566072; --faint: #7d8697;
+    --l2r: #2f6fdb; --r2l: #0d8a7f; --plate: #f2c200; --plate-ink: #1b2026;
+    --amber: #b86e00; --bad: #c93c3c; --good: #1f8a3b; --edge: #9aa4b6;
+    --shadow: 0 18px 50px rgba(20,30,50,.18);
+    color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #f3f5f8; --panel: #ffffff; --panel-2: #eef1f6; --line: #d7dce5; --line-2: #c3cad6;
+  --text: #151a22; --muted: #566072; --faint: #7d8697;
+  --l2r: #2f6fdb; --r2l: #0d8a7f; --plate: #f2c200; --plate-ink: #1b2026;
+  --amber: #b86e00; --bad: #c93c3c; --good: #1f8a3b; --edge: #9aa4b6;
+  --shadow: 0 18px 50px rgba(20,30,50,.18);
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body { background: var(--bg); color: var(--text); font: 15px/1.55 var(--f-body); margin: 0; }
+a { color: var(--l2r); }
+code, .mono { font-family: var(--f-mono); font-size: .88em; }
+code { background: var(--panel-2); border: 1px solid var(--line); border-radius: 5px; padding: 0 .3em; white-space: nowrap; }
+h1, h2, h3 { font-family: var(--f-display); font-weight: 600; letter-spacing: .01em; text-wrap: balance; margin: 0; }
+h2 { font-size: 2rem; line-height: 1.1; }
+h3 { font-size: 1.3rem; line-height: 1.2; }
+p { margin: 0; }
+.wrap { display: grid; grid-template-columns: 228px minmax(0, 1fr); gap: 40px; max-width: 1380px; margin: 0 auto; padding-inline: 24px; }
+@media (max-width: 1040px) { .wrap { grid-template-columns: minmax(0,1fr); gap: 0; padding-inline: 16px; } }
+
+/* ---------- ID chip: a miniature number plate ---------- */
+.pid { display: inline-flex; align-items: center; font: 600 .74rem/1 var(--f-mono); letter-spacing: .08em;
+  background: var(--plate); color: var(--plate-ink); border-radius: 4px; padding: .28em .5em .26em;
+  box-shadow: inset 0 0 0 1.5px rgba(27,32,38,.45); white-space: nowrap; }
+.pid.ghost { background: transparent; color: var(--muted); box-shadow: inset 0 0 0 1px var(--line-2); }
+
+/* ---------- masthead ---------- */
+.mast { padding-block: 40px 28px; border-bottom: 1px solid var(--line); }
+.mast-inner { max-width: 1380px; margin: 0 auto; padding-inline: 24px; display: grid; gap: 18px; }
+@media (max-width: 1040px) { .mast-inner { padding-inline: 16px; } }
+.mast-top { display: flex; flex-wrap: wrap; align-items: center; gap: 18px; }
+.plate-mark { display: block; width: 168px; max-width: 42vw; height: auto; }
+.mast h1 { font-size: clamp(2.4rem, 5vw, 3.6rem); line-height: .95; font-weight: 700; }
+.mast .sub { color: var(--muted); max-width: 72ch; font-size: 1.02rem; }
+.mast .meta { display: flex; flex-wrap: wrap; gap: 8px 18px; color: var(--faint); font: .82rem var(--f-mono); }
+.mast .meta b { color: var(--muted); font-weight: 500; }
+
+/* ---------- side index ---------- */
+.toc { position: sticky; top: env(safe-area-inset-top, 0px); align-self: start; padding-block: 28px; max-height: 100vh; overflow-y: auto; }
+.toc h4 { font: 600 .72rem var(--f-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--faint); margin: 0 0 10px; }
+.toc ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.toc a { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 6px 10px; border-radius: 8px;
+  color: var(--muted); text-decoration: none; font-size: .92rem; }
+.toc a:hover, .toc a:focus-visible { background: var(--panel); color: var(--text); outline: none; }
+.toc a .pid { font-size: .62rem; }
+.toc .hint { margin-top: 18px; padding: 12px; border: 1px dashed var(--line-2); border-radius: 10px; color: var(--faint); font-size: .8rem; line-height: 1.45; }
+@media (max-width: 1040px) {
+  .toc { position: static; max-height: none; padding-block: 16px 0; }
+  .toc ol { display: flex; flex-wrap: wrap; gap: 6px; }
+  .toc a { grid-template-columns: auto; padding: 6px 10px; background: var(--panel); border: 1px solid var(--line); }
+  .toc a .pid, .toc .hint, .toc h4 { display: none; }
+}
+
+/* ---------- sections ---------- */
+main { min-width: 0; padding-block: 28px 80px; display: grid; gap: 64px; }
+section { display: grid; gap: 20px; scroll-margin-top: 16px; min-width: 0; }
+.sec-head { display: grid; gap: 8px; }
+.sec-head .eyebrow { display: flex; gap: 10px; align-items: center; color: var(--faint); font: 500 .76rem var(--f-mono); letter-spacing: .12em; text-transform: uppercase; }
+.sec-head p { color: var(--muted); max-width: 78ch; }
+.lede { max-width: 78ch; }
+
+/* KPI strip */
+.kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.kpi { background: var(--panel); padding: 14px 16px; display: grid; gap: 2px; align-content: start; }
+.kpi .v { font: 600 1.9rem/1.05 var(--f-display); font-variant-numeric: tabular-nums; }
+.kpi .k { color: var(--muted); font-size: .84rem; line-height: 1.35; }
+.kpi .s { color: var(--faint); font: .72rem var(--f-mono); }
+
+@media (max-width: 900px) { .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+#hw-cards { grid-template-columns: repeat(auto-fit, minmax(186px, 1fr)); }
+/* diagram boxes */
+.scrollbox { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
+.scrollbox svg { display: block; min-width: 940px; width: 100%; height: auto; }
+.svg-tier { fill: var(--panel-2); stroke: var(--line); }
+.svg-tier-label { fill: var(--faint); font: 600 12px var(--f-mono); letter-spacing: .12em; }
+.svg-node rect.box { fill: var(--panel); stroke: var(--line-2); stroke-width: 1.2; transition: stroke .15s, fill .15s; }
+.svg-node { cursor: pointer; outline: none; }
+.svg-node:hover rect.box, .svg-node:focus-visible rect.box { stroke: var(--plate); fill: var(--panel-2); }
+.svg-node .t1 { fill: var(--text); font: 600 13.5px var(--f-body); }
+.svg-node .t2 { fill: var(--muted); font: 11.5px var(--f-body); }
+.svg-node .tid { fill: var(--plate-ink); font: 600 10px var(--f-mono); letter-spacing: .06em; }
+.svg-node rect.idbg { fill: var(--plate); stroke: none; }
+.svg-chip rect.box { fill: var(--panel-2); stroke: var(--line); }
+.svg-chip .t1 { font: 500 11.5px var(--f-body); }
+.svg-group-title { fill: var(--text); font: 600 13px var(--f-body); }
+.edge { fill: none; stroke: var(--edge); stroke-width: 1.6; }
+.edge.l2r { stroke: var(--l2r); }
+.edge.snap { stroke: var(--plate); }
+.edge.dash { stroke-dasharray: 5 5; }
+.edge.flow { stroke-dasharray: 7 7; animation: flow 1.4s linear infinite; }
+@keyframes flow { to { stroke-dashoffset: -28; } }
+@media (prefers-reduced-motion: reduce) { .edge.flow { animation: none; } }
+.elabel { fill: var(--muted); font: 10.5px var(--f-mono); }
+.elabel.strong { fill: var(--text); }
+.arrowhead { fill: var(--edge); }
+.arrowhead.l2r { fill: var(--l2r); }
+.arrowhead.snap { fill: var(--plate); }
+.map-legend { display: flex; flex-wrap: wrap; gap: 8px 18px; color: var(--muted); font-size: .82rem; padding: 12px 16px 14px; border-top: 1px solid var(--line); }
+.map-legend i { display: inline-block; width: 26px; height: 0; border-top: 2px solid var(--edge); vertical-align: middle; margin-right: 6px; }
+.map-legend i.l2r { border-color: var(--l2r); } .map-legend i.snap { border-color: var(--plate); } .map-legend i.dash { border-top-style: dashed; }
+
+/* cards */
+.grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; display: grid; gap: 8px; align-content: start;
+  text-align: left; color: inherit; font: inherit; cursor: pointer; transition: border-color .15s, transform .15s; min-width: 0; }
+.card:hover, .card:focus-visible { border-color: var(--plate); outline: none; }
+@media (prefers-reduced-motion: no-preference) { .card:hover { transform: translateY(-1px); } }
+.card .top { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.card .ttl { font: 600 1.12rem/1.2 var(--f-display); letter-spacing: .01em; }
+.card .desc { color: var(--muted); font-size: .88rem; line-height: 1.45; }
+.card .metric { font: 500 .78rem var(--f-mono); color: var(--text); background: var(--panel-2); border-radius: 6px; padding: 5px 8px; }
+.card .kind { color: var(--faint); font: .72rem var(--f-mono); text-transform: uppercase; letter-spacing: .08em; }
+.card img { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; border-radius: 9px; background: #fff; display: block; }
+.card img.contain { object-fit: contain; }
+.card img.shot { object-position: top; background: var(--panel-2); }
+
+/* flow (ordered steps) */
+.flow { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); counter-reset: none; }
+.flow .card { position: relative; }
+.flow .card .arrow { position: absolute; right: -12px; top: 50%; translate: 0 -50%; width: 14px; height: 14px; color: var(--edge); }
+.lane { display: inline-flex; gap: 6px; align-items: center; font: .72rem var(--f-mono); color: var(--faint); }
+.lane b { color: var(--muted); font-weight: 500; }
+
+/* figures */
+figure { margin: 0; display: grid; gap: 10px; }
+figure img { width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--line); display: block; cursor: zoom-in; }
+figcaption { color: var(--muted); font-size: .86rem; max-width: 90ch; }
+.two { display: grid; gap: 18px; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); align-items: start; }
+@media (max-width: 860px) { .two { grid-template-columns: minmax(0,1fr); } }
+.legend-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; font-size: .86rem; color: var(--muted); }
+.legend-list li { display: grid; grid-template-columns: 22px 1fr; gap: 8px; align-items: start; }
+.sw { width: 18px; height: 12px; border-radius: 3px; margin-top: 4px; }
+
+/* charts */
+.chart { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; display: grid; gap: 8px; min-width: 0; }
+.chart h3 { font-size: 1.15rem; }
+.chart .note { color: var(--faint); font-size: .8rem; }
+.chart svg { width: 100%; height: auto; display: block; overflow: visible; }
+.ax { stroke: var(--line); stroke-width: 1; }
+.axl { fill: var(--faint); font: 10.5px var(--f-mono); }
+.ser-fire { stroke: var(--amber); fill: var(--amber); }
+.ser-done { stroke: var(--text); fill: var(--text); }
+.band-l2r { fill: var(--l2r); opacity: .14; }
+.dot-label { fill: var(--muted); font: 10.5px var(--f-mono); }
+.dot-label.hi { fill: var(--text); font-weight: 600; }
+
+/* tables */
+.tbl-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
+table { border-collapse: collapse; width: 100%; font-size: .86rem; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font: 600 .72rem var(--f-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--faint); background: var(--panel-2); position: sticky; top: 0; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td .pid { font-size: .62rem; }
+tbody tr[data-n] { cursor: pointer; }
+tbody tr[data-n]:hover td { background: var(--panel-2); }
+
+/* metrics */
+.mx { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+.mx .chart table { font-size: .84rem; }
+.mx .chart td, .mx .chart th { padding: 6px 4px; }
+.mx .chart th { position: static; background: none; padding-top: 0; }
+.bar-row { display: grid; grid-template-columns: 74px 1fr 52px; gap: 8px; align-items: center; font-size: .82rem; }
+.bar-row .track { height: 12px; background: var(--panel-2); border-radius: 3px; overflow: hidden; }
+.bar-row .fill { height: 100%; background: var(--l2r); }
+.bar-row .val { text-align: right; font: .8rem var(--f-mono); font-variant-numeric: tabular-nums; }
+
+/* decisions */
+.dec { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+.dec ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.dec li { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: grid; gap: 4px; }
+.dec li b { font-weight: 600; }
+.dec li span { color: var(--muted); font-size: .86rem; }
+.dec .date { font: .72rem var(--f-mono); color: var(--faint); }
+.status { font: 600 .66rem var(--f-mono); letter-spacing: .08em; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; justify-self: start; }
+.status.locked { color: var(--good); box-shadow: inset 0 0 0 1px var(--good); }
+.status.false { color: var(--bad); box-shadow: inset 0 0 0 1px var(--bad); }
+.status.open { color: var(--amber); box-shadow: inset 0 0 0 1px var(--amber); }
+
+/* tech index */
+.filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.filters input { flex: 1 1 240px; min-width: 0; background: var(--panel); color: var(--text); border: 1px solid var(--line-2); border-radius: 9px; padding: 9px 12px; font: inherit; }
+.filters input:focus-visible { outline: 2px solid var(--plate); outline-offset: 1px; }
+.chipbtn { background: var(--panel); color: var(--muted); border: 1px solid var(--line-2); border-radius: 999px; padding: 6px 12px; font: 500 .8rem var(--f-body); cursor: pointer; }
+.chipbtn[aria-pressed="true"] { background: var(--plate); color: var(--plate-ink); border-color: var(--plate); }
+.chipbtn:focus-visible { outline: 2px solid var(--plate); outline-offset: 2px; }
+.count { color: var(--faint); font: .78rem var(--f-mono); }
+
+footer { color: var(--faint); font-size: .8rem; border-top: 1px solid var(--line); padding-top: 18px; display: grid; gap: 8px; max-width: 100ch; }
+
+/* ---------- modal ---------- */
+dialog { width: min(1180px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: 0; border: 1px solid var(--line-2); border-radius: 16px;
+  background: var(--panel); color: var(--text); box-shadow: var(--shadow); overflow: hidden; }
+dialog::backdrop { background: rgba(5,7,10,.66); }
+@media (prefers-reduced-motion: no-preference) { dialog[open] { animation: pop .16s ease-out; } }
+@keyframes pop { from { opacity: 0; transform: translateY(6px) scale(.99); } }
+.dlg { display: grid; grid-template-rows: auto minmax(0, 1fr); max-height: calc(100vh - 34px); }
+.dlg-head { display: flex; gap: 12px; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--line); background: var(--panel-2); }
+.dlg-head .titles { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.dlg-head .kind { color: var(--faint); font: .72rem var(--f-mono); letter-spacing: .08em; text-transform: uppercase; }
+.dlg-head h3 { font-size: 1.6rem; line-height: 1.05; }
+.iconbtn { background: var(--panel); border: 1px solid var(--line-2); color: var(--text); border-radius: 9px; height: 36px; padding: 0 12px; cursor: pointer; font: 500 .8rem var(--f-body); display: inline-flex; align-items: center; gap: 6px; }
+.iconbtn:hover, .iconbtn:focus-visible { border-color: var(--plate); outline: none; }
+.dlg-body { overflow-y: auto; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 0; }
+.dlg-body.noimg { grid-template-columns: minmax(0, 1fr); }
+.dlg-body.noimg .dlg-text { max-width: 860px; }
+@media (max-width: 860px) { .dlg-body { grid-template-columns: minmax(0,1fr); } }
+.dlg-media { padding: 16px; border-right: 1px solid var(--line); display: grid; gap: 10px; align-content: start; min-width: 0; }
+@media (max-width: 860px) { .dlg-media { border-right: 0; border-bottom: 1px solid var(--line); } }
+.media-frame { max-height: 64vh; overflow: auto; border-radius: 10px; border: 1px solid var(--line); background: var(--panel-2); }
+.media-frame img { display: block; width: 100%; height: auto; cursor: zoom-in; }
+.media-frame.zoom img { width: auto; max-width: none; cursor: zoom-out; }
+.media-frame.white { background: #fff; }
+.media-cap { color: var(--muted); font-size: .8rem; }
+.thumbs { display: flex; gap: 8px; flex-wrap: wrap; }
+.thumbs button { border: 1px solid var(--line-2); background: var(--panel-2); border-radius: 8px; padding: 0; width: 84px; height: 54px; overflow: hidden; cursor: pointer; }
+.thumbs button[aria-current="true"] { border-color: var(--plate); box-shadow: 0 0 0 1px var(--plate); }
+.thumbs img { width: 100%; height: 100%; object-fit: cover; object-position: top; display: block; }
+.dlg-text { padding: 16px 20px 22px; display: grid; gap: 14px; align-content: start; min-width: 0; }
+.dlg-text .lead { font-size: 1rem; }
+.dlg-text h4 { font: 600 .72rem var(--f-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--faint); margin: 0 0 6px; }
+.dlg-text p + p { margin-top: 8px; }
+.dlg-text ul { margin: 0; padding-left: 1.1em; display: grid; gap: 4px; }
+.spec { width: 100%; font-size: .84rem; }
+.spec td { padding: 5px 0; border-bottom: 1px dashed var(--line); }
+.spec td:first-child { color: var(--muted); width: 38%; padding-right: 12px; }
+.spec td:last-child { font-variant-numeric: tabular-nums; }
+.io { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 520px) { .io { grid-template-columns: 1fr; } }
+.files { display: flex; flex-wrap: wrap; gap: 6px; }
+.files code { white-space: normal; word-break: break-all; }
+.rel { display: flex; flex-wrap: wrap; gap: 6px; }
+.rel button { display: inline-flex; gap: 6px; align-items: center; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; font: .8rem var(--f-body); cursor: pointer; }
+.rel button:hover, .rel button:focus-visible { border-color: var(--plate); outline: none; }
+.rel .pid { font-size: .6rem; }
+.callout { border-left: 3px solid var(--amber); background: var(--panel-2); padding: 10px 12px; border-radius: 0 8px 8px 0; font-size: .88rem; color: var(--text); }
+.callout.good { border-color: var(--good); }
+.callout.bad { border-color: var(--bad); }
+.charbars { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; align-items: end; height: 110px; padding-top: 6px; }
+.charbars div { display: grid; gap: 4px; justify-items: center; align-content: end; height: 100%; font: .68rem var(--f-mono); color: var(--muted); }
+.charbars span { width: 100%; background: var(--l2r); border-radius: 3px 3px 0 0; }
+.charbars div.min span { background: var(--amber); }
+.toast { position: fixed; bottom: calc(18px + env(safe-area-inset-bottom, 0px)); left: 50%; translate: -50% 0; background: var(--plate); color: var(--plate-ink); padding: 8px 14px; border-radius: 8px; font: 600 .82rem var(--f-body); box-shadow: var(--shadow); z-index: 10; }
+:focus-visible { outline: 2px solid var(--plate); outline-offset: 2px; }
+</style>
+
+<header class="mast" id="top">
+  <div class="mast-inner">
+    <div class="mast-top">
+      <svg class="plate-mark" viewBox="0 0 168 44" role="img" aria-label="ST26 TRK number plate">
+        <rect x="1.5" y="1.5" width="165" height="41" rx="5" fill="#F2C200" stroke="#1B2026" stroke-opacity="0.55" stroke-width="3"/>
+        <text x="84" y="29.5" text-anchor="middle" font-family="'IBM Plex Mono','Cascadia Code',Consolas,monospace" font-size="17" font-weight="700" letter-spacing="2.4" fill="#1B2026">ST26 TRK</text>
+      </svg>
+      <h1>StreetTracker Architecture</h1>
+    </div>
+    <p class="sub">One camera on a residential street, a Jetson Orin Nano that detects and tracks everything passing, and a Windows dev box that reads plates, looks them up with the DVSA, trains UK make, colour and body-type classifiers, and serves two local websites. Every component below has a plate-style ID you can quote, and each one opens a pop-up with its metrics, files and photos.</p>
+    <div class="meta">
+      <span><b>As of</b> 2026-10-05</span>
+      <span><b>Data</b> 2026-05-24 → 2026-10-04</span>
+      <span><b>Code</b> main @ 1ce37b8 · Orin @ 5f4ceb4</span>
+      <span><b>Repo</b> nicholasaross/StreetTracker</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+  <nav class="toc" aria-label="Sections">
+    <h4>Index</h4>
+    <ol>
+      <li><a href="#overview">Overview <span class="pid ghost">KPI</span></a></li>
+      <li><a href="#map">System map <span class="pid">SYS</span></a></li>
+      <li><a href="#hardware">Hardware <span class="pid">HW</span></a></li>
+      <li><a href="#runtime">Live runtime <span class="pid">RT</span></a></li>
+      <li><a href="#enrich">Enrichment <span class="pid">EN</span></a></li>
+      <li><a href="#training">Training <span class="pid">ML</span></a></li>
+      <li><a href="#storage">Data &amp; storage <span class="pid">ST</span></a></li>
+      <li><a href="#sites">Web apps <span class="pid">WEB</span></a></li>
+      <li><a href="#metrics">Metrics <span class="pid">MX</span></a></li>
+      <li><a href="#decisions">Decisions <span class="pid">DEC</span></a></li>
+      <li><a href="#tech">Technology <span class="pid">TECH</span></a></li>
+    </ol>
+    <p class="hint">Quote an ID (e.g. <b>RT-6</b>) to talk about a part. Every pop-up has a link such as <code>#rt-snap</code> that reopens it.</p>
+  </nav>
+
+  <main>
+    <!-- ================= OVERVIEW ================= -->
+    <section id="overview" aria-labelledby="h-overview">
+      <div class="sec-head">
+        <div class="eyebrow"><span class="pid ghost">KPI</span> Overview</div>
+        <h2 id="h-overview">What the system has done so far</h2>
+        <p>Totals across the 49 sessions pulled to the dev box. Session totals come from the control panel's inventory; traffic and people figures from the showcase <code>/stats</code> and <code>/people</code> pages.</p>
+      </div>
+      <div class="kpis" id="kpis"></div>
+    </section>
+
+    <!-- ================= SYSTEM MAP ================= -->
+    <section id="map" aria-labelledby="h-map">
+      <div class="sec-head">
+        <div class="eyebrow"><span class="pid">SYS</span> System map</div>
+        <h2 id="h-map">Three places: the street, the dev box, and outside services</h2>
+        <p>Select any box to open its pop-up. The Orin runs the live tracker around the clock. The dev box pulls each session's 4K snapshots and JSON over SSH and does all the heavy analysis on its RTX 3080. Nothing leaves the house except DVSA lookups and code pushes.</p>
+      </div>
+      <div class="scrollbox">
+        <svg viewBox="0 0 1200 714" role="group" aria-label="System map" id="sysmap">
+          <defs>
+            <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0,0 L10,5 L0,10 z"/></marker>
+            <marker id="ah-l2r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead l2r" d="M0,0 L10,5 L0,10 z"/></marker>
+            <marker id="ah-snap" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead snap" d="M0,0 L10,5 L0,10 z"/></marker>
+          </defs>
+          <!-- tiers -->
+          <rect class="svg-tier" x="16" y="44" width="390" height="636" rx="14"/>
+          <rect class="svg-tier" x="420" y="44" width="500" height="636" rx="14"/>
+          <rect class="svg-tier" x="934" y="44" width="250" height="636" rx="14"/>
+          <text class="svg-tier-label" x="32" y="70">EDGE · STREET + ORIN</text>
+          <g class="svg-node" data-n="hw-devbox" tabindex="0" role="button" aria-label="HW-4 Dev box"><text class="svg-tier-label" x="436" y="70">DEV BOX · WINDOWS 11 · RTX 3080 ›</text></g>
+          <text class="svg-tier-label" x="950" y="70">EXTERNAL</text>
+
+          <!-- long edges first so nodes draw on top -->
+          <path class="edge dash" d="M790,92 V30 H372 V242" marker-end="url(#ah)"/>
+          <text class="elabel" x="560" y="24">SSH · status · roll · pull estimate</text>
+          <path class="edge dash" d="M1168,455 H1176 V38 H380 V242" marker-end="url(#ah)"/>
+          <text class="elabel" x="955" y="34" >git pull (deploy)</text>
+          <path class="edge dash" d="M1060,606 V694 H26 V380 H40" marker-end="url(#ah)"/>
+          <text class="elabel" x="420" y="709">uv: torch 2.11 / torchvision 0.26 cp310 sm_87 wheels</text>
+
+          <!-- camera -->
+          <g class="svg-node" data-n="hw-camera" tabindex="0" role="button" aria-label="HW-1 Reolink camera">
+            <rect class="box" x="40" y="92" width="200" height="66" rx="10"/>
+            <rect class="idbg" x="52" y="102" width="36" height="16" rx="3"/><text class="tid" x="56" y="114">HW-1</text>
+            <text class="t1" x="96" y="115">Reolink RLC-1224A</text>
+            <text class="t2" x="52" y="140">12 MP turret · PoE · LAN</text>
+          </g>
+          <path class="edge l2r flow" d="M84,158 V240" marker-end="url(#ah-l2r)"/>
+          <path class="edge snap" d="M196,240 V158" marker-end="url(#ah-snap)"/>
+          <text class="elabel strong" x="92" y="186">RTSP/TCP</text>
+          <text class="elabel" x="92" y="199">H.264 896×512</text>
+          <text class="elabel strong" x="204" y="214">HTTP cmd=Snap</text>
+          <text class="elabel" x="204" y="227">4512×2512 JPEG</text>
+          <text class="elabel" x="252" y="108">sub → inference</text>
+          <text class="elabel" x="252" y="122">4K → plates, CNNs</text>
+
+          <!-- orin -->
+          <g class="svg-node" data-n="hw-orin" tabindex="0" role="button" aria-label="HW-2 Jetson Orin Nano">
+            <rect class="box" x="40" y="242" width="350" height="274" rx="12"/>
+            <rect class="idbg" x="52" y="254" width="36" height="16" rx="3"/><text class="tid" x="56" y="266">HW-2</text>
+            <text class="t1" x="96" y="267">Jetson Orin Nano Super · streettracker.service</text>
+          </g>
+          <g id="orin-chips"></g>
+
+          <!-- nvme + orin dashboard -->
+          <path class="edge" d="M110,516 V560" marker-end="url(#ah)"/>
+          <text class="elabel" x="116" y="542">jsonl fsync · snaps</text>
+          <path class="edge" d="M318,516 V560" marker-end="url(#ah)"/>
+          <g class="svg-node" data-n="hw-nvme" tabindex="0" role="button" aria-label="HW-3 NVMe">
+            <rect class="box" x="40" y="560" width="170" height="66" rx="10"/>
+            <rect class="idbg" x="52" y="570" width="36" height="16" rx="3"/><text class="tid" x="56" y="582">HW-3</text>
+            <text class="t1" x="96" y="583">1 TB NVMe</text>
+            <text class="t2" x="52" y="608">output/ 59 GB · 4K kept 7 d</text>
+          </g>
+          <g class="svg-node" data-n="web-orin" tabindex="0" role="button" aria-label="WEB-1 Orin dashboard">
+            <rect class="box" x="226" y="560" width="164" height="66" rx="10"/>
+            <rect class="idbg" x="238" y="570" width="44" height="16" rx="3"/><text class="tid" x="242" y="582">WEB-1</text>
+            <text class="t1" x="290" y="583">:8080</text>
+            <text class="t2" x="238" y="608">live session summary</text>
+          </g>
+
+          <!-- pull path -->
+          <path class="edge flow" d="M124,626 V660 H412 V360 H440" marker-end="url(#ah)"/>
+          <text class="elabel strong" x="220" y="654">SSH / scp · ~25 MB/s</text>
+
+          <!-- dev: websites -->
+          <g class="svg-node" data-n="web-showcase" tabindex="0" role="button" aria-label="WEB-2 Showcase">
+            <rect class="box" x="440" y="92" width="224" height="66" rx="10"/>
+            <rect class="idbg" x="452" y="102" width="44" height="16" rx="3"/><text class="tid" x="456" y="114">WEB-2</text>
+            <text class="t1" x="504" y="115">Showcase :8090</text>
+            <text class="t2" x="452" y="140">gallery · /stats · /people · /schedule</text>
+          </g>
+          <g class="svg-node" data-n="web-control" tabindex="0" role="button" aria-label="WEB-3 Control panel">
+            <rect class="box" x="680" y="92" width="224" height="66" rx="10"/>
+            <rect class="idbg" x="692" y="102" width="44" height="16" rx="3"/><text class="tid" x="696" y="114">WEB-3</text>
+            <text class="t1" x="744" y="115">Control panel :8095</text>
+            <text class="t2" x="692" y="140">playbooks · jobs · /training</text>
+          </g>
+          <g class="svg-node" data-n="web-triage" tabindex="0" role="button" aria-label="WEB-4 Triage site">
+            <rect class="box" x="440" y="172" width="224" height="44" rx="10"/>
+            <rect class="idbg" x="452" y="186" width="44" height="16" rx="3"/><text class="tid" x="456" y="198">WEB-4</text>
+            <text class="t1" x="504" y="199">Triage :8091 (ad hoc)</text>
+          </g>
+          <path class="edge dash" d="M792,158 V242" marker-end="url(#ah)"/>
+          <text class="elabel" x="798" y="206">runs jobs</text>
+
+          <!-- pull node -->
+          <g class="svg-node" data-n="en-pull" tabindex="0" role="button" aria-label="EN-1 pull">
+            <rect class="box" x="440" y="330" width="146" height="62" rx="10"/>
+            <rect class="idbg" x="452" y="340" width="36" height="16" rx="3"/><text class="tid" x="456" y="352">EN-1</text>
+            <text class="t1" x="496" y="353">pull</text>
+            <text class="t2" x="452" y="376">--only-main · resumable</text>
+          </g>
+          <path class="edge" d="M512,392 V560" marker-end="url(#ah)"/>
+
+          <!-- enrichment box -->
+          <g class="svg-node" data-n="en-overview" tabindex="0" role="button" aria-label="Enrichment playbooks">
+            <rect class="box" x="600" y="242" width="304" height="238" rx="12"/>
+            <text class="svg-group-title" x="614" y="266">EN · enrichment playbooks (GPU + net lanes)</text>
+          </g>
+          <g id="en-chips"></g>
+          <path class="edge" d="M904,318 H952" marker-end="url(#ah)"/>
+          <path class="edge" d="M952,334 H904" marker-end="url(#ah)"/>
+          <text class="elabel" x="908" y="310">HTTPS</text>
+
+          <!-- storage + training -->
+          <path class="edge" d="M620,560 V480" marker-end="url(#ah)"/>
+          <text class="elabel" x="626" y="528">JSON in/out</text>
+          <path class="edge" d="M440,594 H428 V126 H440" marker-end="url(#ah)"/>
+          <g class="svg-node" data-n="st-output" tabindex="0" role="button" aria-label="ST-2 output folder">
+            <rect class="box" x="440" y="560" width="200" height="66" rx="10"/>
+            <rect class="idbg" x="452" y="570" width="36" height="16" rx="3"/><text class="tid" x="456" y="582">ST-2</text>
+            <text class="t1" x="496" y="583">output/</text>
+            <text class="t2" x="452" y="608">1.01 TB · 49 sessions</text>
+          </g>
+          <g class="svg-node" data-n="st-configs" tabindex="0" role="button" aria-label="ST-5 configs and secrets">
+            <rect class="box" x="440" y="638" width="200" height="34" rx="9"/>
+            <rect class="idbg" x="452" y="647" width="36" height="16" rx="3"/><text class="tid" x="456" y="659">ST-5</text>
+            <text class="t2" x="496" y="660">configs/ + secrets</text>
+          </g>
+          <path class="edge" d="M640,580 H650 V532 H664" marker-end="url(#ah)"/>
+          <g class="svg-node" data-n="ml-overview" tabindex="0" role="button" aria-label="Training loop">
+            <rect class="box" x="664" y="496" width="240" height="92" rx="12"/>
+            <text class="svg-group-title" x="678" y="518">ML · train UK classifiers</text>
+          </g>
+          <g id="ml-chips"></g>
+          <path class="edge" d="M722,588 V604" marker-end="url(#ah)"/>
+          <path class="edge" d="M846,588 V604" marker-end="url(#ah)"/>
+          <g class="svg-node" data-n="st-runs" tabindex="0" role="button" aria-label="ST-3 runs folder">
+            <rect class="box" x="664" y="604" width="116" height="62" rx="10"/>
+            <rect class="idbg" x="676" y="614" width="36" height="16" rx="3"/><text class="tid" x="680" y="626">ST-3</text>
+            <text class="t1" x="676" y="650">runs/</text>
+          </g>
+          <g class="svg-node" data-n="st-models" tabindex="0" role="button" aria-label="ST-4 models">
+            <rect class="box" x="788" y="604" width="116" height="62" rx="10"/>
+            <rect class="idbg" x="800" y="614" width="36" height="16" rx="3"/><text class="tid" x="804" y="626">ST-4</text>
+            <text class="t1" x="800" y="650">models</text>
+          </g>
+          <path class="edge dash" d="M904,636 H918 V410 H904" marker-end="url(#ah)"/>
+          <text class="elabel" x="924" y="470" transform="rotate(90 924 470)">weights</text>
+
+          <!-- external -->
+          <g class="svg-node" data-n="ext-dvsa" tabindex="0" role="button" aria-label="EXT-1 DVSA MOT History API">
+            <rect class="box" x="952" y="292" width="216" height="66" rx="10"/>
+            <rect class="idbg" x="964" y="302" width="44" height="16" rx="3"/><text class="tid" x="968" y="314">EXT-1</text>
+            <text class="t1" x="1016" y="315">DVSA MOT History</text>
+            <text class="t2" x="964" y="340">plate → make / model / year</text>
+          </g>
+          <g class="svg-node" data-n="st-github" tabindex="0" role="button" aria-label="ST-6 GitHub">
+            <rect class="box" x="952" y="422" width="216" height="66" rx="10"/>
+            <rect class="idbg" x="964" y="432" width="36" height="16" rx="3"/><text class="tid" x="968" y="444">ST-6</text>
+            <text class="t1" x="1008" y="445">GitHub (public)</text>
+            <text class="t2" x="964" y="470">code · scene geometry · Release</text>
+          </g>
+          <path class="edge dash" d="M904,455 H952" marker-end="url(#ah)"/>
+          <text class="elabel" x="906" y="448">push</text>
+          <g class="svg-node" data-n="ext-wheels" tabindex="0" role="button" aria-label="EXT-2 jetson-ai-lab wheel index">
+            <rect class="box" x="952" y="540" width="216" height="66" rx="10"/>
+            <rect class="idbg" x="964" y="550" width="44" height="16" rx="3"/><text class="tid" x="968" y="562">EXT-2</text>
+            <text class="t1" x="1016" y="563">jetson-ai-lab index</text>
+            <text class="t2" x="964" y="588">jp6/cu126 · JP7 not yet</text>
+          </g>
+        </svg>
+        <div class="map-legend">
+          <span><i class="l2r"></i>video stream (live)</span>
+          <span><i class="snap"></i>4K snapshot request</span>
+          <span><i></i>data / file flow</span>
+          <span><i class="dash"></i>control, deploy or weights</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= HARDWARE ================= -->
+    <section id="hardware" aria-labelledby="h-hw">
+      <div class="sec-head">
+        <div class="eyebrow"><span class="pid">HW</span> Hardware</div>
+        <h2 id="h-hw">Four devices, one fixed view</h2>
+        <p>The camera's position is fixed and any extra camera would have to be discreet, so capture improvements come from timing, cropping and exposure rather than more hardware. Product photos are the makers' images, not this install.</p>
+      </div>
+      <div class="grid" id="hw-cards"></div>
+    </section>
+
+    <!-- ================= RUNTIME ================= -->
+    <section id="runtime" aria-labelledby="h-rt">
+      <div class="sec-head">
+        <div class="eyebrow"><span class="pid">RT</span> Live runtime on the Orin</div>
+        <h2 id="h-rt">From RTSP frame to finalized track</h2>
+        <p>One asyncio process (<code>device/runtime.py</code>) under systemd. The blocking frame reader runs in a thread, YOLO inference in an executor, HTTP through aiohttp. A track becomes a <code>TrackRecord</code> line in <code>events.jsonl</code> the moment it ends.</p>
+      </div>
+      <div class="flow" id="rt-flow"></div>
+      <div class="two">
+        <figure>
+          <img src="assets/scene_overlay.jpg" alt="4K snapshot with road polygon, pipeline bands, trigger lines, ghost mask and the fire-time and landing boxes of one car" data-n="rt-planner" width="1800" height="1002">
+          <figcaption>Snap 5 of track 2676 (a white Ford EcoSport, left → right, 2 Oct 10:09). Drawn from the tracked scene geometry: the operator-traced road polygon, the L→R pipeline band (blue), the R→L band (teal), the six trigger lines, the ghost mask (filled, as the ALPR stage zero-fills it), and this snap's fire-time box (dashed) against the box where the car actually was when the JPEG landed. Plates pixelated.</figcaption>
+        </figure>
+        <div class="chart">
+          <h3>Fire time vs landing, one track</h3>
+          <p class="note">Each 4K snap fires from the sub-stream box, then lands about 0.65 s later. Position along the road (t, 0 = far end), per snap. The car is leaving, so t falls.</p>
+          <svg id="lagchart" viewBox="0 0 420 260" role="img" aria-label="Fire-time versus landing position per snap"></svg>
+          <ul class="legend-list">
+            <li><span class="sw" style="background:var(--amber)"></span><span>fire-time box centre (what the planner saw)</span></li>
+            <li><span class="sw" style="background:var(--text)"></span><span>landing box centre (where the car was)</span></li>
+            <li><span class="sw" style="background:var(--l2r);opacity:.35"></span><span>L→R pipeline band, t 0.30–0.60</span></li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= ENRICHMENT ================= -->
+    <section id="enrich" aria-labelledby="h-en">
+      <div class="sec-head">
+        <div class="eyebrow"><span class="pid">EN</span> Offline enrichment on the dev box</div>
+        <h2 id="h-en">Plates, labels, vehicles, people</h2>
+        <p>The control panel chains these as playbooks. GPU work runs one job at a time in the GPU lane; pulls and DVSA calls run in the net lane alongside it. Each step reads and writes sidecar JSON next to the session, so any step can be re-run alone.</p>
+      </div>
+      <div class="flow" id="en-flow"></div>
+    </section>
+
+    <!-- ================= TRAINING ================= -->
+    <section id="training" aria-labelledby="h-ml">
+      <div class="sec-head">
+        <div class="eyebrow"><span class="pid">ML</span> Training loop</div>
+        <h2 id="h-ml">The DVSA labels the street's own cars, and the street trains the models</h2>
+        <p>Plate reads that pass the gate get DVSA make, model and colour. Those labels turn the cars' own 4K crops into a UK training set, so the classifiers can name the cars whose plates were never read.</p>
+      </div>
+      <div class="flow" id="ml-flow"></div>
+      <div class="sec-head" style="margin-top:6px">
+        <div class="eyebrow"><span class="pid">ML-5</span> Model registry</div>
+      </div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Model</th><th>Architecture</th><th>Classes</th><th>Trained on</th><th>Promoted</th><th class="num">Fresh cars</th><th class="num">Known cars, new passes</th></tr></thead>
+          <tbody>
+            <tr data-n="ml-make"><td><span class="pid">ML-5a</span> Make</td><td>EfficientNet-B6 @528</td><td>62 makes</td><td><code>uk_crops_0929_576</code> · 4,347 cars · 76,033 crops</td><td>2026-10-01</td><td class="num">85.0 % <span class="mono" style="color:var(--good)">+4.2</span></td><td class="num">95.1 % <span class="mono" style="color:var(--good)">+1.5</span></td></tr>
+            <tr data-n="ml-make"><td><span class="pid">ML-5b</span> Colour</td><td>EfficientNet-B0 @384</td><td>11 colours</td><td>same corpus · 4,346 cars</td><td>2026-10-03</td><td class="num">83.3 % <span class="mono" style="color:var(--good)">+7.1</span></td><td class="num">93.5 % <span class="mono" style="color:var(--good)">+6.6</span></td></tr>
+            <tr data-n="ml-make"><td><span class="pid">ML-5c</span> Body type</td><td>EfficientNet-B0 @384</td><td>7 shapes</td><td>same corpus · 4,086 cars</td><td>2026-10-03</td><td class="num">89.1 % <span class="mono" style="color:var(--faint)">+1.3</span></td><td class="num">95.9 % <span class="mono" style="color:var(--good)">+3.1</span></td></tr>
+            <tr data-n="en-alpr"><td><span class="pid">ML-5d</span> Plate detector</td><td>YOLOv9-t 640 end2end (ONNX)</td><td>plate</td><td>pre-trained, open-image-models 0.5.1</td><td>default 2026-05-25</td><td class="num">—</td><td class="num">—</td></tr>
+            <tr data-n="en-rescore"><td><span class="pid">ML-5e</span> Plate OCR</td><td>global-plates-mobile-vit-v2 (ONNX)</td><td>characters</td><td>pre-trained, fast-plate-ocr 1.1.0</td><td>—</td><td class="num">—</td><td class="num">—</td></tr>
+            <tr data-n="rt-detect"><td><span class="pid">ML-5f</span> Detector + tracker</td><td>YOLOv8m · TensorRT FP16 @640 (Orin); @1920 offline</td><td>7 COCO classes live</td><td>COCO pre-trained</td><td>2026-05-21 engine</td><td class="num">—</td><td class="num">—</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="lede" style="color:var(--muted);font-size:.86rem">Per-track accuracy on the unseen sessions <code>session_20260924_104939</code> + <code>session_20260930_211033</code>. "Fresh cars" are cars in no training corpus (117 / 118 / 109); "known cars" are every labelled car, scored only on passes recorded after all training data (710 / 711 / 674). Deltas are percentage points against the model each one replaced.</p>
+      <div class="chart">
+        <div class="eyebrow" style="display:flex;gap:10px;align-items:center;color:var(--faint);font:500 .76rem var(--f-mono);letter-spacing:.12em;text-transform:uppercase"><span class="pid">ML-6</span> Make classifier history</div>
+        <h3>Validation make@1 by training run</h3>
+        <p class="note">Each point is scored on its own validation split, so heights aren't comparable across runs. The jump at 24 Sep is the crop fix: earlier runs trained and validated on crops that mostly missed the car. The trustworthy comparisons are the head-to-heads in the pop-ups.</p>
+        <svg id="histchart" viewBox="0 0 760 300" role="img" aria-label="Make classifier validation accuracy over time"></svg>
+      </div>
+    </section>
+
+    <!-- ================= STORAGE ================= -->
+    <section id="storage" aria-labelledby="h-st">
+      <div class="sec-head">
+        <div class="eyebrow"><span class="pid">ST</span> Data &amp; storage</div>
+        <h2 id="h-st">Files, not a database</h2>
+        <p>Every stage writes plain JSON or JPEG next to the session it came from. That makes each step restartable and lets the websites rebuild their views from disk. The Orin keeps 4K stills for 7 days; the dev box keeps everything, which is why pulls have a deadline.</p>
+      </div>
+      <div class="grid" id="st-cards"></div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Per-session file</th><th>Written by</th><th>Read by</th><th>Format</th><th class="num">Size, 62.7 h session</th><th>Kept</th></tr></thead>
+          <tbody id="files-body"></tbody>
+        </table>
+      </div>
+      <p class="lede" style="color:var(--faint);font-size:.82rem">Sizes from <code>session_20261001_190826</code> (62.7 h, 2,719 kept tracks, 9,049 4K stills). Field lists for <code>TrackRecord</code> and <code>SessionMeta</code> are in <span class="pid">ST-2</span>.</p>
+    </section>
+
+    <!-- ================= SITES ================= -->
+    <section id="sites" aria-labelledby="h-web">
+      <div class="sec-head">
+        <div class="eyebrow"><span class="pid">WEB</span> Web apps</div>
+        <h2 id="h-web">Four local websites</h2>
+        <p>All four are aiohttp + Jinja2 with dependency-free SVG charts. Screenshots were captured on 5 Oct 2026 with plates and personal tags blocked out (yellow bars) and plates inside photos pixelated.</p>
+      </div>
+      <div class="grid" id="web-cards"></div>
+    </section>
+
+    <!-- ================= METRICS ================= -->
+    <section id="metrics" aria-labelledby="h-mx">
+      <div class="sec-head">
+        <div class="eyebrow"><span class="pid">MX</span> Metrics</div>
+        <h2 id="h-mx">Numbers worth arguing about</h2>
+        <p>Each figure names its source and date. "Canonical" means the read matches a UK plate format; a canonical read isn't proof the plate belongs to the tracked car (see <span class="pid">EN-5</span>).</p>
+      </div>
+      <div class="mx" id="mx"></div>
+    </section>
+
+    <!-- ================= DECISIONS ================= -->
+    <section id="decisions" aria-labelledby="h-dec">
+      <div class="sec-head">
+        <div class="eyebrow"><span class="pid">DEC</span> Decisions</div>
+        <h2 id="h-dec">Locked decisions and disproved beliefs</h2>
+        <p>The project has a habit of measuring its own claims. These are the choices that are settled, and the confident findings that later measurement overturned.</p>
+      </div>
+      <div class="dec">
+        <div><h3 style="margin-bottom:10px">Locked</h3><ul id="dec-locked"></ul></div>
+        <div><h3 style="margin-bottom:10px">Disproved or superseded</h3><ul id="dec-false"></ul></div>
+      </div>
+    </section>
+
+    <!-- ================= TECH ================= -->
+    <section id="tech" aria-labelledby="h-tech">
+      <div class="sec-head">
+        <div class="eyebrow"><span class="pid">TECH</span> Technology index</div>
+        <h2 id="h-tech">Every named library, tool and technique</h2>
+        <p>Versions are the ones pinned in <code>uv.lock</code> or read off the devices on 5 Oct 2026. Select a row to open the component that uses it.</p>
+      </div>
+      <div class="filters">
+        <input id="tech-q" type="search" placeholder="Filter: e.g. onnx, tracker, DVSA" aria-label="Filter technologies">
+        <div id="tech-cats" class="filters"></div>
+        <span class="count" id="tech-count"></span>
+      </div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Name</th><th>Version</th><th>Role here</th><th>Used by</th></tr></thead>
+          <tbody id="tech-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer>
+      <p><b>Sources.</b> Live APIs of the showcase (<code>/api/stats</code>, <code>/api/cars</code>) and control panel (<code>/api/orin</code>, <code>/api/sessions</code>, <code>/api/model</code>, <code>/api/corpus</code>), model <code>*.meta.json</code> sidecars, session <code>_meta.json</code>, <code>uv.lock</code>, read-only shell queries on the Orin and dev box, and the project's CLAUDE.md and <code>docs/data_integrity_review.md</code> for dated historical results.</p>
+      <p><b>Photos.</b> RLC-1224A © Reolink. Jetson Orin Nano Developer Kit © NVIDIA. Alienware Aurora R13 © Dell. M.2 NVMe drive by User5515, CC0, via Wikimedia Commons (representative; the installed drive is a Lexar 1 TB). Jetson Nano Developer Kit by SparkFun Electronics, CC BY 2.0, via Wikimedia Commons.</p>
+      <p><b>Privacy.</b> Plate strings and operator tags are blocked out, plates in photos are pixelated, and no person close-ups are shown. Person-side identity work stays off this page by design.</p>
+    </footer>
+  </main>
+</div>
+
+<dialog id="dlg" aria-labelledby="dlg-title">
+  <div class="dlg">
+    <div class="dlg-head">
+      <span class="pid" id="dlg-pid"></span>
+      <div class="titles"><span class="kind" id="dlg-kind"></span><h3 id="dlg-title"></h3></div>
+      <button class="iconbtn" id="dlg-link" type="button" title="Copy a link to this pop-up">Copy link</button>
+      <button class="iconbtn" id="dlg-close" type="button" aria-label="Close">Close</button>
+    </div>
+    <div class="dlg-body" id="dlg-body"></div>
+  </div>
+</dialog>
+
+<script>
+(() => {
+'use strict';
+const A = 'assets/';
+const sp = rows => rows; // spec rows [[k, v], ...]
+
+/* ------------------------------------------------------------------ */
+/* Node registry: one entry per discussion ID                          */
+/* ------------------------------------------------------------------ */
+const N = {
+/* ---------------- hardware ---------------- */
+'hw-camera': { pid: 'HW-1', kind: 'Hardware · camera', title: 'Reolink RLC-1224A',
+  imgs: [[A + 'hw_camera.jpg', 'RLC-1224A turret, product dimensions. Photo © Reolink.', 'white'], [A + 'hw_camera2.jpg', 'Adjustable 360° pan, 90° tilt. Photo © Reolink.', 'white'], [A + 'scene_overlay.jpg', 'What this camera sees (4K snap, plates pixelated).']],
+  lead: 'A 12 MP PoE turret camera looking down the street from the house. It feeds two things: a small H.264 sub-stream for live detection, and on-demand 4K JPEG stills for plates and classifiers.',
+  specs: sp([['Model', 'Reolink RLC-1224A (config <code>camera.model</code>)'], ['Main stream', '4512 × 2512 ("4K"), H.265; stills via HTTP <code>cmd=Snap</code>'], ['Sub-stream', 'H.264 896 × 512 → inference'], ['Transport', 'RTSP over TCP, OpenCV FFmpeg backend'], ['Still size', '≈1.45 MB per JPEG'], ['Still latency', 'p50 640 · p90 914 · p99 1,207 ms (session 1 Oct)'], ['Exposure', 'Auto, shutter cap 125, gain 1–62, 3D noise reduction on'], ['Day/night', 'Forced <b>Color</b> since 2026-09-28 (was Auto)']]),
+  html: `<div class="callout">IR night mode blinded the tracker: monochrome frames skip inference, and IR took <b>41.7 %</b> of September's session time. Forcing colour fixed the blindness but not the dusk problem: low-light plates are motion-blurred, not dark (see <a href="#dec-lowlight">DEC: low light</a>).</div>
+  <p>The 4K resolution is really 4512 × 2512. An early ghost-mask draft assumed 3840 × 2160 and landed 1.175× off, so every 4K coordinate file carries a <code>source_size</code>.</p>
+  <p>The read-only <code>cv</code> account can't change the image settings; <code>SetIsp</code> needs admin.</p>`,
+  io: { in: ['Mains PoE, LAN'], out: ['RTSP sub-stream → <span class="pid">RT-1</span>', '4K JPEG stills → <span class="pid">RT-6</span>'] },
+  files: ['configs/camera.json (on the Orin)', '.claude/reolink_isp_current.json', '.claude/setexp*.py (private)'],
+  rel: ['rt-source', 'rt-snap', 'rt-ir', 'hw-orin', 'dec-antismear'] },
+
+'hw-orin': { pid: 'HW-2', kind: 'Hardware · edge computer', title: 'NVIDIA Jetson Orin Nano 8 GB, Super dev kit',
+  imgs: [[A + 'hw_orin.jpg', 'Jetson Orin Nano Developer Kit. Photo © NVIDIA.'], [A + 'hw_orin2.jpg', 'Carrier board and fan module. Photo © NVIDIA.']],
+  lead: 'Runs the whole live pipeline as one systemd service: decode, YOLOv8m on TensorRT, BotSORT tracking, the 4K snap planner, and the session files. Live since the cutover on 2026-05-22.',
+  specs: sp([['Board', '"Orin Nano Engineering Reference Developer Kit Super"'], ['GPU', 'Ampere, sm_87 (TensorRT engines must be built on it)'], ['CPU / RAM', '6 cores · 7.4 GiB usable'], ['OS', 'JetPack 6.2.2 (L4T R36.5) · Ubuntu 22.04.5 · kernel 5.15.185-tegra'], ['CUDA / TensorRT', '12.6.11 / 10.3.0.30'], ['Python stack', '3.10 via uv · torch 2.11.0 + torchvision 0.26.0 (jetson-ai-lab jp6/cu126)'], ['Engine', '<code>yolov8m.engine</code>, 55 MB, FP16, built 2026-05-21'], ['Power mode', '<code>nvpmodel</code> reports <b>15W</b>'], ['Throughput', '≈9.5 fps pipeline · 98–106 ms avg inference'], ['Service', 'active since 2026-10-04 09:52 · 0 restarts · code 5f4ceb4 (PR #123) · up 99 days']]),
+  html: `<div class="callout">Discussion point: the board reports the <b>15W</b> power mode, not the Super kit's higher modes, while inference averages ~100 ms per frame. Whether more power would buy frame rate (and fewer short-dwell misses) hasn't been measured.</div>
+  <p>The unit file passes <code>--no-sync</code> so a <code>uv</code> hiccup can't replace the Jetson torch wheel with a PyPI one. A rebuilt <code>.venv</code> loses the system TensorRT symlinks; <code>scripts/setup_orin.sh --symlinks-only</code> restores them.</p>
+  <p>JetPack 7.2 is out but blocked: there is no jp7 sm_87 torch wheel on jetson-ai-lab yet, and there is only one Orin, so a flash goes on a second NVMe with the JP6 drive kept as rollback.</p>`,
+  io: { in: ['RTSP + HTTP from <span class="pid">HW-1</span>'], out: ['Session files on <span class="pid">HW-3</span>', 'Dashboard <span class="pid">WEB-1</span>'] },
+  files: ['scripts/systemd/streettracker.service', 'scripts/setup_orin.sh', 'scripts/check_jp7_wheel.ps1', '/etc/sudoers.d/streettracker-svc'],
+  rel: ['rt-source', 'rt-detect', 'rt-track', 'rt-planner', 'rt-snap', 'hw-nvme', 'ext-wheels', 'hw-nano'] },
+
+'hw-nvme': { pid: 'HW-3', kind: 'Hardware · storage', title: '1 TB NVMe on the Orin',
+  imgs: [[A + 'hw_nvme.jpg', 'Representative M.2 2280 NVMe drive. User5515, CC0, Wikimedia Commons. The installed drive reports as a Lexar 1 TB.', 'white']],
+  lead: 'Holds the OS, the venv, the engine and the live output folder. The runtime prunes 4K stills older than 7 days; everything else stays.',
+  specs: sp([['Drive', 'Lexar 1 TB NVMe (<code>lsblk</code>)'], ['Filesystem', '937 GB · 88 GB used (10 %)'], ['output/', '59 GB'], ['Prune', '<code>keep_days 7</code>, hourly, by file mtime, inside the live runtime'], ['On device now', 'live 4,734 stills (5.9 d left) · 1 Oct 9,049 (3.3 d) · 30 Sep 4,461 (2.4 d) · 24 Sep expired']]),
+  html: `<div class="callout bad">Deadline: <code>session_20261001_190826</code>'s first stills age out around 8 Oct. It is already pulled; the live session is not, and will start losing stills about 11 Oct.</div>`,
+  io: { in: ['<span class="pid">RT-6</span> stills, <span class="pid">RT-7</span> records'], out: ['<span class="pid">EN-1</span> pull'] },
+  files: ['~/streettracker/output/session_*'], rel: ['st-orin', 'rt-prune', 'en-pull'] },
+
+'hw-devbox': { pid: 'HW-4', kind: 'Hardware · analysis machine', title: 'Dev box: Alienware Aurora, RTX 3080',
+  imgs: [[A + 'hw_devbox.jpg', 'Alienware Aurora R13 (board ID matches). Photo © Dell.', 'white']],
+  lead: 'A Windows 11 desktop that pulls sessions, runs every GPU analysis step, trains the classifiers and hosts the showcase and control panel.',
+  specs: sp([['CPU', 'Intel Core i7-12700KF · 12 cores / 20 threads'], ['RAM', '31.8 GB'], ['GPU', 'NVIDIA GeForce RTX 3080 10 GB (Dell OEM) · driver 32.0.16.1088'], ['Disks', 'WD_BLACK SN7100 2 TB · WD SN810 1 TB · Samsung 850 EVO 250 GB · Seagate 2 TB HDD'], ['D: volume', '1.10 TB used of 2.0 TB (output/ ≈1.01 TB · runs/ 56.3 GB)'], ['OS', 'Windows 11 Pro 26200'], ['Python', '3.10 venv via uv · torch 2.12.0+cu126 · onnxruntime-gpu 1.19.2']]),
+  html: `<p><b>VRAM is the training limit.</b> EfficientNet-B6 at 528 px needs 9.49 GiB at batch 8, which spills 834 MiB into Windows shared memory and runs 5.4× slower (3.4 vs 18.2 img/s). Training therefore runs at batch 6, with the Reolink desktop client closed.</p>
+  <p><b>Long jobs need a wake-lock.</b> The box idle-sleeps; the panel holds <code>SetThreadExecutionState</code> for a whole playbook plus 120 s. The showcase and panel start at logon as Scheduled Tasks via hidden VBS launchers.</p>
+  <p>DataLoader workers > 0 stall on Windows, so training uses <code>--num-workers 0</code>.</p>`,
+  io: { in: ['<span class="pid">EN-1</span> pulls from the Orin'], out: ['<span class="pid">WEB-2</span>, <span class="pid">WEB-3</span>', 'pushes to <span class="pid">ST-6</span>'] },
+  files: ['scripts/control_panel.ps1', '.claude/*.vbs launchers'], rel: ['st-output', 'ml-train', 'web-control', 'web-showcase'] },
+
+'hw-nano': { pid: 'HW-0', kind: 'Hardware · retired', title: 'Jetson Nano (NanoTracker), retired',
+  imgs: [[A + 'hw_nano.jpg', 'NVIDIA Jetson Nano Developer Kit. SparkFun Electronics, CC BY 2.0, Wikimedia Commons.']],
+  lead: 'The original device. StreetTracker replaced its hand-written YOLOv8 decode, NumPy NMS and IoU tracker with Ultralytics on TensorRT plus BotSORT.',
+  specs: sp([['Last run', '986,619 frames over 27.6 h, stopped cleanly 2026-05-22'], ['Successor', 'Orin service live 15:42 BST, 2026-05-22'], ['Repos', 'VehicleTracker + NanoTracker archived 2026-07-07']]),
+  html: '<p>The session output schema (tiles, HQ crops, <code>_main_N</code> stills, jsonl events) was kept from NanoTracker, so old dashboards and tools kept working.</p>',
+  rel: ['hw-orin', 'dec-asyncio'] },
+
+/* ---------------- runtime ---------------- */
+'rt-source': { pid: 'RT-1', kind: 'Runtime · input', title: 'Frame source', lead: 'Reads the camera sub-stream and hands frames to the async loop.',
+  specs: sp([['Stream', 'H.264 896 × 512 sub-stream over RTSP/TCP'], ['Library', 'OpenCV <code>cv2.CAP_FFMPEG</code>, <code>rtsp_transport;tcp</code>'], ['Threading', 'reader thread → <code>asyncio.Queue</code>'], ['Rate', '2,152,813 frames in 62.7 h → ≈9.5 fps'], ['File input', 'MP4 on Orin uses GStreamer <code>nvv4l2decoder</code> (NVDEC)']]),
+  html: '<p>GStreamer stalls on Reolink keyframes for live RTSP, so live input is FFmpeg-only. The config loader falls back to matching <code>stream.quality</code> when a NanoTracker-era stream name doesn\'t match.</p>',
+  files: ['src/streettracker/sources/rtsp.py', 'src/streettracker/sources/file.py', 'src/streettracker/cli/run.py'], rel: ['hw-camera', 'rt-detect'] },
+'rt-detect': { pid: 'RT-2', kind: 'Runtime · detection', title: 'YOLOv8m on TensorRT',
+  lead: 'Ultralytics loads the on-device engine and runs detection with integrated tracking each frame.',
+  specs: sp([['Model', 'YOLOv8m (COCO), FP16 TensorRT engine, input 640'], ['Classes live', 'person, bicycle, car, motorcycle, bus, truck, dog <code>[0,1,2,3,5,7,16]</code>'], ['Export', '<code>export-engine</code>: .pt → ONNX (onnxslim) → .engine, validated with onnxruntime'], ['Latency', '97.9 ms avg (1 Oct session) · 106 ms (live, 5 Oct)'], ['Live session so far', '636 cars · 607 persons · 76 bicycles · 34 dogs · 21 motorcycles · 17 trucks · 1 bus']]),
+  html: '<p>Engines aren\'t portable across GPU architectures; the config validator fails fast with a JSON-path error if <code>engine_path</code> is missing. The same YOLOv8m runs offline at 1920 px as the vehicle locator (<span class="pid">EN-8</span>).</p>',
+  files: ['src/streettracker/inference/ultralytics_runner.py', 'src/streettracker/cli/export_engine.py', 'yolov8m.engine'], rel: ['rt-track', 'en-cnn', 'hw-orin'] },
+'rt-track': { pid: 'RT-3', kind: 'Runtime · tracking', title: 'BotSORT + class voting',
+  lead: 'Ultralytics\' BotSORT links detections into tracks; StreetTracker votes on each track\'s class by summed confidence.',
+  specs: sp([['Thresholds', 'high 0.5 · low 0.1 · new track 0.6 · match 0.8'], ['Buffer', '30 frames without a detection'], ['Motion comp.', 'sparse optical flow (GMC)'], ['Re-ID', 'off'], ['Class', '<code>argmax(Σ detection score)</code> per class, ties by insertion order']]),
+  html: '<p>Class voting (PR #23) stopped a single stray frame from relabelling a whole track. The file prefix is locked at finalize and early snaps are renamed if the class flipped (PR #21). BotSORT can still split one car into two tracks; the vehicles step merges same-plate fragments.</p>',
+  files: ['configs/botsort.yaml', 'src/streettracker/device/track_buffer.py'], rel: ['rt-detect', 'rt-attr', 'en-vehicles'] },
+'rt-attr': { pid: 'RT-4', kind: 'Runtime · attributes', title: 'Per-track attributes',
+  lead: 'Direction, speed, colour, lane, entry and exit points, and a misclassification guard, computed from the track history.',
+  specs: sp([['Speed', '<code>speed_px_s</code> in inference pixels; the showcase converts with <code>road_length_m 30</code> → 30/801 m per px'], ['Colour', 'HSV vote, 8 colours (superseded offline by the CNN head)'], ['Guardrail', '<code>class_suspect</code> when a "person" has median box w/h ≥ 1.5'], ['Door origin', '<code>entry_point_frac</code> / <code>exit_point_frac</code> since 2026-07-19']]),
+  html: '<p>The 1.5 aspect cut-off came from six soaks: person p99 0.82, rider max 1.44, car p25 1.40. Speeds on this street are compressed (average 7.7 mph), and the mph figure ignores perspective.</p>',
+  files: ['src/streettracker/common/color.py', 'src/streettracker/common/schema.py'], rel: ['rt-track', 'en-people', 'en-cnn'] },
+'rt-planner': { pid: 'RT-5', kind: 'Runtime · capture policy', title: 'Snap planner (RoadGate)',
+  imgs: [[A + 'scene_overlay.jpg', 'Road polygon, bands, triggers and ghost mask on a 4K snap. Plates pixelated.']],
+  lead: 'Decides when to request a 4K still for each track, based on where its box centre sits along the operator-traced road.',
+  specs: sp([['Geometry', '23-vertex polygon; PCA principal axis; t = projection, 0 far → 1 near'], ['Triggers', '6 direction-tagged lines; fire once each on crossing'], ['Pipeline mode', 'every 400 ms while in band, max 15 per track'], ['Bands', 'R→L [0.10, 0.20] · L→R [0.30, 0.60] (absolute t)'], ['1 Oct session', '8,529 pipeline fires · 17,108 throttled · 591 hit the 15 cap'], ['Time in band', 'p50 116 ms · p90 2,065 ms per track']]),
+  html: '<p>Pipeline fires outnumber trigger fires about 10 to 1. The L→R lower edge moved 0.25 → 0.30 on 2026-06-19 because departing cars travel about 0.10 t during the snap latency.</p><p>Schema-additive fields like <code>pipeline_t_usable_by_direction</code> must reach the Orin\'s code before its <code>camera.json</code>, or the strict loader crash-loops the service.</p>',
+  files: ['src/streettracker/device/snap_planner.py', '.claude/snap_gate.json', '.claude/triggers_proposal.json', '.claude/sketch_me_done.png'], rel: ['rt-snap', 'dec-schema', 'dec-rlcap'] },
+'rt-snap': { pid: 'RT-6', kind: 'Runtime · 4K capture', title: 'Snapshotter',
+  imgs: [[A + 'track_snaps.jpg', 'Four of track 2676\'s eight 4K stills, 1.0 s apart. Plates and the ghost-mask region pixelated.']],
+  lead: 'Fetches a 4K JPEG from the camera over HTTP whenever the planner fires, and records where the car was at fire time and at landing.',
+  specs: sp([['Client', 'aiohttp, <code>max_concurrent 2</code>, 5 s timeout'], ['1 Oct session', '9,936 attempts · 9,936 succeeded · 0 failed · 2,059 dropped (both slots busy)'], ['Latency', 'min 290 · p50 640 · p90 914 · p99 1,207 · max 4,118 ms'], ['Per track', 'mean 1.9 stills, p90 5, max 18'], ['Records', '<code>main_snap_bboxes</code> (fire) · <code>main_snap_bboxes_done</code> (landing) · fire/done unix times + trajectories since 2026-10-04']]),
+  html: '<div class="callout">The still lands ~0.65 s after the fire decision, so the fire-time box is stale. Cropping at that box sent the plate reader empty road and parked cars for months (see <a href="#dec-rlcap">DEC: R→L cap</a>, <a href="#dec-crops">DEC: crops</a>).</div><p>Back-to-back requests can return the same frame: snaps 8 and 9 of track 2676 are identical.</p>',
+  files: ['src/streettracker/device/snapshotter.py', 'src/streettracker/device/runtime.py'], rel: ['rt-planner', 'en-alpr', 'hw-camera'] },
+'rt-finalize': { pid: 'RT-7', kind: 'Runtime · persistence', title: 'Finalize + EventLog',
+  imgs: [[A + 'sample_hq.jpg', 'The tracker\'s HQ crop of track 2676 (349 × 247 sub-stream pixels, shown 3×). Plates pixelated.']],
+  lead: 'When a track ends it is filtered, its images are saved, and its TrackRecord is appended to events.jsonl with fsync.',
+  specs: sp([['Filters', 'min duration 1.0 s · parked if displacement < 50 px'], ['Images', 'tile q85 ~80 px · HQ crop q95 ~250 px (sharpest, largest view)'], ['Log', 'one JSON line per track, fsync (crash-safe)'], ['Trajectories', 'every 3rd box + last, ≤ ~200 rows (since 2026-10-04)']]),
+  html: '<div class="callout bad">Known gap: an estimated 36–45 % of person appearances are dropped at finalize by the parked/duration filters, which deletes their records but not their images. Door trips are the worst hit.</div><p>Since 4 Oct the HQ crop is pulled with the stills, because fast cars often leave the frame before their 4K still lands.</p>',
+  files: ['src/streettracker/common/output.py', 'src/streettracker/device/track_buffer.py'], rel: ['rt-summary', 'st-orin', 'en-people'] },
+'rt-summary': { pid: 'RT-8', kind: 'Runtime · outputs', title: 'Summary, rollups, shutdown',
+  lead: 'Regenerates the dashboard when the street goes quiet and writes the session files on shutdown.',
+  specs: sp([['Idle regen', 'summary HTML after 10 s with no active tracks'], ['Shutdown', 'SIGTERM → stop source, drain tracks, write data/meta/hourly, bounded at 30 s'], ['Dashboard', 'aiohttp static server on :8080']]),
+  files: ['src/streettracker/common/summary.py', 'src/streettracker/common/hourly.py', 'src/streettracker/device/dashboard.py'], rel: ['web-orin', 'rt-finalize'] },
+'rt-ir': { pid: 'RT-9', kind: 'Runtime · night', title: 'IR detector',
+  lead: 'Watches for the camera\'s monochrome IR mode; frames in IR mode skip inference.',
+  specs: sp([['Behaviour', 'monochrome frames → no inference (<code>device/runtime.py</code>)'], ['September', 'IR mode took 41.7 % of session time'], ['Now', 'camera forced to colour since 2026-09-28']]),
+  html: '<p>The overnight capture of 4–5 Oct showed forced-colour nights are genuinely quiet, not missed. An IR illuminator only helps in IR mode, so it would also need inference to run on IR frames.</p>',
+  files: ['src/streettracker/device/ir_detector.py'], rel: ['hw-camera', 'dec-lowlight'] },
+'rt-prune': { pid: 'RT-10', kind: 'Runtime · housekeeping', title: '4K prune',
+  lead: 'Deletes 4K stills older than 7 days, hourly, inside the live runtime. JSON, tiles and HQ crops stay.',
+  specs: sp([['Rule', '<code>keep_days 7</code> · <code>cleanup_interval_s 3600</code> · per-file mtime']]),
+  rel: ['hw-nvme', 'en-pull'] },
+
+/* ---------------- enrichment ---------------- */
+'en-overview': { pid: 'EN', kind: 'Enrichment', title: 'Enrichment playbooks', lead: 'The per-session chain run by the control panel.',
+  html: '<p><b>enrich</b>: alpr-run → dvsa-label → dvsa-apply → vehicles → makemodel → bodytype → colour → people. <b>platecheck</b> (5 Oct): alpr-colour on every session, then dvsa-label → dvsa-apply → vehicles each, then a showcase refresh: 197 steps in 24 min. <b>rescore</b>: 185 steps in 108 min.</p>',
+  rel: ['en-pull', 'en-alpr', 'en-rescore', 'en-colour', 'en-gate', 'en-dvsa', 'en-vehicles', 'en-cnn', 'en-people', 'en-classify'] },
+'en-pull': { pid: 'EN-1', kind: 'Enrichment · transfer', title: 'pull',
+  lead: 'Copies a session from the Orin to the dev box over SSH/scp.',
+  specs: sp([['Default', '<code>--only-main</code>: 4K stills + vehicle HQ crops + JSON'], ['Rate', '≈25 MB/s; the live session is ≈6.5 GB, ~4.5 min'], ['Resume', '<code>--skip-existing</code>, re-fetches zero-filled JPEGs (PR #97)'], ['Parallelism', 'knee at 4 streams']]),
+  html: '<p>An interrupted pull once left 634 full-size all-zero JPEGs that the old name-only diff never re-fetched (195 cars lost). Run it from PowerShell: Git Bash rewrites <code>/home/...</code> arguments.</p>',
+  files: ['src/streettracker/cli/pull.py'], rel: ['hw-nvme', 'st-output', 'web-control'] },
+'en-alpr': { pid: 'EN-2', kind: 'Enrichment · plates', title: 'alpr-run',
+  imgs: [[A + 'track_snaps.jpg', 'The 4K stills alpr-run reads. Plates pixelated.']],
+  lead: 'Finds and reads the tracked car\'s plate in each 4K still, using the full frame matched against the car\'s trajectory instead of the stale fire-time box.',
+  specs: sp([['Crop mode', '<code>fullframe</code> (default since 2026-07-28): trajectory-matched'], ['Detector', 'open-image-models <code>yolo-v9-t-640-license-plate-end2end</code>'], ['OCR', 'fast-plate-ocr <code>global-plates-mobile-vit-v2-model</code>'], ['Runtime', 'ONNX Runtime CUDA EP (onnxruntime-gpu 1.19.2)'], ['Masks', 'ghost mask zero-fills a parked car; static filter drops background plates'], ['Result', 'net per-car canonical read <b>68.3 %</b> (R→L 69.7, L→R 66.8), from ~45 %']]),
+  html: '<p>Output per still in <code>_alpr.json</code>, best read per track in <code>_alpr_by_track.json</code>, plate crops in <code>alpr_crops/</code>. Never run on the Orin: it is compute-bound with the live tracker.</p>',
+  files: ['src/streettracker/analysis/alpr/fullframe.py', 'src/streettracker/analysis/alpr/preferred.py', 'src/streettracker/analysis/alpr/staticfilter.py', '.claude/ghost_mask.json'], rel: ['en-rescore', 'en-colour', 'dec-rlcap', 'rt-snap'] },
+'en-rescore': { pid: 'EN-3', kind: 'Enrichment · confidence', title: 'alpr-rescore (min-character confidence)',
+  imgs: [[A + 'plate_masked.png', 'Track 2676\'s best plate crop, characters masked.']],
+  lead: 'Recomputes each read\'s confidence as the probability of its weakest character, from the saved crops.',
+  html: `<p><b>Per-character probabilities of track 2676's best read</b> (real values, characters masked). The weakest character sets <code>ocr_conf</code> = 0.968.</p>
+  <div class="charbars" aria-label="Per-character probabilities"></div>
+  <div class="callout">Before 2026-09-28, <code>ocr_conf</code> was the most confident slot: 0.96–0.998 for every read, garbage included, so every "≥ 0.9" gate passed everything.</div>
+  <p>Calibration (51,953 UK-shaped best reads), share of plates not on the DVSA register by confidence: 0.95–0.98 <b>1.5 %</b> · 0.90–0.95 <b>2.5 %</b> · 0.85–0.90 <b>4.2 %</b> · 0.80–0.85 <b>7.2 %</b> · 0.70–0.80 <b>12.2 %</b>. The rates never level off, which pushed the gate toward agreement instead of a threshold (<span class="pid">EN-5</span>).</p>`,
+  files: ['src/streettracker/cli/alpr_rescore.py', '.claude/ocr_conf_calibration.py'], rel: ['en-gate', 'en-alpr'] },
+'en-colour': { pid: 'EN-4', kind: 'Enrichment · plausibility', title: 'alpr-colour (plate colour vs direction)',
+  lead: 'Classifies each plate crop as yellow, white, mono or unsure, and flags reads whose colour contradicts the car\'s direction.',
+  specs: sp([['Rule', 'R→L shows the white front plate; L→R the yellow rear'], ['Flag', '<code>colour_suspect</code> reads are left out of the rollup'], ['Rate', '2.5 % of gated best reads contradict (L→R 3.9 %)'], ['Stamp', '<code>"plate_colour": "hsv_v1"</code> in <code>_static_plates.json</code>']]),
+  html: '<p>Track 2676: all eight reads came back yellow on a left-to-right car, so none were flagged. The check resolved all 230 cases where two concurrent cars shared one plate read.</p>',
+  files: ['src/streettracker/analysis/alpr/plate_colour.py', 'src/streettracker/cli/alpr_colour.py'], rel: ['en-gate', 'en-alpr'] },
+'en-gate': { pid: 'EN-5', kind: 'Enrichment · trust', title: 'Plate gate H (combined)',
+  lead: 'Decides which plate reads are trusted enough to label a track. One shared gate is used by dvsa-label, vehicles, the showcase and the stats page.',
+  specs: sp([['Rule', 'min-char conf ≥ 0.80 AND (another snap agrees OR ≥ 2 tracks read the plate) AND colour not wrong'], ['Config', '<code>configs/alpr.json</code> → <code>"plate_gate": "combined"</code>'], ['Effect', 'DVSA-labelled car journeys 33,445 (35.9 %) → <b>39,499 (41.8 %)</b>'], ['Quality', 'not-on-register 2.1 → 1.4 % · misattributed plates 2.5 % → 0']]),
+  html: '<div class="callout">Snap agreement beats confidence: 0.85–0.90 reads another snap agrees with are 1.0 % not-on-register, while 0.90–0.95 reads nobody agrees with are 7.0 %.</div><p>The register can\'t tell whether a plate belongs to the tracked car; the E1.2 audit set is the planned check for that.</p>',
+  files: ['src/streettracker/analysis/alpr/gate.py', 'src/streettracker/analysis/alpr/base.py', 'configs/alpr.json'], rel: ['en-dvsa', 'en-rescore', 'en-colour'] },
+'en-dvsa': { pid: 'EN-6', kind: 'Enrichment · ground truth', title: 'dvsa-label → dvsa-apply',
+  lead: 'Looks up gated plates in the DVSA MOT History API and folds make, model, year and colour onto each track record.',
+  specs: sp([['API', '<code>history.mot.api.gov.uk</code> (key in <code>configs/dvsa.json</code>)'], ['Coverage', 'cars ≥ 3 years old; newer cars have no MOT record'], ['Rows', '29,747 label rows across 49 sessions'], ['Cost control', 'labels cached; gate H needed only 581 new lookups'], ['Apply', 'rewrites <code>data.json</code> + <code>events.jsonl</code>; clears stale labels (R13 fix)']]),
+  files: ['src/streettracker/analysis/dvsa.py', 'src/streettracker/analysis/dvsa_apply.py', 'src/streettracker/cli/dvsa_label.py'], rel: ['ext-dvsa', 'en-vehicles', 'ml-build'] },
+'en-vehicles': { pid: 'EN-7', kind: 'Enrichment · identity', title: 'vehicles (plate-anchored aggregation)',
+  lead: 'Folds tracks into one record per physical car, keyed by canonical plate, within a session and across sessions.',
+  specs: sp([['Fuzzy merge', 'rapidfuzz <code>fuzz.ratio</code> ≥ 85, same length (1-char diffs on 7-char plates)'], ['Veto', 'DVSA-distinct: both spellings registered with different colours and observations agree'], ['Parked beacons', 'a plate read on many tracks while parked becomes a <code>parked_episodes</code> record'], ['Showcase', '4,164 identified cars · 2,589 seen on ≥ 2 dates']]),
+  html: '<p>Temporal overlap is not a veto: BotSORT ID switches create overlapping tracks of the same car. A parked car read 99 times on 69 tracks was once the showcase\'s top "regular".</p>',
+  files: ['src/streettracker/analysis/vehicles.py', 'src/streettracker/analysis/parked.py', 'src/streettracker/web/aggregate.py'], rel: ['web-showcase', 'en-classify', 'en-dvsa'] },
+'en-cnn': { pid: 'EN-8', kind: 'Enrichment · classifiers', title: 'makemodel · bodytype · colour inference',
+  lead: 'Runs the three EfficientNet heads on every vehicle still, cropped to the car, and votes per track by confidence.',
+  specs: sp([['Crop', '<code>fullframe</code>, pad 0.1: the vehicle box holding the plate read, else the nearest on-road vehicle'], ['Box cache', '<code>_vehicle_boxes.json</code>: YOLOv8m @1920, shared by all three heads'], ['Make', 'B6 @528 · 62 makes'], ['Colour', 'B0 @384 · 11 colours (replaces the HSV vote)'], ['Body', 'B0 @384 · 7 shapes']]),
+  html: '<div class="callout">Pad matters: the body-type head at pad 0.25 drifted toward "van" and its agreement with DVSA fell from 79 % to 42 %. Inference reads <code>crop_mode</code> and <code>crop_pad_frac</code> from the checkpoint.</div><p>On tracks without a plate read the crop falls back to the nearest vehicle, with ~7 % estimated wrong picks.</p>',
+  files: ['src/streettracker/analysis/vehicle_locator.py', 'src/streettracker/analysis/makemodel/infer.py', 'src/streettracker/analysis/makemodel/colour_infer.py', 'src/streettracker/analysis/makemodel/bodytype_infer.py'], rel: ['ml-make', 'st-models', 'dec-crops'] },
+'en-people': { pid: 'EN-9', kind: 'Enrichment · pedestrians', title: 'people',
+  lead: 'Classifies person tracks as walkers, fast movers or cyclists, pairs dogs with walkers, and merges split tracks into walks.',
+  specs: sp([['Walks seen', '83,469 · 74,922 after merging splits'], ['Kinds', 'walkers 64,850 · fast movers 15,226 · cyclists 3,393 · dog walks 1,226'], ['Fast mover', '≥ 2.5 m/s, mostly near-pavement walkers'], ['Round trips', '~3,350 likely of 31,019 candidate pairs (typ. 10.9 min away)'], ['Dwell', 'median 11.5 s · p90 23 s']]),
+  html: '<p>75–80 % of raw out-and-back pairs are coincidence on this pavement; a time-shifted control measures that floor and only the excess is reported. Walks are never matched across days.</p>',
+  files: ['src/streettracker/analysis/people.py', 'src/streettracker/analysis/walks.py', 'configs/door_zone.json'], rel: ['web-showcase', 'rt-attr', 'dec-privacy'] },
+'en-classify': { pid: 'EN-10', kind: 'Enrichment · behaviour', title: 'Behavioural classifier + schedule',
+  lead: 'Labels each identified car as resident, YMCA staff, visitor or brief from when it arrives and leaves, and mines recurring arrival waves into a weekly timetable.',
+  specs: sp([['Buckets (4,164 cars)', 'visitor 2,403 · brief 685 · YMCA staff 68 · resident 32 · unclassified 976'], ['Signal', 'first crossing of the day; IN = R→L toward homes and gym'], ['Schedule', 'recurring waves over 134 days, typical stay from departure lag']]),
+  html: '<p>Owner tags are deliberately not a resident prior: visiting family get tagged too.</p>',
+  files: ['src/streettracker/web/classify.py', 'src/streettracker/web/stats.py'], rel: ['web-showcase', 'en-vehicles'] },
+
+/* ---------------- training ---------------- */
+'ml-overview': { pid: 'ML', kind: 'Training', title: 'Training loop', lead: 'build → train → compare → promote, run by the control panel\'s build-train and promote playbooks.',
+  rel: ['ml-build', 'ml-train', 'ml-compare', 'ml-promote', 'ml-make'] },
+'ml-build': { pid: 'ML-1', kind: 'Training · data', title: 'makemodel-build-uk',
+  lead: 'Builds the training corpus from DVSA-labelled tracks: one crop per still, cut around the vehicle box that contains the car\'s own plate read.',
+  specs: sp([['Current corpus', '<code>uk_crops_0929_576</code>: 76,033 crops · 4,347 cars · 62 makes'], ['Crop', 'plate-anchored, pad 0.1, output 576 px'], ['Split', 'by car, so no car is in both train and val'], ['Labels', 'make, colour and body type per crop'], ['Option', '<code>--max-per-car</code> (tested at 30: no gain)']]),
+  html: '<p>About 88 % of cars on this street are regulars, so a week of new data yields only ~100 cars no model has seen. The top 500 cars hold roughly half of all crops.</p>',
+  files: ['src/streettracker/analysis/makemodel/uk_dataset.py', 'src/streettracker/analysis/makemodel/bodytype.py', 'runs/uk_crops_0929_576/manifest.json'], rel: ['ml-train', 'en-dvsa', 'st-runs'] },
+'ml-train': { pid: 'ML-2', kind: 'Training · fit', title: 'makemodel-train-uk',
+  lead: 'Fine-tunes a torchvision EfficientNet on the corpus for one target: make, colour or body type.',
+  specs: sp([['Backbones', 'EfficientNet B0 / B4 / B5 / B6 / B7'], ['Make run', 'B6 @528, batch 6, 20 epochs, cosine, patience 5 · ≈100 min/epoch'], ['Colour / body', 'B0 @384, batch 32'], ['Best val', 'make 0.932 (epoch 15) · colour 0.906 · body 0.940'], ['Windows', '<code>--num-workers 0</code>; batch 8 spills VRAM']]),
+  html: '<p>On the label-clean corpus the curves stopped peaking at epoch 1–3 and then memorising, which every earlier run had done.</p>',
+  files: ['src/streettracker/analysis/makemodel/training.py', 'src/streettracker/analysis/makemodel/archs.py'], rel: ['ml-compare', 'hw-devbox', 'web-control'] },
+'ml-compare': { pid: 'ML-3', kind: 'Training · evaluation', title: 'makemodel-compare (head-to-head)',
+  lead: 'Scores production and a candidate on the same held-out cars, per track, with a bootstrap confidence interval over cars.',
+  specs: sp([['Fresh mode', '<code>--eval-session</code>: cars in no training corpus'], ['Known mode', '<code>--include-trained-cars</code>: every car, new passes only'], ['Output', '<code>compare.json</code> (+ <code>compare.prev.json</code>)'], ['Promote rule', 'panel recommends only a clear win; other crop families are "can\'t compare"']]),
+  html: '<p>Comparing raw validation accuracy across corpora stopped working once corpora shared cars: the 0929 head-to-head on the val split collapsed to 67 held-out cars.</p>',
+  files: ['src/streettracker/analysis/makemodel/compare.py'], rel: ['ml-promote', 'ml-make'] },
+'ml-promote': { pid: 'ML-4', kind: 'Training · release', title: 'promote + reinfer',
+  lead: 'Backs up the production checkpoint, copies the winner in, writes the metadata sidecar, then re-runs inference on every session.',
+  specs: sp([['Sidecar', '<code>*.meta.json</code> with arch, input, corpus, crop mode, head-to-head results'], ['Backups', 'timestamped <code>makemodel_b0.YYYYMMDDTHHMMSS.pt</code>'], ['Reinfer', 'one job per session (48–49), then a showcase refresh']]),
+  html: '<p>The promote playbook is destructive, so the panel asks for confirmation and only allows it from localhost.</p>',
+  files: ['src/streettracker/control/playbooks.py', 'src/streettracker/analysis/makemodel/models/'], rel: ['st-models', 'web-control'] },
+'ml-make': { pid: 'ML-5', kind: 'Training · registry', title: 'Production classifiers',
+  lead: 'Three EfficientNet heads trained on the same plate-anchored, label-clean corpus.',
+  specs: sp([['Make', 'B6 @528 · 62 makes · fresh 85.0 % (+4.2) · known 95.1 % (+1.5) · promoted 2026-10-01'], ['Colour', 'B0 @384 · 11 · fresh 83.3 % / 86.9 % grouped · known 93.5 % · 2026-10-03'], ['Body type', 'B0 @384 · 7 · fresh 89.1 % · known 95.9 % · 2026-10-03'], ['Checkpoint sizes', 'make 164.7 MB · body 16 MB']]),
+  html: '<p>The 24 Sep crop fix alone moved the old production make model from 37.9 % to 43.9 % per track; the clean-crop retrain reached 60.4 % on 883 held-out cars (+22.5 pp, CI +19.6..+25.4). The 95 % CI on the 710-car known set touched zero, so the latest make promotion was a judgement call.</p>',
+  rel: ['ml-compare', 'en-cnn', 'dec-crops'] },
+
+/* ---------------- storage ---------------- */
+'st-orin': { pid: 'ST-1', kind: 'Storage · edge', title: 'Orin output/', lead: 'Where the live runtime writes each session. 4K stills are pruned at 7 days; everything else stays.',
+  specs: sp([['Size', '59 GB'], ['Layout', '<code>output/session_YYYYMMDD_HHMMSS/</code>'], ['Retention', 'stills 7 days; JSON, tiles, HQ crops kept']]), rel: ['hw-nvme', 'en-pull'] },
+'st-output': { pid: 'ST-2', kind: 'Storage · dev box', title: 'Dev box output/',
+  lead: 'Every pulled session with all derived sidecars. The analysis source of truth, and full of plate PII.',
+  specs: sp([['Size', '1.01 TB over 49 sessions · median 17.9 GB · max 60.0 GB'], ['Stills', '339,906 vehicle + 310,106 person = 650,012'], ['Recorded', '≈3,165 h, 2026-05-24 → 2026-10-04'], ['Root files', '<code>showcase_metadata.json</code> · <code>cross_session_repeats.json</code> · <code>control_jobs.json</code> · <code>control_playbooks.json</code>']]),
+  html: `<h4>TrackRecord (per track)</h4><p class="mono" style="font-size:.78rem;line-height:1.6;color:var(--muted)">track_id · class_id · class_name · class_suspect · time_start/end (+ _s, _unix) · duration_visible · direction · speed_px_s · color · lane · avg_confidence · displacement_px · net_displacement_px · num_detections · asset_prefix · main_snaps · main_snap_bboxes · main_snap_bboxes_done · main_snap_fire_unix · main_snap_done_unix · entry_point_frac · exit_point_frac · make · model · year · make_model_source</p>
+  <h4 style="margin-top:10px">SessionMeta</h4><p class="mono" style="font-size:.78rem;line-height:1.6;color:var(--muted)">session_label · session_start_unix · frames_processed · pipe_fps · avg_infer_ms · ir_periods · snap_stats {attempts, successes, failures, dropped, blur_skipped_frames, pipeline_fires, pipeline_throttled, pipeline_budget_exhausted, latency{p50,p90,p99,max}, fires_per_track, time_in_band_ms_per_track} · frame_size</p>
+  <div class="callout">Not in GitHub and not yet backed up off the box: this folder and the training corpora are the irreplaceable part.</div>`,
+  files: ['src/streettracker/common/schema.py', 'src/streettracker/common/output.py'], rel: ['en-pull', 'web-showcase', 'st-runs'] },
+'st-runs': { pid: 'ST-3', kind: 'Storage · training', title: 'runs/', lead: 'Training corpora and runs. The corpora are distilled from sessions whose stills the Orin has long since pruned.',
+  specs: sp([['Size', '<b>56.3 GB</b> · 571,763 files · 54 folders (measured 2026-10-05)'], ['Corpora', '21 <code>uk_crops_*</code> folders · 54.3 GB · 571,685 crops'], ['Current corpus', '<code>uk_crops_0929_576</code> · 8.28 GB · 76,034 files'], ['Largest', '<code>uk_crops_0924_576</code> · 8.96 GB'], ['Runs', '32 <code>uk_make_*</code> / <code>uk_colour_*</code> / <code>uk_body_*</code> folders · 2.0 GB (best.pt + compare reports)'], ['Backup', 'private/external only (PII)']]),
+  html: '<p>Only 3 of the 21 corpora (0924, 0929 and the cap-30 build, 22.8 GB) use the plate-anchored crops from the 24 Sep fix. The other 18 (31.5 GB, 364,839 crops) were built on fire-time crops that mostly missed the car, so they are history rather than training data.</p>',
+  rel: ['ml-build', 'ml-train', 'dec-crops'] },
+'st-models': { pid: 'ST-4', kind: 'Storage · weights', title: 'Model files',
+  lead: 'Production checkpoints live inside the package so inference finds them without flags.',
+  specs: sp([['Folder', '<code>src/streettracker/analysis/makemodel/models/</code>'], ['Make', '<code>makemodel_b0.pt</code> (B6, 164.7 MB, untracked)'], ['Small heads', '<code>colour_b0.pt</code>, <code>bodytype_b0.pt</code> + sidecars'], ['ALPR', '<code>license_plate_detector.pt</code> 6 MB (legacy bespoke pipeline)'], ['Release', '<code>models-2026-07-09</code> holds the old 0707 B6; production 0929 B6 not uploaded yet']]),
+  rel: ['ml-promote', 'st-github', 'en-cnn'] },
+'st-configs': { pid: 'ST-5', kind: 'Storage · configuration', title: 'Configs and secrets',
+  lead: 'Strict JSON configs: an unknown key is a startup error.',
+  specs: sp([['camera.json', 'Orin only: Reolink credentials, road polygon, snap gate; backups <code>camera.json.bak.&lt;ts&gt;</code>'], ['dvsa.json', 'DVSA API key (gitignored)'], ['alpr.json', 'plate gate: <code>combined</code>'], ['showcase.json', '<code>road_length_m 30</code>'], ['door_zone.json', 'operator-traced door polygon'], ['.claude/', 'scene geometry and analysis scripts, tracked']]),
+  files: ['src/streettracker/common/config.py', 'configs/*.example.json'], rel: ['dec-schema', 'rt-planner'] },
+'st-github': { pid: 'ST-6', kind: 'Storage · code', title: 'GitHub (public repo)',
+  lead: 'Code, tests, scene geometry, analysis scripts and small models. No plates, imagery or secrets.',
+  specs: sp([['Repo', 'nicholasaross/StreetTracker'], ['History', '322 commits since 2026-05-19 · PRs up to #131'], ['Size', '26.4k lines of Python in <code>src/</code> · 2.6k template lines · 20.8k test lines'], ['Tests', '1,101 passing on Python 3.10 in CI'], ['Lint/type', 'ruff · mypy']]),
+  rel: ['st-models', 'hw-orin'] },
+
+/* ---------------- external ---------------- */
+'ext-dvsa': { pid: 'EXT-1', kind: 'External · API', title: 'DVSA MOT History API',
+  lead: 'The UK MOT history service. Given a plate it returns make, model, first-use date, primary colour and fuel type.',
+  specs: sp([['Endpoint', '<code>https://history.mot.api.gov.uk</code>'], ['Blind spot', 'cars under 3 years old (no MOT yet)'], ['Use', 'ground-truth labels for tracks and training']]),
+  html: '<p>The only outbound data flow besides git. Only gated, UK-shaped plates are queried, so OCR garbage doesn\'t cost calls.</p>', rel: ['en-dvsa'] },
+'ext-wheels': { pid: 'EXT-2', kind: 'External · packages', title: 'jetson-ai-lab wheel index',
+  lead: 'Community PyTorch wheels built for the Orin\'s sm_87 GPU; PyPI\'s CUDA wheels skip sm_87 and fail at kernel launch.',
+  specs: sp([['Index', '<code>pypi.jetson-ai-lab.io/jp6/cu126</code>'], ['Wheels', 'torch 2.11.0, torchvision 0.26.0, cp310 aarch64'], ['JP7', 'no jp7 index yet; gate script <code>scripts/check_jp7_wheel.ps1</code>']]),
+  rel: ['hw-orin', 'dec-py310'] },
+
+/* ---------------- web ---------------- */
+'web-orin': { pid: 'WEB-1', kind: 'Web app · Orin', title: 'Orin live dashboard (:8080)',
+  imgs: [[A + 'site_orin.webp', 'Live session summary, 5 Oct 2026. Plates in thumbnails pixelated.']],
+  lead: 'The tracker\'s own page: the current session\'s cars and people with thumbnails, 4K snap links and the raw snap_stats line.',
+  specs: sp([['Server', 'aiohttp static, regenerated summary HTML'], ['Refresh', 'after 10 s with no active tracks'], ['Audience', 'LAN']]),
+  html: '<p>Its template is loaded when the service starts, so changes appear only after the next session roll.</p>',
+  files: ['src/streettracker/device/dashboard.py', 'src/streettracker/common/summary.py'], rel: ['rt-summary', 'hw-orin'] },
+'web-showcase': { pid: 'WEB-2', kind: 'Web app · dev box', title: 'Showcase (:8090)',
+  imgs: [[A + 'site_gallery.webp', 'Gallery of identified cars with resident / visitor badges. Plates and tags blocked out.'], [A + 'site_car.webp', 'One car\'s page: hero 4K still, all sightings, DVSA details. Thumbnails softened, plates pixelated.'], [A + 'site_stats.webp', '/stats: journeys by day, weekday × hour heatmap, speeds, makes vs UK fleet, colours, body types.'], [A + 'site_people.webp', '/people: walks, kinds, recurring patterns, heatmap.'], [A + 'site_schedule.webp', '/schedule: inferred YMCA arrival waves.']],
+  lead: 'Browses the enriched, plate-identified cars across every session, plus traffic, people and schedule statistics.',
+  specs: sp([['Routes', '<code>/</code> · <code>/car/{plate}</code> · <code>/stats</code> · <code>/people</code> · <code>/schedule</code> · <code>/api/cars</code> · <code>/api/stats</code> · <code>PUT /api/cars/{plate}/metadata</code> · <code>POST /api/refresh</code>'], ['Data', 'rebuilt live from session sidecars; only writes <code>showcase_metadata.json</code>'], ['Access', 'binds 127.0.0.1 by default; images through a <code>.jpg</code>-only route'], ['Hosting', 'Scheduled Task <code>StreetTrackerShowcase</code>; cold start 65–90 s']]),
+  html: '<p>Code changes need a service restart; <code>/api/refresh</code> only re-aggregates data.</p>',
+  files: ['src/streettracker/web/server.py', 'src/streettracker/web/aggregate.py', 'src/streettracker/web/stats.py', 'src/streettracker/web/classify.py'], rel: ['en-vehicles', 'en-classify', 'en-people'] },
+'web-control': { pid: 'WEB-3', kind: 'Web app · dev box', title: 'Operator control panel (:8095)',
+  imgs: [[A + 'site_control.webp', 'Dashboard: Orin status and pull estimate, production model and corpus, recommendations, playbooks, jobs.'], [A + 'site_training.webp', '/training during a B6 run (July 2026 capture from docs/assets).']],
+  lead: 'Lets the operator run pulls, enrichment, training and promotion with no Claude session attached.',
+  specs: sp([['Routes', '<code>/</code> · <code>/training</code> · <code>/api/orin</code> · <code>/api/sessions</code> · <code>/api/jobs</code> · <code>/api/playbooks</code> · <code>/api/pull-preview/{session}</code>'], ['Lanes', 'GPU lane (alpr, makemodel, build, train) · net lane (pull, dvsa, vehicles)'], ['Playbooks', 'enrich · build-train · roll · promote · reinfer · rescore · platecheck · relabel'], ['Access', 'viewable on the LAN; every action localhost-only'], ['Pollers', 'Orin ~45 s (SSH) · local inventory ~30 s'], ['On failure', 'a "Copy Claude prompt" button with the job\'s output tail']]),
+  html: '<div class="callout bad">Seen while capturing this page: a pull-estimate SSH call (<code>du -sb</code> on the live session) hung for 16 minutes and the Orin card showed "unreachable" the whole time, although the Orin was fine. Killing that one <code>ssh.exe</code> cleared it, which suggests the poller waits behind the hung estimate.</div>',
+  files: ['src/streettracker/control/server.py', 'src/streettracker/control/jobs.py', 'src/streettracker/control/playbooks.py', 'src/streettracker/control/orin.py'], rel: ['en-overview', 'ml-overview', 'hw-devbox'] },
+'web-triage': { pid: 'WEB-4', kind: 'Web app · ad hoc', title: 'Failure triage site (:8091)',
+  lead: 'A one-file labelling site used to sort 99 failed R→L stills into causes. 96 % turned out to be snap latency.',
+  specs: sp([['Script', '<code>.claude/triage_rl.py --select</code>, then serve'], ['Labels', '<code>.claude/triage/labels.json</code>'], ['Status', 'not running; no screenshot (it shows raw plates)']]),
+  html: '<p>Next planned use: the E1.2 audit set, a stratified sample to check whether gated plates belong to the tracked car.</p>', rel: ['dec-rlcap', 'en-gate'] },
+
+/* ---------------- decisions as modals ---------------- */
+'dec-rlcap': { pid: 'DEC', kind: 'Decision record', title: 'The R→L "camera-geometry cap" was a cropping bug',
+  html: '<p>June\'s verdict: front plates (R→L) read at only ~15–20 % per car at every position, so a second camera was planned. On 2026-07-27/28 a re-crop of the same stills put R→L at 75–93 %. The recorded landing boxes sat a median ~510 4K px off the car, and 34–53 % of R→L "reads" were parked or background plates. The full-frame trajectory crop is now the default: net 68.3 %, R→L 69.7 / L→R 66.8. No second camera needed.</p>', rel: ['en-alpr', 'rt-snap'] },
+'dec-crops': { pid: 'DEC', kind: 'Decision record', title: 'Classifier crops missed the car',
+  html: '<p>Audit of 799 snaps (2026-09-24): only 7.6 % of make training crops held ≥ 80 % of the labelled car; 66.5 % held under 30 %. Builder and all three inference heads cropped at the stale fire-time box. Fix: plate-anchored crops. The old model on clean crops gained +7.0 pp with no retrain; the clean-crop retrain +22.5 pp.</p>', rel: ['en-cnn', 'ml-build'] },
+'dec-lowlight': { pid: 'DEC', kind: 'Open question', title: 'Low light is motion blur, and it is reaching rush hour',
+  html: '<p>Night plates are still found but smeared: sharpness ~4.6× lower than day, brightness fine. As the days shorten, 17:00 gated read rates fell 54.5 % (Jul) → 15.0 % (Sep) → 5.2 % (1 Oct); 08:00 43 % → 11 %. Options: a dusk/dawn-scheduled faster shutter, or IR mode with inference on IR frames. Either changes the camera or the live runtime, so it\'s the operator\'s call.</p>', rel: ['hw-camera', 'rt-ir'] },
+'dec-antismear': { pid: 'DEC', kind: 'Decision record', title: 'Anti-Smearing shutter: worse in daylight',
+  html: '<p>2026-05-31: capping the shutter for sharper near-camera plates halved the daylight canonical rate (48.5 → 25.1 %), because gain noise cost more than the blur removed. Day plates were never blur-limited; dusk plates are, which keeps a night-only faster shutter on the table.</p>', rel: ['hw-camera', 'dec-lowlight'] },
+'dec-schema': { pid: 'DEC', kind: 'Decision record', title: 'Schema-additive deploy order',
+  html: '<p>The strict loader rejects unknown keys. A new config field must be merged, pulled onto the Orin and run with the old <code>camera.json</code> before the config is edited. Skipping this crash-looped the service on 2026-05-27.</p>', rel: ['st-configs', 'rt-planner'] },
+'dec-asyncio': { pid: 'DEC', kind: 'Decision record', title: 'Asyncio throughout', html: '<p>Entry is <code>asyncio.run(run_session(config))</code>; the frame reader runs in a thread, inference in an executor, HTTP via aiohttp; SIGTERM drains within 30 s.</p>', rel: ['rt-source', 'rt-summary'] },
+'dec-py310': { pid: 'DEC', kind: 'Decision record', title: 'Python pinned to 3.10', html: '<p>The JP6 wheel index only has cp310 torch. A bump to 3.11 broke the Orin on 2026-05-25. 3.12 moves with the JP7 flash.</p>', rel: ['ext-wheels', 'hw-orin'] },
+'dec-privacy': { pid: 'DEC', kind: 'Decision record', title: 'Privacy lines', html: '<p>No cross-session person re-identification in the analytics. Person-side statistics are aggregate. Biometric work stays on the dev box and never reaches the public repo or a release. The public repo carries no plates, imagery or secrets.</p>', rel: ['en-people', 'st-github'] },
+};
+
+/* card lists ---------------------------------------------------------- */
+const HW = [
+  ['hw-camera', A + 'hw_camera.jpg', 'contain', '12 MP · 4512×2512 stills · forced colour'],
+  ['hw-orin', A + 'hw_orin.jpg', '', 'JetPack 6.2.2 · TRT 10.3 · 15W mode · ~9.5 fps'],
+  ['hw-nvme', A + 'hw_nvme.jpg', 'contain', '937 GB fs · 88 GB used · 4K pruned at 7 d'],
+  ['hw-devbox', A + 'hw_devbox.jpg', 'contain', 'i7-12700KF · 32 GB · RTX 3080 10 GB'],
+  ['hw-nano', A + 'hw_nano.jpg', '', 'retired 2026-05-22 after 27.6 h final run'],
+];
+const RT = [
+  ['rt-source', 'H.264 896×512 over RTSP/TCP', '≈9.5 fps'],
+  ['rt-detect', 'YOLOv8m FP16 engine, 7 classes', '98–106 ms / frame'],
+  ['rt-track', 'BotSORT, confidence-weighted class votes', 'buffer 30 frames'],
+  ['rt-attr', 'direction, speed, lane, entry/exit, guardrail', 'avg 7.7 mph'],
+  ['rt-planner', 'road polygon, bands, triggers, 400 ms pipeline', '8,529 fires / 62.7 h'],
+  ['rt-snap', '4K JPEG over HTTP, fire + landing boxes', 'p50 640 ms · 0 fails'],
+  ['rt-finalize', 'filters, tile + HQ crop, fsync jsonl', '2,719 tracks kept'],
+  ['rt-summary', 'idle summary, hourly rollup, 30 s shutdown', ':8080'],
+  ['rt-ir', 'IR frames skip inference', '41.7 % of Sept'],
+  ['rt-prune', '4K stills deleted after 7 days', 'hourly'],
+];
+const EN = [
+  ['en-pull', 'SSH/scp: stills, HQ crops, JSON', '≈25 MB/s', 'net'],
+  ['en-alpr', 'trajectory-matched plate read', '68.3 % per car', 'GPU'],
+  ['en-rescore', 'weakest-character confidence', 'R1 fix 28 Sep', 'GPU'],
+  ['en-colour', 'plate colour vs direction', '2.5 % flagged', 'GPU'],
+  ['en-gate', 'agreement + confidence + colour', '41.8 % labelled', '—'],
+  ['en-dvsa', 'MOT History lookup, fold onto tracks', '29,747 rows', 'net'],
+  ['en-vehicles', 'one record per physical car', '4,164 cars', 'net'],
+  ['en-cnn', 'make, body type and colour heads', '3 EfficientNets', 'GPU'],
+  ['en-people', 'walkers, fast movers, cyclists, dogs', '83,469 walks', '—'],
+  ['en-classify', 'resident / staff / visitor, schedule', '4 buckets', '—'],
+];
+const ML = [
+  ['ml-build', 'plate-anchored crops, split by car', '76,033 crops'],
+  ['ml-train', 'torchvision EfficientNet B0/B6', '≈100 min/epoch'],
+  ['ml-compare', 'same cars, per track, bootstrap CI', 'fresh + known'],
+  ['ml-promote', 'backup, sidecar, reinfer all sessions', '49 sessions'],
+];
+const ST = [
+  ['st-orin', 'Orin NVMe · 59 GB · 7-day stills'],
+  ['st-output', 'dev box · 1.01 TB · 49 sessions'],
+  ['st-runs', '56.3 GB · 21 corpora + runs · private backup'],
+  ['st-models', 'checkpoints + sidecars'],
+  ['st-configs', 'strict JSON · secrets gitignored'],
+  ['st-github', 'public · 322 commits · 1,101 tests'],
+];
+const WEB = [
+  ['web-orin', A + 'site_orin_th.webp', 'LAN · regenerated on idle'],
+  ['web-showcase', A + 'site_gallery_th.webp', '5 pages · 4,164 cars'],
+  ['web-control', A + 'site_control_th.webp', '8 playbooks · 2 job lanes'],
+  ['web-triage', null, 'ad hoc labelling'],
+];
+const FILES = [
+  ['{prefix}_{id}_main_{N}.jpg', 'RT-6', 'EN-2, EN-8, ML-1, WEB-2', 'JPEG 4512×2512', '≈1.45 MB each · 9,049', 'Orin 7 d · dev box kept'],
+  ['vehicle_{id}_hq.jpg', 'RT-7', '/stats fastest cars', 'JPEG q95 ~250 px', '≈32 KB each · 2,396', 'kept'],
+  ['{prefix}_{id}.jpg (tile)', 'RT-7', 'WEB-1', 'JPEG q85 ~80 px', 'not pulled', 'Orin'],
+  ['_events.jsonl', 'RT-7 (fsync)', 'EN-6, crash recovery', 'JSON lines', '2.0 MB', 'kept'],
+  ['_trajectories.jsonl', 'RT-7 (since 4 Oct)', 'snap-timing analysis', 'JSON lines', 'new', 'kept'],
+  ['_data.json', 'RT-8, EN-6', 'everything', 'TrackRecord array', '3.6 MB', 'kept'],
+  ['_meta.json', 'RT-8', 'WEB-3, analysis', 'SessionMeta', '1 KB', 'kept'],
+  ['_hourly.json · _summary.html', 'RT-8', 'WEB-1', 'JSON · HTML', '25 KB · 752 KB', 'kept'],
+  ['_alpr.json · _alpr_by_track.json', 'EN-2..4', 'EN-5..7, ML-1', 'JSON', '2.8 MB · 0.6 MB', 'kept'],
+  ['alpr_crops/', 'EN-2', 'EN-3, EN-4', 'JPEG plate crops', '15 MB', 'kept'],
+  ['_static_plates.json', 'EN-2..4', 'WEB-3 badges', 'JSON stamps', '9 KB', 'kept'],
+  ['_dvsa_labels.json', 'EN-6', 'EN-7, WEB-2', 'JSON', '84 KB', 'kept'],
+  ['_vehicles.json', 'EN-7', 'WEB-2 (rebuilt live)', 'JSON', '1.2 MB', 'kept'],
+  ['_makemodel / _bodytype / _colour (+ _by_track)', 'EN-8', 'WEB-2', 'JSON', '2.8 / 0.8 / 0.8 MB', 'kept'],
+  ['_vehicle_boxes.json', 'EN-8, ML-1', 'same', 'YOLO box cache', '0.45 MB', 'disposable'],
+  ['_people.json', 'EN-9', 'WEB-2 /people', 'JSON', '0.7 MB', 'kept'],
+];
+
+/* KPIs ---------------------------------------------------------------- */
+const KPI = [
+  ['49', 'sessions pulled', '≈3,165 h recorded'],
+  ['94,498', 'car journeys', '705 a day on average'],
+  ['83,469', 'pedestrian walks', '17:00 busiest'],
+  ['650,012', '4K stills', '340k vehicle · 310k person'],
+  ['4,164', 'plate-identified cars', '2,589 seen on ≥ 2 days'],
+  ['41.8 %', 'car journeys with DVSA labels', 'gate H, 5 Oct'],
+  ['68.3 %', 'cars with a canonical plate read', 'net, Jul 28 measure'],
+  ['85.0 %', 'make@1 on unseen cars', 'B6 @528, 62 makes'],
+  ['1.01 TB', 'session data on the dev box', '+ 56 GB training data · Orin 59 GB'],
+  ['1,101', 'tests', '26.4k lines of Python'],
+];
+
+/* metrics panels -------------------------------------------------------- */
+const MX = [
+  { t: 'Capture, last closed session', n: 'session_20261001_190826 · 62.7 h', rows: [['Frames', '2,152,813'], ['Pipeline rate', '9.53 fps'], ['Avg inference', '97.9 ms'], ['4K requests', '9,936 · 0 failed'], ['Dropped (slots busy)', '2,059'], ['Latency p50 / p90 / p99', '640 / 914 / 1,207 ms'], ['Pipeline fires · throttled', '8,529 · 17,108'], ['Hit the 15-snap cap', '591 tracks'], ['Stills per track', 'mean 1.9 · p90 5 · max 18']], link: 'rt-snap' },
+  { t: 'Plate reading', n: 'per car, canonical UK shape', rows: [['Net per car', '68.3 %'], ['R→L / L→R', '69.7 % / 66.8 %'], ['Before fullframe crops', '~45 % net, R→L ~9–17 %'], ['Day vs dusk/dark', '74.7 % vs 45.4 %'], ['Colour contradicts direction', '2.5 % of gated best reads'], ['DVSA-labelled car journeys', '41.8 % (from 35.9 %)']], link: 'en-alpr' },
+  { t: 'Coverage', n: 'how much of the street gets captured', rows: [['Cars with ≥ 1 still', '98 % (2026-05 soaks)'], ['Coverage soak: cars / persons', '94.4 % / 66.7 %'], ['Person appearances dropped at finalize', '~36–45 % (known gap)'], ['Nights 21–05 h', '0–7 cars/h, quiet not missed']], link: 'rt-finalize' },
+  { t: 'Traffic', n: 'showcase /stats, 134 days', rows: [['Journeys', '94,498'], ['Per day', '705.2'], ['Direction split', '51 % L→R · 49 % R→L'], ['Busiest hour', '10:00 (9,865)'], ['Peak quarter', '10:15 (3,500)'], ['Average speed', '7.7 mph (L→R 7.5 · R→L 7.9)']], link: 'web-showcase' },
+  { t: 'Operations', n: 'control panel history', rows: [['platecheck, all sessions', '197 steps · 24 min'], ['enrich, one 62.7 h session', '8 steps · 56 min'], ['rescore, all sessions', '185 steps · 108 min'], ['Make retrain (B6, batch 6)', '≈100 min per epoch'], ['Pull rate', '≈25 MB/s']], link: 'web-control' },
+];
+
+/* decisions ------------------------------------------------------------ */
+const DEC_LOCKED = [
+  ['dec-asyncio', 'Asyncio throughout', 'One event loop; threads only for blocking I/O and inference.'],
+  ['dec-schema', 'Strict config + deploy order', 'Unknown keys are fatal; code reaches the Orin before config.'],
+  ['dec-py310', 'Python 3.10 until JP7', 'Only cp310 torch exists for JP6 on sm_87.'],
+  ['rt-detect', 'Engines built on the device', 'TensorRT engines are tied to the GPU architecture.'],
+  ['ml-compare', 'Promote on head-to-head only', 'Same cars, per track, bootstrap CI; raw val accuracy can\'t be compared across corpora.'],
+  ['en-dvsa', 'DVSA labels as ground truth', 'Labels come from the register, not from people.'],
+  ['dec-privacy', 'Privacy lines', 'Aggregate person stats; no cross-day person matching; nothing identifying in the public repo.'],
+];
+const DEC_FALSE = [
+  ['dec-rlcap', '2026-07-28', 'R→L capped by camera geometry', 'It was the crop: landing boxes ~510 px off the car plus parked plates.', 'false'],
+  ['dec-crops', '2026-09-24', 'Make/colour/body accuracy was the model\'s limit', 'Two-thirds of training crops missed the car.', 'false'],
+  ['en-rescore', '2026-09-28', '"conf ≥ 0.9" filtered bad reads', 'It passed everything: ocr_conf was the best character, not the worst.', 'false'],
+  ['dec-antismear', '2026-05-31', 'A faster shutter sharpens plates', 'Halved daylight reads; still open for dusk only.', 'false'],
+  ['ml-train', '2026-06-08', 'Make@1 hit a 21 % task ceiling', 'Resolution-bound: the cropper hard-coded 224 px.', 'false'],
+  ['ml-make', '2026-06-08', 'B0@512 reached 37.6 %', 'Small-val optimism: 20.7 % on 659 unseen cars.', 'false'],
+  ['en-alpr', '2026-05-27', 'Vote characters across a track\'s reads', '−43 pp vs best-of-N: one track\'s reads were often different plates.', 'false'],
+  ['ml-overview', '2026-06-02', 'A CompCars-trained CNN would transfer', '98.8 % on CompCars, ~1 % on UK street views.', 'false'],
+  ['ml-overview', '2026-07-08', 'A VLM could name makes', 'Qwen3-VL 8B: 15–18 % vs B6 29–30 %, 15 s per image.', 'false'],
+  ['dec-lowlight', 'open', 'Dusk loss is underexposure', 'It is motion blur; the fix is a faster dusk shutter or IR-mode inference.', 'open'],
+];
+
+/* technology index ------------------------------------------------------ */
+const TECH = [
+  ['Platform', 'Python', '3.10 (uv)', 'everything; 3.12 waits for JP7', ['dec-py310']],
+  ['Platform', 'uv + uv.lock', 'lockfile', 'per-platform torch sources; Orin service uses --no-sync', ['hw-orin', 'ext-wheels']],
+  ['Platform', 'JetPack / L4T', '6.2.2 / R36.5', 'Orin OS, Ubuntu 22.04.5', ['hw-orin']],
+  ['Platform', 'CUDA', '12.6', 'Orin 12.6.11; dev box torch cu126', ['hw-orin', 'hw-devbox']],
+  ['Platform', 'TensorRT', '10.3.0.30', 'YOLOv8m FP16 engine on the Orin', ['rt-detect']],
+  ['Platform', 'systemd', '—', 'streettracker.service, scoped sudoers', ['hw-orin']],
+  ['Platform', 'Windows 11 + Task Scheduler', '26200', 'dev box; showcase/panel start at logon via VBS launchers', ['hw-devbox']],
+  ['Platform', 'SetThreadExecutionState', 'Win32', 'wake-lock held for whole playbooks', ['web-control']],
+  ['Vision & ML', 'Ultralytics', '8.4.51', 'YOLO + BotSORT tracking, engine export', ['rt-detect', 'rt-track']],
+  ['Vision & ML', 'YOLOv8m', 'COCO', 'live detector @640; offline vehicle locator @1920', ['rt-detect', 'en-cnn']],
+  ['Vision & ML', 'BotSORT', 'Ultralytics', 'multi-object tracker, sparse optical-flow GMC', ['rt-track']],
+  ['Vision & ML', 'PyTorch', '2.12.0+cu126 / 2.11.0', 'dev box / Orin (jetson-ai-lab)', ['ml-train', 'hw-orin']],
+  ['Vision & ML', 'torchvision', '0.27.0 / 0.26.0', 'EfficientNet backbones, transforms', ['ml-train']],
+  ['Vision & ML', 'EfficientNet B0 / B6', 'torchvision', 'make (B6@528), colour + body (B0@384)', ['ml-make', 'en-cnn']],
+  ['Vision & ML', 'open-image-models', '0.5.1', 'YOLOv9-t-640 plate detector (ONNX)', ['en-alpr']],
+  ['Vision & ML', 'fast-plate-ocr', '1.1.0', 'global-plates-mobile-vit-v2 plate OCR', ['en-alpr', 'en-rescore']],
+  ['Vision & ML', 'ONNX Runtime GPU', '1.19.2', 'CUDA EP for plate detector + OCR', ['en-alpr']],
+  ['Vision & ML', 'ONNX Runtime (CPU)', '1.23.2', 'aarch64 only: validates engine exports', ['rt-detect']],
+  ['Vision & ML', 'ONNX + onnxslim', '1.21.0 / 0.1.93', '.pt → .onnx → .engine pipeline', ['rt-detect']],
+  ['Vision & ML', 'OpenCV', '4.13.0.92', 'RTSP capture (FFmpeg), image ops', ['rt-source']],
+  ['Vision & ML', 'FFmpeg / GStreamer', '—', 'live RTSP via FFmpeg; MP4 via nvv4l2decoder', ['rt-source']],
+  ['Vision & ML', 'EasyOCR', '1.7.2', 'legacy bespoke ALPR path (alpr extra)', ['en-alpr']],
+  ['Vision & ML', 'NumPy · Pillow · SciPy', '2.2.6 · 12.2.0 · 1.15.3', 'arrays, image I/O, stats', ['en-cnn']],
+  ['Vision & ML', 'lap', '0.5.13', 'linear assignment for tracking', ['rt-track']],
+  ['Vision & ML', 'Qwen3-VL 8B (Ollama)', 'bake-off only', 'tested as a make namer; lost', ['ml-overview']],
+  ['Data & web', 'aiohttp', '3.13.5', 'snapshotter client, all four web servers', ['rt-snap', 'web-showcase', 'web-control', 'web-orin']],
+  ['Data & web', 'Jinja2', '3.1.6', 'site templates (auto-reload in the panel)', ['web-showcase', 'web-control']],
+  ['Data & web', 'rapidfuzz', '3.14.5', 'fuzzy plate clustering', ['en-vehicles']],
+  ['Data & web', 'requests', '2.34.2', 'DVSA API client', ['en-dvsa']],
+  ['Data & web', 'JSON / JSON Lines', '—', 'every session artifact; fsync event log', ['st-output', 'rt-finalize']],
+  ['Data & web', 'Dependency-free SVG', '—', 'all charts on the sites', ['web-showcase']],
+  ['Tooling', 'pytest + pytest-asyncio', '9.0.3 · 1.3.0', '1,101 tests, asyncio_mode=auto', ['st-github']],
+  ['Tooling', 'ruff · mypy', '0.15.13 · 2.1.0', 'lint, format, type-check', ['st-github']],
+  ['Tooling', 'hatchling', '—', 'wheel build backend', ['st-github']],
+  ['Tooling', 'OpenSSH / scp', '—', 'pull, roll, Orin status', ['en-pull', 'web-control']],
+  ['Tooling', 'GitHub + gh', '—', 'PRs, CI, Releases', ['st-github']],
+  ['External', 'DVSA MOT History API', 'v1', 'plate → make/model/year/colour', ['ext-dvsa', 'en-dvsa']],
+  ['External', 'jetson-ai-lab index', 'jp6/cu126', 'sm_87 torch wheels', ['ext-wheels']],
+  ['External', 'Reolink HTTP + RTSP', 'firmware API', 'cmd=Snap stills, GetIsp/SetIsp, RTSP streams', ['hw-camera', 'rt-snap']],
+  ['Technique', 'PCA road axis + t_norm', '—', 'position along the traced road', ['rt-planner']],
+  ['Technique', 'Pipeline snap mode', '400 ms / 15', 'repeated 4K stills while in band', ['rt-planner']],
+  ['Technique', 'Confidence-weighted class voting', '—', 'stable class per track', ['rt-track']],
+  ['Technique', 'Ghost mask', '1 rect', 'zero-fill a parked car before plate detection', ['en-alpr']],
+  ['Technique', 'Trajectory-matched full-frame crop', '—', 'plate search where the car really was', ['en-alpr']],
+  ['Technique', 'Static plate filter', '—', 'drop parked/background plates', ['en-alpr']],
+  ['Technique', 'Min-character confidence', '—', 'honest OCR confidence', ['en-rescore']],
+  ['Technique', 'Plate colour vs direction', 'hsv_v1', 'reject other cars\' plates', ['en-colour']],
+  ['Technique', 'Combined gate H', '—', 'agreement + confidence + colour', ['en-gate']],
+  ['Technique', 'Fuzzy clustering + DVSA veto', 'ratio 85', 'one record per physical car', ['en-vehicles']],
+  ['Technique', 'Plate-anchored corpus, split by car', '—', 'leak-free UK training data', ['ml-build']],
+  ['Technique', 'Bootstrap CI by car', '—', 'promotion decisions', ['ml-compare']],
+  ['Technique', 'Time-shift null', '—', 'chance floor for round trips', ['en-people']],
+];
+
+/* ------------------------------------------------------------------ */
+/* rendering                                                           */
+/* ------------------------------------------------------------------ */
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const arrowSvg = '<svg class="arrow" viewBox="0 0 14 14" aria-hidden="true"><path d="M2 7h9M8 3l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>';
+
+$('#kpis').innerHTML = KPI.map(([v, k, s]) => `<div class="kpi"><span class="v">${v}</span><span class="k">${k}</span><span class="s">${s}</span></div>`).join('');
+
+$('#hw-cards').innerHTML = HW.map(([id, img, fit, m]) => {
+  const n = N[id];
+  return `<button class="card" type="button" data-n="${id}"><img src="${img}" alt="" loading="lazy" class="${fit}"><div class="top"><span class="pid">${n.pid}</span><span class="kind">${esc(n.kind.split('·')[1] || '')}</span></div><span class="ttl">${esc(n.title)}</span><span class="metric">${m}</span></button>`;
+}).join('');
+
+function flowCards(list, el, withLane) {
+  el.innerHTML = list.map((r, i) => {
+    const n = N[r[0]];
+    const lane = withLane && r[3] && r[3] !== '—' ? `<span class="lane">lane <b>${r[3]}</b></span>` : '';
+    return `<button class="card" type="button" data-n="${r[0]}"><div class="top"><span class="pid">${n.pid}</span>${lane}</div><span class="ttl">${esc(n.title)}</span><span class="desc">${esc(r[1])}</span><span class="metric">${r[2]}</span>${i < list.length - 1 ? arrowSvg : ''}</button>`;
+  }).join('');
+}
+flowCards(RT, $('#rt-flow'));
+flowCards(EN, $('#en-flow'), true);
+flowCards(ML, $('#ml-flow'));
+
+$('#st-cards').innerHTML = ST.map(([id, d]) => { const n = N[id]; return `<button class="card" type="button" data-n="${id}"><div class="top"><span class="pid">${n.pid}</span></div><span class="ttl">${esc(n.title)}</span><span class="desc">${esc(d)}</span></button>`; }).join('');
+$('#web-cards').innerHTML = WEB.map(([id, img, d]) => { const n = N[id]; return `<button class="card" type="button" data-n="${id}">${img ? `<img src="${img}" alt="" class="shot" loading="lazy">` : '<div style="aspect-ratio:16/10;border-radius:9px;background:var(--panel-2);display:grid;place-items:center;color:var(--faint);font:.8rem var(--f-mono)">no screenshot · raw plates</div>'}<div class="top"><span class="pid">${n.pid}</span></div><span class="ttl">${esc(n.title)}</span><span class="desc">${esc(d)}</span></button>`; }).join('');
+
+const pidLink = p => { const id = Object.keys(N).find(k => N[k].pid === p); return id ? `<span class="pid" data-n="${id}" style="cursor:pointer">${p}</span>` : p; };
+$('#files-body').innerHTML = FILES.map(r => `<tr><td><code>${esc(r[0])}</code></td><td>${r[1].split(/,\s*/).map(x => /^[A-Z]+-\d+/.test(x) ? x.replace(/^([A-Z]+-\d+)(\.\.\d+)?/, (m, a, b) => pidLink(a) + (b || '')) : esc(x)).join(', ')}</td><td>${esc(r[2])}</td><td>${esc(r[3])}</td><td class="num">${esc(r[4])}</td><td>${esc(r[5])}</td></tr>`).join('');
+
+$('#mx').innerHTML = MX.map(m => `<div class="chart"><div class="top" style="display:flex;justify-content:space-between;gap:8px;align-items:center"><h3>${m.t}</h3><span class="pid" data-n="${m.link}" style="cursor:pointer">${N[m.link].pid}</span></div><p class="note">${m.n}</p><table><tbody>${m.rows.map(([k, v]) => `<tr><td style="color:var(--muted)">${k}</td><td class="num">${v}</td></tr>`).join('')}</tbody></table></div>`).join('')
+ + `<div class="chart"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><h3>Rush-hour reads in fading light</h3><span class="pid" data-n="dec-lowlight" style="cursor:pointer">DEC</span></div><p class="note">Gated plate-read rate at fixed clock times, by month (data integrity review R16).</p>
+   ${[['17:00 Jul', 54.5], ['17:00 Sep', 15.0], ['17:00 1 Oct', 5.2], ['08:00 Jul', 43], ['08:00 1 Oct', 11]].map(([k, v]) => `<div class="bar-row"><span>${k}</span><div class="track"><div class="fill" style="width:${v}%;${k.startsWith('08') ? 'background:var(--r2l)' : ''}"></div></div><span class="val">${v.toFixed(1)} %</span></div>`).join('')}</div>`;
+
+$('#dec-locked').innerHTML = DEC_LOCKED.map(([id, t, d]) => `<li data-n="${id}" tabindex="0" role="button" style="cursor:pointer"><span class="status locked">locked</span><b>${esc(t)}</b><span>${esc(d)}</span></li>`).join('');
+$('#dec-false').innerHTML = DEC_FALSE.map(([id, date, t, d, s]) => `<li data-n="${id}" tabindex="0" role="button" style="cursor:pointer"><div style="display:flex;gap:8px;align-items:center"><span class="status ${s}">${s === 'open' ? 'open' : 'disproved'}</span><span class="date">${date}</span></div><b>${esc(t)}</b><span>${esc(d)}</span></li>`).join('');
+
+/* svg chips inside the system map -------------------------------------- */
+const SVGNS = 'http://www.w3.org/2000/svg';
+function chip(parent, id, x, y, w, h, label) {
+  const n = N[id];
+  const g = document.createElementNS(SVGNS, 'g');
+  g.setAttribute('class', 'svg-node svg-chip'); g.setAttribute('data-n', id); g.setAttribute('tabindex', '0'); g.setAttribute('role', 'button');
+  g.setAttribute('aria-label', n.pid + ' ' + n.title);
+  g.innerHTML = `<rect class="box" x="${x}" y="${y}" width="${w}" height="${h}" rx="7"/><rect class="idbg" x="${x + 6}" y="${y + (h - 14) / 2}" width="${n.pid.length * 6.6 + 8}" height="14" rx="3"/><text class="tid" x="${x + 10}" y="${y + h / 2 + 3.5}" style="font-size:9px">${n.pid}</text><text class="t1" x="${x + n.pid.length * 6.6 + 20}" y="${y + h / 2 + 4}">${esc(label)}</text>`;
+  parent.appendChild(g);
+}
+const oc = $('#orin-chips');
+[['rt-source', 'frame source'], ['rt-detect', 'YOLOv8m TRT'], ['rt-track', 'BotSORT'], ['rt-attr', 'attributes'], ['rt-ir', 'IR detector']].forEach((c, i) => chip(oc, c[0], 54, 286 + i * 44, 158, 34, c[1]));
+[['rt-planner', 'snap planner'], ['rt-snap', 'snapshotter'], ['rt-finalize', 'finalize + log'], ['rt-summary', 'summary'], ['rt-prune', '4K prune']].forEach((c, i) => chip(oc, c[0], 220, 286 + i * 44, 158, 34, c[1]));
+const ec = $('#en-chips');
+[['en-alpr', 'alpr-run'], ['en-rescore', 'rescore'], ['en-colour', 'plate colour'], ['en-gate', 'gate H']].forEach((c, i) => chip(ec, c[0], 612, 280 + i * 38, 140, 30, c[1]));
+[['en-dvsa', 'DVSA label'], ['en-vehicles', 'vehicles'], ['en-cnn', 'CNN heads'], ['en-people', 'people']].forEach((c, i) => chip(ec, c[0], 758, 280 + i * 38, 136, 30, c[1]));
+chip(ec, 'en-classify', 612, 432, 282, 30, 'behaviour classifier + schedule');
+const mc = $('#ml-chips');
+[['ml-build', 'build'], ['ml-train', 'train']].forEach((c, i) => chip(mc, c[0], 676 + i * 112, 528, 106, 24, c[1]));
+[['ml-compare', 'compare'], ['ml-promote', 'promote']].forEach((c, i) => chip(mc, c[0], 676 + i * 112, 556, 106, 24, c[1]));
+
+/* lag chart ------------------------------------------------------------- */
+(function lag() {
+  const snaps = [1, 2, 3, 4, 5, 6, 8, 9];
+  const fire = [0.592, 0.566, 0.545, 0.523, 0.494, 0.444, 0.373, 0.355];
+  const done = [0.566, 0.53, 0.516, 0.479, 0.43, 0.373, 0.289, 0.257];
+  const W = 420, H = 260, L = 44, R = 12, T = 12, B = 34;
+  const y0 = 0.2, y1 = 0.65;
+  const X = i => L + i * (W - L - R) / (snaps.length - 1);
+  const Y = v => T + (y1 - v) / (y1 - y0) * (H - T - B);
+  let s = `<rect class="band-l2r" x="${L}" y="${Y(0.60)}" width="${W - L - R}" height="${Y(0.30) - Y(0.60)}"/>`;
+  [0.2, 0.3, 0.4, 0.5, 0.6].forEach(v => { s += `<line class="ax" x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}" stroke-dasharray="2 4"/><text class="axl" x="${L - 6}" y="${Y(v) + 3.5}" text-anchor="end">${v.toFixed(1)}</text>`; });
+  snaps.forEach((n, i) => {
+    s += `<line x1="${X(i)}" x2="${X(i)}" y1="${Y(fire[i])}" y2="${Y(done[i])}" stroke="var(--faint)" stroke-width="1.2"/>`;
+    s += `<text class="axl" x="${X(i)}" y="${H - B + 16}" text-anchor="middle">${n}</text>`;
+  });
+  s += `<text class="axl" x="${(W + L) / 2}" y="${H - 4}" text-anchor="middle">snap number (7 was dropped)</text>`;
+  s += `<polyline fill="none" class="ser-fire" stroke-width="2" points="${fire.map((v, i) => X(i) + ',' + Y(v)).join(' ')}" style="fill:none"/>`;
+  s += `<polyline fill="none" class="ser-done" stroke-width="2" points="${done.map((v, i) => X(i) + ',' + Y(v)).join(' ')}" style="fill:none"/>`;
+  fire.forEach((v, i) => { s += `<circle class="ser-fire" cx="${X(i)}" cy="${Y(v)}" r="3.6"/>`; });
+  done.forEach((v, i) => { s += `<circle class="ser-done" cx="${X(i)}" cy="${Y(v)}" r="3.6"/>`; });
+  s += `<text class="dot-label hi" x="${X(7) - 6}" y="${Y(done[7]) + 16}" text-anchor="end">lag 0.098 t</text>`;
+  s += `<text class="dot-label" x="${X(0) + 6}" y="${Y(fire[0]) - 8}">lag 0.026 t</text>`;
+  $('#lagchart').innerHTML = s;
+})();
+
+/* history chart --------------------------------------------------------- */
+(function hist() {
+  const pts = [
+    ['2026-06-03', 21.7, 'B0@224', ''], ['2026-06-03', 37.6, 'B0@512', 'small val'], ['2026-06-08', 30.3, 'B5@456', ''],
+    ['2026-06-11', 34.9, 'B5', ''], ['2026-06-14', 40.2, 'B5', 'promoted'], ['2026-06-27', 44.1, 'B5', ''],
+    ['2026-07-08', 45.1, 'B6@528', 'promoted'], ['2026-07-15', 43.3, 'B6', ''], ['2026-09-24', 86.8, 'B6 clean crops', 'promoted'],
+    ['2026-09-29', 93.2, 'B6 label-clean', 'production'], ['2026-10-01', 93.5, 'B6 cap 30', 'not promoted']];
+  const W = 760, H = 300, L = 46, R = 20, T = 16, B = 40;
+  const d0 = Date.parse('2026-05-28'), d1 = Date.parse('2026-10-08');
+  const X = d => L + (Date.parse(d) - d0) / (d1 - d0) * (W - L - R);
+  const Y = v => T + (100 - v) / 100 * (H - T - B);
+  let s = '';
+  [0, 25, 50, 75, 100].forEach(v => { s += `<line class="ax" x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}" ${v ? 'stroke-dasharray="2 4"' : ''}/><text class="axl" x="${L - 8}" y="${Y(v) + 3.5}" text-anchor="end">${v}%</text>`; });
+  ['2026-06-01', '2026-07-01', '2026-08-01', '2026-09-01', '2026-10-01'].forEach(d => { s += `<text class="axl" x="${X(d)}" y="${H - B + 18}" text-anchor="middle">${new Date(d).toLocaleString('en-GB', { month: 'short' })}</text>`; });
+  const xf = X('2026-09-24');
+  s += `<line x1="${xf - 10}" x2="${xf - 10}" y1="${T}" y2="${H - B}" stroke="var(--amber)" stroke-dasharray="4 4"/><text class="dot-label" x="${xf - 16}" y="${T + 10}" text-anchor="end" style="fill:var(--amber)">crop fix: plate-anchored crops</text>`;
+  s += `<polyline style="fill:none" stroke="var(--line-2)" stroke-width="1.5" points="${pts.map(p => X(p[0]) + ',' + Y(p[1])).join(' ')}"/>`;
+  pts.forEach((p, i) => {
+    const hi = p[3] === 'promoted' || p[3] === 'production';
+    s += `<circle cx="${X(p[0])}" cy="${Y(p[1])}" r="${hi ? 5 : 3.6}" fill="${p[3] === 'production' ? 'var(--plate)' : hi ? 'var(--l2r)' : 'var(--faint)'}" stroke="var(--panel)" stroke-width="1.5"/>`;
+    const up = [0, 2, 4, 6, 9].includes(i);
+    const dx = i >= 8 ? -8 : 6, anchor = i >= 8 ? 'end' : 'start';
+    const dy = i === 9 ? -10 : i === 10 ? 16 : i === 8 ? 4 : up ? -10 : 16;
+    s += `<text class="dot-label${hi ? ' hi' : ''}" x="${X(p[0]) + dx}" y="${Y(p[1]) + dy}" text-anchor="${anchor}">${p[1]}% ${p[2]}${p[3] && p[3] !== 'promoted' ? ' · ' + p[3] : ''}</text>`;
+  });
+  s += `<circle cx="${X('2026-10-01')}" cy="${Y(85.0)}" r="5" fill="none" stroke="var(--good)" stroke-width="2"/><text class="dot-label hi" x="${X('2026-10-01') - 8}" y="${Y(85.0) + 18}" text-anchor="end" style="fill:var(--good)">85.0% on 117 unseen cars (per track)</text>`;
+  $('#histchart').innerHTML = s;
+})();
+
+/* tech index ------------------------------------------------------------ */
+const cats = ['All', ...new Set(TECH.map(t => t[0]))];
+let cat = 'All';
+$('#tech-cats').innerHTML = cats.map(c => `<button type="button" class="chipbtn" aria-pressed="${c === 'All'}" data-cat="${c}">${c}</button>`).join('');
+function renderTech() {
+  const q = $('#tech-q').value.trim().toLowerCase();
+  const rows = TECH.filter(t => (cat === 'All' || t[0] === cat) && (!q || (t.slice(0, 4).join(' ') + ' ' + t[4].map(i => N[i].pid + ' ' + N[i].title).join(' ')).toLowerCase().includes(q)));
+  $('#tech-body').innerHTML = rows.map(t => `<tr data-n="${t[4][0]}"><td><b>${esc(t[1])}</b><div class="count">${esc(t[0])}</div></td><td class="mono">${esc(t[2])}</td><td>${esc(t[3])}</td><td>${t[4].map(i => `<span class="pid">${N[i].pid}</span>`).join(' ')}</td></tr>`).join('') || '<tr><td colspan="4" style="color:var(--faint)">No match. Try a shorter word.</td></tr>';
+  $('#tech-count').textContent = rows.length + ' of ' + TECH.length;
+}
+$('#tech-q').addEventListener('input', renderTech);
+$('#tech-cats').addEventListener('click', e => { const b = e.target.closest('[data-cat]'); if (!b) return; cat = b.dataset.cat; document.querySelectorAll('#tech-cats [data-cat]').forEach(x => x.setAttribute('aria-pressed', String(x === b))); renderTech(); });
+renderTech();
+
+/* ------------------------------------------------------------------ */
+/* modal                                                               */
+/* ------------------------------------------------------------------ */
+const dlg = $('#dlg');
+let current = null;
+function openNode(id) {
+  const n = N[id]; if (!n) return;
+  current = id;
+  $('#dlg-pid').textContent = n.pid;
+  $('#dlg-kind').textContent = n.kind;
+  $('#dlg-title').textContent = n.title;
+  const body = $('#dlg-body');
+  const imgs = n.imgs || [];
+  body.className = 'dlg-body' + (imgs.length ? '' : ' noimg');
+  let media = '';
+  if (imgs.length) {
+    media = `<div class="dlg-media"><div class="media-frame${imgs[0][2] === 'white' ? ' white' : ''}" id="mf"><img id="mimg" src="${imgs[0][0]}" alt="${esc(imgs[0][1])}"></div><p class="media-cap" id="mcap">${esc(imgs[0][1])} <span style="color:var(--faint)">Click the image to zoom.</span></p>${imgs.length > 1 ? `<div class="thumbs">${imgs.map((im, i) => `<button type="button" data-i="${i}" aria-current="${i === 0}" aria-label="Show image ${i + 1}"><img src="${im[0]}" alt=""></button>`).join('')}</div>` : ''}</div>`;
+  }
+  let text = `<div class="dlg-text">`;
+  if (n.lead) text += `<p class="lead">${n.lead}</p>`;
+  if (n.specs) text += `<div><h4>Specs &amp; metrics</h4><table class="spec"><tbody>${n.specs.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</tbody></table></div>`;
+  if (n.html) text += `<div>${n.html}</div>`;
+  if (n.io) text += `<div class="io"><div><h4>Inputs</h4><ul>${n.io.in.map(x => `<li>${x}</li>`).join('')}</ul></div><div><h4>Outputs</h4><ul>${n.io.out.map(x => `<li>${x}</li>`).join('')}</ul></div></div>`;
+  if (n.files) text += `<div><h4>Source &amp; files</h4><div class="files">${n.files.map(f => `<code>${esc(f)}</code>`).join('')}</div></div>`;
+  if (n.rel) text += `<div><h4>Related</h4><div class="rel">${n.rel.filter(r => N[r]).map(r => `<button type="button" data-n="${r}"><span class="pid">${N[r].pid}</span>${esc(N[r].title)}</button>`).join('')}</div></div>`;
+  text += `<p class="count">Link: #${id}</p></div>`;
+  body.innerHTML = media + text;
+  body.scrollTop = 0;
+  if (id === 'en-rescore') {
+    const probs = [0.9857, 0.987, 0.9837, 0.9785, 0.9799, 0.9841, 0.9681];
+    const mn = Math.min(...probs);
+    body.querySelector('.charbars').innerHTML = probs.map((p, i) => `<div class="${p === mn ? 'min' : ''}"><span style="height:${Math.round((p - 0.9) / 0.1 * 80) + 6}px"></span>${p.toFixed(3)}<b style="color:var(--faint)">#${i + 1}</b></div>`).join('');
+  }
+  if (!dlg.open) dlg.showModal();
+  try { history.replaceState(null, '', '#' + id); } catch (e) { /* sandboxed viewers may refuse */ }
+}
+function closeNode() { if (dlg.open) dlg.close(); }
+dlg.addEventListener('close', () => { current = null; try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* ignore */ } });
+dlg.addEventListener('click', e => {
+  if (e.target === dlg) { closeNode(); return; }
+  const th = e.target.closest('.thumbs button');
+  if (th) {
+    const im = N[current].imgs[+th.dataset.i];
+    $('#mimg').src = im[0]; $('#mimg').alt = im[1];
+    $('#mcap').innerHTML = esc(im[1]) + ' <span style="color:var(--faint)">Click the image to zoom.</span>';
+    $('#mf').className = 'media-frame' + (im[2] === 'white' ? ' white' : '');
+    dlg.querySelectorAll('.thumbs button').forEach(b => b.setAttribute('aria-current', String(b === th)));
+    return;
+  }
+  if (e.target.id === 'mimg') { $('#mf').classList.toggle('zoom'); }
+});
+$('#dlg-close').addEventListener('click', closeNode);
+$('#dlg-link').addEventListener('click', () => {
+  const url = location.href.split('#')[0] + '#' + current;
+  const done = msg => { const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 1600); };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(() => done('Link copied'), () => done('#' + current));
+  } else { done('#' + current); }
+});
+
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-n]');
+  if (t) { e.preventDefault(); openNode(t.dataset.n); return; }
+  const a = e.target.closest('a[href^="#"]');
+  if (a) { const id = a.getAttribute('href').slice(1); if (N[id]) { e.preventDefault(); openNode(id); } }
+});
+document.addEventListener('keydown', e => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[data-n][tabindex]')) { e.preventDefault(); openNode(e.target.dataset.n); }
+});
+function fromHash() { const id = decodeURIComponent(location.hash.slice(1)); if (N[id]) openNode(id); }
+window.addEventListener('hashchange', fromHash);
+fromHash();
+})();
+</script>
