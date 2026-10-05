@@ -554,7 +554,7 @@ reads at both rush hours.**
     dusk plate data.
   - **07:00-07:20 (Monday): detection complete.** Offline matched live 1:1
     (6 cars, all R→L, 3 people, 1 dog), and every road motion event belonged
-    to a track. The 6 cars appear in 13 views across the 4K snaps. The plate
+    to a track. The 6 cars appear in 11 views across the 4K snaps. The plate
     detector fired on 2 (one probably not a plate) and read neither. The
     plates are visible by eye but smeared, and each front plate sits between
     flaring headlights. The two plate crops are bright but blurred:
@@ -588,6 +588,15 @@ reads at both rush hours.**
   scheduled ISP switch, which needs the admin account (`cv` is read-only).
   An attempt to measure the exposure time from headlight streaks was too
   noisy to quote.
+- **Reproduce.** `.claude/lowlight_counts.py` (the count and track-quality
+  tables, from `output/`) and `.claude/lowlight_plates.py` (the plate table,
+  sessions 20260930_211033 + 20261001_190826). For a capture pulled from the
+  Orin: `.claude/ir_capture_detect.py <window>` (~25 min per 20-min window),
+  then `.claude/ir_capture_report.py <window> --live-events
+  <session>_events.jsonl` (tracks, motion events, live comparison, contact
+  sheet), and `.claude/ir_capture_plates.py <window>` for the 4K snaps.
+  Their outputs land beside the capture; they hold plates, so keep them out
+  of the repo.
 
 ### Checked and sound (no action)
 

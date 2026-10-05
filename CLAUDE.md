@@ -209,7 +209,7 @@ step 6's E1.5(c) is the one Orin deploy. In order:
           to conf 0.05, motion count and 4K snaps all empty), 18:30 no cars.
           Run future captures on weekdays. The **07:00 Monday** window matched
           the live tracker 1:1 (6 cars, 3 people, a dog; no motion
-          unexplained), but its 6 cars gave 13 plate views in the 4K snaps,
+          unexplained), but its 6 cars gave 11 views in the periodic 4K snaps,
           2 plate detections and 0 reads.
         - **Low-light plate loss = blur + R→L front plates not found.** Same
           week, per car: L→R plates are still found at 07-08/18-19 h
@@ -223,6 +223,9 @@ step 6's E1.5(c) is the one Orin deploy. In order:
           (E2.8; a cap all day cost ~23 pp in daylight), via a scheduled
           `SetIsp` (admin account). IR-mode inference (option a) is now only
           a plate-read option and keeps the long exposures.
+        - Scripts: `.claude/lowlight_{counts,plates}.py` (tables from
+          `output/`), `.claude/ir_capture_{detect,report,plates}.py` (a pulled
+          capture; outputs stay beside it, never in the repo).
    4. **E1.3 plate-colour/direction check, and the combined gate. Live
       2026-10-04.** `configs/alpr.json` is `"plate_gate": "combined"`, and the
       panel's **platecheck** playbook ran on all 49 sessions (197/197 steps,
