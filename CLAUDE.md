@@ -200,15 +200,37 @@ step 6's E1.5(c) is the one Orin deploy. In order:
         IR gap is mid-Aug to 28 Sep only. The live problem is that **rush-hour
         plate reads collapse as the days shorten**: gated read rate at 17:00
         was 54.5 % in July, 15.0 % in September and 5.2 % on 1 Oct; at 08:00,
-        43 % → 11 %. Forced colour doesn't help. Nights (21-05 h) show
-        0-7 cars/h in every mode (quiet, or missed?). **Capture running on
-        the Orin:** `~/ir_test` (`.claude/ir_capture.py --windows`) records
-        sub-stream + 4K every 2 s at 18:30 (20 min), 21:30 (30 min) and 07:00
-        (20 min) on 4-5 Oct. Pull it and check night detection and dusk/dawn
-        reads. Then choose a low-light option: a faster low-light shutter
-        (E2.8), or IR mode with inference in IR (needs a runtime switch and
-        `dayNight` back to Auto). That choice is the operator's: it changes the
-        camera or the live runtime.
+        43 % → 11 %. Forced colour doesn't help.
+        **Capture analysed 2026-10-05** (review R16 "Results"; `~/ir_test`
+        on the Orin, `.claude/ir_capture.py --windows`: sub-stream + 4K every
+        2 s at 18:30, 21:30 and 07:00 on 4-5 Oct):
+        - **Nights are quiet, not missed.** Mon-Thu car tracks/h in forced
+          colour (28 Sep-1 Oct, dark) match summer daylight: 20 h 43.5 vs
+          49.6, 22 h 1.8 vs 1.5, 23 h 2.2 vs 2.1 (the IR weeks: 20 h 17.0,
+          blind). Dark tracks have lower confidence (0.77 vs 0.84) and are
+          visible ~2 s less; 21 h (8.2 vs 12.2) may be missing a few cars.
+        - **The capture itself was weak: 4 Oct was a Sunday**, the quietest
+          evening. 21:30-22:00 had no traffic at all (live, offline YOLO down
+          to conf 0.05, motion count and 4K snaps all empty), 18:30 no cars.
+          Run future captures on weekdays. The **07:00 Monday** window matched
+          the live tracker 1:1 (6 cars, 3 people, a dog; no motion
+          unexplained), but its 6 cars gave 11 views in the periodic 4K snaps,
+          2 plate detections and 0 reads.
+        - **Low-light plate loss = blur + R→L front plates not found.** Same
+          week, per car: L→R plates are still found at 07-08/18-19 h
+          (81-100 %) but none read (sharpness 2-4× below day while brighter);
+          R→L plate detection drops to 17-41 % (day 91 %), most likely
+          headlight glare around the front plate. Gated per-car reads: day
+          47.7 %, 17-18 h 7.7 %, 18-19 h 0 %, 07-08 h 0 %, 08-09 h 3.2 %.
+        - **The low-light choice is the operator's** (it changes the camera):
+          counting needs nothing (forced colour tracks at night); the plate
+          lever is a faster shutter scheduled for 07-09 h and 17-19 h only
+          (E2.8; a cap all day cost ~23 pp in daylight), via a scheduled
+          `SetIsp` (admin account). IR-mode inference (option a) is now only
+          a plate-read option and keeps the long exposures.
+        - Scripts: `.claude/lowlight_{counts,plates}.py` (tables from
+          `output/`), `.claude/ir_capture_{detect,report,plates}.py` (a pulled
+          capture; outputs stay beside it, never in the repo).
    4. **E1.3 plate-colour/direction check, and the combined gate. Live
       2026-10-04.** `configs/alpr.json` is `"plate_gate": "combined"`, and the
       panel's **platecheck** playbook ran on all 49 sessions (197/197 steps,
@@ -439,7 +461,10 @@ no person-specific snap gate needed. Both ancestor repos archived
    `.claude/setexp*.py`). **⮕ 2026-10-04: shutter-only for now.** An IR
    illuminator only helps in the camera's IR mode, whose monochrome frames
    make the runtime skip inference (`device/runtime.py:699`), so the tracker
-   would go blind. See review E2.8.
+   would go blind. See review E2.8. **⮕ 2026-10-05:** "plates are still found
+   at night" no longer holds for R→L. At 07-08/18-19 h front-plate detection
+   drops to 17-41 % (day 91 %, headlight glare), and the low-light window now
+   covers both rush hours. See step 6.3a above and review R16 "Results".
 6. **JP7:** wheel gate re-checked 2026-07-07 — still no jp7 index.
    Re-run `scripts/check_jp7_wheel.ps1` before any flash; stay on JP6.
 7. **Parked by choice — people P0 (retention policy).** Deliberately

@@ -356,7 +356,9 @@ The busiest date and hour, the YMCA schedule miner and R12 all inherit this.
 "One track ≈ one pass" is assumed. Unmeasured:
 
 - detection recall by lighting (YOLOv8m on the 896×512 sub-stream at dusk and
-  dark);
+  dark). Partly answered 2026-10-05 (R16 results): weeknight dark-hour
+  counts in forced colour match summer daylight, and a 20-min dawn window
+  matched an offline detector and a motion count 1:1;
 - the car split rate (only people have a measured merge rate);
 - direction from track endpoints (`device/track_buffer.py:488`);
 - van/truck class confusion: `/stats` counts `class_name == "car"` only;
@@ -505,13 +507,96 @@ colour, and the bigger loss is low light at rush hour.**
 - **Nights look nearly empty in every mode:** 0-7 cars/h from 21:00 to 05:00,
   in August colour and in forced colour alike. That's either genuinely quiet
   or the detector missing cars in the dark; the data can't tell which.
-- **Test running:** `.claude/ir_capture.py --windows` is recording on the Orin
-  at 18:30 (20 min), 21:30 (30 min) and 07:00 (20 min), 4-5 Oct: the
-  sub-stream plus a 4K snap every 2 s, independent of the detector. It
-  answers whether nights are missed by the detector (21:30), and shows the
-  dusk and dawn snaps' blur. Comparing an IR-mode night needs the operator
-  to set `dayNight` back to Auto (or B&W) for a night, plus a runtime build
-  that infers in IR (option a).
+  (Answered 2026-10-05: quiet. See below.)
+
+**Results (2026-10-05): nights aren't missed; the low-light loss is plate
+reads at both rush hours.**
+
+- **Forced-colour nights are quiet, not missed.** Car tracks per fully
+  covered hour, Mon-Thu, all sessions:
+
+  | hour | Jun-Jul (daylight) | IR weeks (18 Aug-27 Sep) | forced colour (28 Sep-1 Oct) |
+  | --- | --- | --- | --- |
+  | 19 | 84.0 | 77.2 | 91.5 |
+  | 20 | 49.6 | 17.0 | 43.5 |
+  | 21 | 12.2 | 2.7 | 8.2 |
+  | 22 | 1.5 | 0.2 | 1.8 |
+  | 23 | 2.1 | 0.6 | 2.2 |
+
+  It is dark from about 19:30 at the end of September. In forced colour the
+  tracker counts dark-hour cars at summer-daylight levels; only the IR weeks
+  were blind. The detector picks dark cars up later and drops them sooner:
+  20-23 h tracks have mean confidence 0.77 against 0.84-0.85 at 12-16 h, and
+  are visible 5.6 s against 7.3-7.6 s. But they still cross ~550 px of the
+  frame, and the direction mix matches summer (17-18 % R→L at 20-23 h in
+  both), so
+  nothing points to split tracks inflating the count. 21:00 (8.2 against
+  12.2) is the one hour that may be missing cars. Four nights is a small
+  sample.
+- **The 4-5 Oct capture** (`.claude/ir_capture.py --windows`: the sub-stream
+  plus a 4K snap every 2 s; the camera stayed in forced colour, auto
+  exposure). Each window was run offline through YOLOv8m + BotSORT at the
+  live settings (conf 0.30) and at conf 0.10, raw YOLOv8m at conf 0.05, and a
+  detector-free MOG2 motion count inside the road polygon. Then it was
+  compared with the live session's tracks. The 4K snaps went through
+  full-frame vehicle detection, the plate detector and OCR.
+  - **4 Oct was a Sunday**, the street's quietest evening. In summer daylight,
+    Sundays had 0-5 cars at 18:30-18:50 and 0-1 at 21:30-22:00, and Mondays
+    28-51 and 0-4. So both evening windows had almost no traffic. Run such
+    captures on weekdays.
+  - **21:30-22:00: nothing passed.** Live tracker 0 tracks; offline 0 at
+    conf 0.30 and 0.10. Raw detections down to 0.05 were only the car parked
+    on the left (static, conf ≤ 0.22). No road motion events. Frame luma
+    stayed at 64-65 for all 30 min, so no headlights. No vehicles in the 4K
+    snaps. Nothing was missed, but there was nothing to miss.
+  - **18:30-18:50: no cars** (two cyclists, two walkers). Live and offline
+    agree, and the motion count found nothing else. So the capture has no
+    dusk plate data.
+  - **07:00-07:20 (Monday): detection complete.** Offline matched live 1:1
+    (6 cars, all R→L, 3 people, 1 dog), and every road motion event belonged
+    to a track. The 6 cars appear in 11 views across the 4K snaps. The plate
+    detector fired on 2 (one probably not a plate) and read neither. The
+    plates are visible by eye but smeared, and each front plate sits between
+    flaring headlights. The two plate crops are bright but blurred:
+    width-normalised sharpness (Laplacian variance at 128 px wide) is 249 and
+    26, against a daytime median of 1,982; luma is 166 and 191, against 105.
+- **Low-light plate loss has two parts.** Same week (30 Sep-4 Oct, 1,888
+  snapped cars); a read is a non-suspect best read at min-character
+  confidence ≥ 0.90, UK-shaped:
+
+  | hours | L→R plate found | L→R read | R→L plate found | R→L read |
+  | --- | --- | --- | --- | --- |
+  | 10-16 | 86.6 % | 42.8 % | 90.9 % | 54.6 % |
+  | 17-18 | 90.7 % | 9.3 % | 55.2 % | 6.0 % |
+  | 18-19 | 80.8 % | 0.0 % | 17.0 % | 0.0 % |
+  | 07-08 | 100 % (17 cars) | 0.0 % | 40.5 % | 0.0 % |
+  | 08-09 | 91.9 % | 5.4 % | 84.8 % | 2.6 % |
+
+  1. **Blur, in both directions.** Plates are found but can't be read. They
+     are brighter than by day (luma 128-171 against 105) but 2-4× less sharp
+     (width-normalised 484-954 against 1,982).
+  2. **R→L front plates stop being found at dusk and dawn** (17-41 %,
+     against 91 % by day), most likely because of the headlight glare around
+     them in the dawn snaps. The 2026-08-12 finding that night plates are
+     still found no longer holds for R→L.
+- **What it means for the options.** Counting needs no change: forced colour
+  tracks cars at night. Option (a) is now only a plate-read option, and IR
+  mode keeps the long exposures, so it wouldn't fix blur by itself. The lever
+  for rush-hour reads is a faster shutter at dusk and dawn only (E2.8), which
+  should reduce the glare as well as the blur. A cap all day is out: the
+  2026-05-31 Anti-Smearing test cost ~23 pp in daylight. So it needs a
+  scheduled ISP switch, which needs the admin account (`cv` is read-only).
+  An attempt to measure the exposure time from headlight streaks was too
+  noisy to quote.
+- **Reproduce.** `.claude/lowlight_counts.py` (the count and track-quality
+  tables, from `output/`) and `.claude/lowlight_plates.py` (the plate table,
+  sessions 20260930_211033 + 20261001_190826). For a capture pulled from the
+  Orin: `.claude/ir_capture_detect.py <window>` (~25 min per 20-min window),
+  then `.claude/ir_capture_report.py <window> --live-events
+  <session>_events.jsonl` (tracks, motion events, live comparison, contact
+  sheet), and `.claude/ir_capture_plates.py <window>` for the 4K snaps.
+  Their outputs land beside the capture; they hold plates, so keep them out
+  of the repo.
 
 ### Checked and sound (no action)
 
@@ -619,11 +704,12 @@ the rest of the order:
   September unobserved, but the camera has been in forced colour since
   28 Sep, so the live question is now low light. Plate reads at 07-09 h and
   16-19 h have collapsed since July and will keep falling into winter.
-  Tonight's fixed-window capture checks whether nights are missed. Then
-  compare low-light options on rush-hour reads: forced colour with a faster
-  low-light shutter (E2.8), or IR mode with inference in IR (option a,
-  which needs a runtime switch and the operator to set `dayNight` back).
-  E3.4 still needs the mid-August to 28 Sep IR gap.
+  The 4-5 Oct capture and the weeknight counts (R16 results, 2026-10-05)
+  show forced-colour nights aren't missed. The loss is plate reads at both
+  rush hours: blur, plus R→L front plates not being found. Next: a faster
+  shutter scheduled for dusk and dawn (E2.8). IR mode with inference in IR
+  (option a) is now only a plate-read option. E3.4 still needs the
+  mid-August to 28 Sep IR gap.
 - **R2 confirmed (E0.5).** E1.3 is the first instrument to build. The same
   check can settle collisions directly: when two concurrent tracks share a
   best plate, the plate's colour (front white for R→L, rear yellow for L→R)
@@ -895,9 +981,13 @@ jitter off (keep contrast or none). Compare white/silver/grey confusion with
 analysis found night plates detected but smeared by motion (CLAUDE.md
 Next-steps item 5).
 
-- Test a night-scheduled faster shutter alone, on alternating dusks (19-21 h).
-  Score with verified reads (E1.3 plus the combined gate): canonical-shape
-  night rates are probably overstated (R5).
+- Test a faster shutter scheduled for the low-light rush hours, on
+  alternating weekdays. Since 2026-10 these are 07-09 h and 17-19 h, and they
+  widen into winter (R16 results). Score with verified reads (E1.3 plus the
+  combined gate): canonical-shape night rates are probably overstated (R5).
+- Score R→L plate *detection* as well as reads. At dusk and dawn R→L front
+  plates stop being found (17-41 % against 91 % by day), most likely because
+  of headlight glare, which a shorter exposure may also reduce.
 - Don't add an IR illuminator without a runtime change. It only helps once the
   camera switches to IR mode, and the runtime skips inference on monochrome
   frames (`device/runtime.py:699`), so the tracker would go blind. Either make
@@ -905,8 +995,10 @@ Next-steps item 5).
   IR out.
 - Run E3.1's dusk and dark hand counts first: "night ≈ 15 % of traffic" comes
   from the detector that struggles at night (R9), and it bounds what this can
-  win.
-- *Decision:* keep the night schedule if verified dusk reads rise and day reads
+  win. The 2026-10-05 checks make that bound less doubtful (no cars missed at
+  dawn; dark-hour counts at summer-daylight levels), and a rush-hour test
+  depends on it less, but E3.1 still gives the verified number.
+- *Decision:* keep the schedule if verified low-light reads rise and day reads
   don't fall.
 
 ### Phase 3 — analytics semantics (weeks 3–4)

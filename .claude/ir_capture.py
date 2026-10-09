@@ -27,7 +27,8 @@ mode (used 2026-10-04, when the camera had been forced to colour at night):
 each window gets its own ``<MMDD_HHMM>/`` directory and records whether the
 camera was in IR at its start.
 
-Analysis happens on the dev box after a pull; nothing here runs inference.
+Analysis happens on the dev box after a pull (`.claude/ir_capture_detect.py`,
+`ir_capture_report.py` and `ir_capture_plates.py`); nothing here runs inference.
 """
 
 from __future__ import annotations
