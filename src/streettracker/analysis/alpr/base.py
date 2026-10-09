@@ -95,6 +95,10 @@ SNAP_FILENAME_RE = re.compile(
 class PlateDetection:
     bbox: tuple[int, int, int, int]
     det_confidence: float
+    # Found by the fullframe crop path's bottom-centre retry (a vehicle
+    # whose box centre is off the road). Persisted so the static-plate
+    # filter can check these reads without learning spots from them.
+    bottom_retry: bool = False
 
 
 @dataclass(slots=True)
@@ -129,7 +133,7 @@ class PlateResult:
         from streettracker.analysis.dvsa import is_canonical_uk_plate
 
         ocr_text = self.read.text if self.read else None
-        return {
+        out = {
             "image": self.image_name,
             "image_path": self.image_path,
             "track_id": self.track_id,
@@ -156,6 +160,10 @@ class PlateResult:
             "pipeline_ms": self.pipeline_ms,
             "error": self.error,
         }
+        # Present only when set, like ``static_suspect``.
+        if self.detection is not None and self.detection.bottom_retry:
+            out["bottom_retry"] = True
+        return out
 
 
 @runtime_checkable

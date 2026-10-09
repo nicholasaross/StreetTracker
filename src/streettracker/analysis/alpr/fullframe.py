@@ -17,7 +17,10 @@ Strategy per snap:
    it is still the best available anchor for *which* vehicle is the
    tracked one -- and try the plate detector on the best few;
 4. return the highest-confidence plate detection, projected back to
-   full-image coordinates.
+   full-image coordinates;
+5. when neither the candidates nor the hint crop hold a plate, retry
+   with vehicles that overlap the hint and whose bottom-centre is on the
+   road (tall vans and SUVs, whose box centre sits off the road).
 
 Parked cars inside the polygon can still win a candidate slot; the
 static-plate filter (``staticfilter.py``) removes their reads at the
@@ -29,7 +32,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from streettracker.analysis.alpr.base import PlateDetection
 
@@ -55,7 +58,23 @@ DEFAULT_MAX_CANDIDATES = 2
 # 1920 keep even far-zone cars (>=45 px) comfortably detectable.
 DEFAULT_VEHICLE_IMGSZ = 1920
 
+# The bottom-centre retry only tries vehicles overlapping the hint by at
+# least this IoU. Without it the retry also read cars parked mid-street,
+# and the static filter grew new parked-plate spots from those reads that
+# then flagged moving cars' plates (2026-10-09, session_20261004_095219:
+# 9 tracks lost a gate-passing read). At 0.1 every correct new read in
+# that session stayed (IoU 0.13-0.35) and parked-spot reads fell 87 -> 22.
+DEFAULT_RETRY_MIN_HINT_IOU = 0.1
+
 _VEHICLE_COCO_CLASSES = (2, 5, 7)  # car, bus, truck
+
+
+def _iou(a: Box | tuple[int, int, int, int], b: Box | tuple[int, int, int, int]) -> float:
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union > 0 else 0.0
 
 
 def _point_in_polygon(x: float, y: float, poly: list[tuple[float, float]]) -> bool:
@@ -107,11 +126,22 @@ def rank_vehicle_candidates(
     bbox_hint: tuple[int, int, int, int] | None,
     road_polygon_frac: list[tuple[float, float]] | None,
     min_vehicle_h_px: int = DEFAULT_MIN_VEHICLE_H_PX,
+    on_road_point: Literal["centre", "bottom"] = "centre",
 ) -> list[Box]:
     """On-road, plate-sized vehicle boxes ranked by likelihood of being the
     tracked one: nearest centre to the (stale) hint first, or largest first
     when there is no hint. The rule :class:`TrajectoryCropDetector` uses to
-    pick crop candidates, shared with the make/colour/body-type locator."""
+    pick crop candidates, shared with the make/colour/body-type locator.
+
+    ``on_road_point`` is the box point tested against the polygon. The
+    box centre (default) keeps cars parked at the kerb out: their centres
+    sit over the pavement. It also drops tall vehicles in the far zone,
+    whose centres sit over the houses behind the road, so
+    :class:`TrajectoryCropDetector` retries with ``"bottom"`` (where the
+    wheels meet the ground) when nothing else found a plate. ``"bottom"``
+    as the main rule admits kerb-parked cars, which then take candidate
+    slots from the tracked car (2026-10-09:
+    ``.claude/onroad_bottom_centre_check.py``)."""
     poly = (
         [(px * image_w, py * image_h) for px, py in road_polygon_frac]
         if road_polygon_frac
@@ -127,7 +157,8 @@ def rank_vehicle_candidates(
         if y2 - y1 < min_vehicle_h_px:
             continue
         cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
-        if poly is not None and not _point_in_polygon(cx, cy, poly):
+        test_y = y2 if on_road_point == "bottom" else cy
+        if poly is not None and not _point_in_polygon(cx, test_y, poly):
             continue
         if hint_c is not None:
             rank = ((cx - hint_c[0]) ** 2 + (cy - hint_c[1]) ** 2) ** 0.5
@@ -159,8 +190,10 @@ class TrajectoryCropDetector:
         max_candidates: int = DEFAULT_MAX_CANDIDATES,
         vehicle_conf: float = 0.2,
         vehicle_imgsz: int = DEFAULT_VEHICLE_IMGSZ,
+        retry_min_hint_iou: float = DEFAULT_RETRY_MIN_HINT_IOU,
     ) -> None:
         self._plate_detector = plate_detector
+        self._retry_min_iou = retry_min_hint_iou
         self._vehicle_model_spec = vehicle_model
         self._poly_frac = road_polygon_frac
         self._min_h = min_vehicle_h_px
@@ -196,33 +229,15 @@ class TrajectoryCropDetector:
         )[0]
         xy = result.boxes.xyxy.cpu().numpy()
         boxes: list[Box] = [(float(r[0]), float(r[1]), float(r[2]), float(r[3])) for r in xy]
-        candidates = rank_vehicle_candidates(
+        tried = rank_vehicle_candidates(
             boxes,
             w,
             h,
             bbox_hint=bbox_hint,
             road_polygon_frac=self._poly_frac,
             min_vehicle_h_px=self._min_h,
-        )
-
-        best: PlateDetection | None = None
-        for x1, y1, x2, y2 in candidates[: self._max_candidates]:
-            cx1 = max(0, int(x1 - self._pad))
-            cy1 = max(0, int(y1 - self._pad))
-            cx2 = min(w, int(x2 + self._pad))
-            cy2 = min(h, int(y2 + self._pad))
-            if cx2 <= cx1 or cy2 <= cy1:
-                continue
-            det = self._plate_detector.detect(image[cy1:cy2, cx1:cx2])
-            if det is None:
-                continue
-            px1, py1, px2, py2 = det.bbox
-            projected = PlateDetection(
-                bbox=(px1 + cx1, py1 + cy1, px2 + cx1, py2 + cy1),
-                det_confidence=det.det_confidence,
-            )
-            if best is None or projected.det_confidence > best.det_confidence:
-                best = projected
+        )[: self._max_candidates]
+        best = self._best_plate(image, tried)
         if best is not None:
             return best
 
@@ -242,5 +257,52 @@ class TrajectoryCropDetector:
                         bbox=(px1 + hx1, py1 + hy1, px2 + hx1, py2 + hy1),
                         det_confidence=det.det_confidence,
                     )
-                return None
+                # Last resort: vehicles whose wheels are on the road but
+                # whose box centre isn't -- a tall van or SUV. Only reached
+                # when nothing above found a plate, so it never displaces
+                # a read the centre rule gets; and only vehicles overlapping
+                # the hint, so cars parked elsewhere stay out.
+                if self._poly_frac is None:
+                    return None
+                retry = [
+                    b
+                    for b in rank_vehicle_candidates(
+                        boxes,
+                        w,
+                        h,
+                        bbox_hint=bbox_hint,
+                        road_polygon_frac=self._poly_frac,
+                        min_vehicle_h_px=self._min_h,
+                        on_road_point="bottom",
+                    )
+                    if b not in tried and _iou(b, bbox_hint) >= self._retry_min_iou
+                ][: self._max_candidates]
+                return self._best_plate(image, retry, bottom_retry=True)
         return self._plate_detector.detect(image)
+
+    def _best_plate(
+        self, image: np.ndarray, candidates: list[Box], *, bottom_retry: bool = False
+    ) -> PlateDetection | None:
+        """Highest-confidence plate detection over the candidate vehicle
+        crops, projected back to full-image coordinates."""
+        h, w = image.shape[:2]
+        best: PlateDetection | None = None
+        for x1, y1, x2, y2 in candidates:
+            cx1 = max(0, int(x1 - self._pad))
+            cy1 = max(0, int(y1 - self._pad))
+            cx2 = min(w, int(x2 + self._pad))
+            cy2 = min(h, int(y2 + self._pad))
+            if cx2 <= cx1 or cy2 <= cy1:
+                continue
+            det = self._plate_detector.detect(image[cy1:cy2, cx1:cx2])
+            if det is None:
+                continue
+            px1, py1, px2, py2 = det.bbox
+            projected = PlateDetection(
+                bbox=(px1 + cx1, py1 + cy1, px2 + cx1, py2 + cy1),
+                det_confidence=det.det_confidence,
+                bottom_retry=bottom_retry,
+            )
+            if best is None or projected.det_confidence > best.det_confidence:
+                best = projected
+        return best

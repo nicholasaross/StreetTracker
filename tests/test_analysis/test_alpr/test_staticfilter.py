@@ -156,6 +156,28 @@ class TestMarking:
         assert mark_static_suspects(records, [], set()) == 0
 
 
+class TestBottomRetryReads:
+    """Reads from the fullframe bottom-centre retry are checked against the
+    spots but never create them."""
+
+    def test_retry_reads_do_not_create_spots(self) -> None:
+        records = TestMarking()._spot_records()
+        for r in records:
+            r["bottom_retry"] = True
+        spots, _ = find_static_spots(records, {}, SUB, IMG)
+        assert spots == []
+
+    def test_retry_read_on_a_spot_is_marked(self) -> None:
+        records = TestMarking()._spot_records()
+        retry = _rec(99, 1, (2240, 332, 2273, 354), "E41579")
+        retry["bottom_retry"] = True
+        records.append(retry)
+        spots, consistent = find_static_spots(records, {}, SUB, IMG)
+        assert len(spots) == 1
+        mark_static_suspects(records, spots, consistent)
+        assert retry.get("static_suspect") is True
+
+
 class TestRollupExclusion:
     def test_rollup_skips_static_suspects(self) -> None:
         from streettracker.cli.alpr_run import _rollup_by_track

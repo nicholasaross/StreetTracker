@@ -568,7 +568,12 @@ Session files:
     out of the rollup like `static_suspect`, and each best read carries
     `n_agree` (other snaps reading the same string). Stamp
     `"plate_colour": "hsv_v1"` in `_static_plates.json` (`alpr-run`, or
-    `alpr-colour` for older sessions).
+    `alpr-colour` for older sessions). Since 2026-10-09 a read carries
+    `bottom_retry: true` when the fullframe crop path found it on its last
+    resort: a vehicle that overlaps the hint and whose bottom-centre, but
+    not its box centre, is on the road (tall vans and SUVs). The static
+    filter checks these reads but doesn't learn spots from them
+    (`.claude/onroad_bottom_centre_check.py`).
 - `{session}_vehicles.json` — per-vehicle plate-anchored aggregation
   (after running `vehicles`); carries DVSA `make`/`model`/`year` once
   `dvsa-label` has harvested for the session

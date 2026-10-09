@@ -148,6 +148,11 @@ def find_static_spots(
         bb = r.get("det_bbox")
         if not bb:
             continue
+        # Reads from the fullframe bottom-centre retry are often parked
+        # cars; learning spots from them flagged moving cars' plates that
+        # pass the same pixels. mark_static_suspects still checks them.
+        if r.get("bottom_retry"):
+            continue
         cx, cy = _center(bb)
         tid = int(r["track_id"])
         dets.append(

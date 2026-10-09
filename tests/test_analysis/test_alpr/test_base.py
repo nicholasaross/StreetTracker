@@ -143,6 +143,22 @@ class TestPlateResultJson:
         assert d["ocr_conf"] == 0.35
         assert d["ocr_char_probs"] == [0.99, 0.35, 0.99, 0.98, 0.97, 0.99, 0.96]
         assert d["canonical_uk_shape"] is True
+        assert "bottom_retry" not in d
+
+    def test_marks_bottom_retry_detections(self) -> None:
+        result = base.PlateResult(
+            image_path="/s/vehicle_1_main_1.jpg",
+            image_name="vehicle_1_main_1.jpg",
+            track_id=1,
+            snap_index=1,
+            class_name="vehicle",
+            pipeline="preferred",
+            detection=base.PlateDetection(bbox=(1, 2, 3, 4), det_confidence=0.9, bottom_retry=True),
+            read=None,
+            crop_path=None,
+            pipeline_ms=1.0,
+        )
+        assert result.to_json()["bottom_retry"] is True
 
     def test_recognizers_without_char_probs_serialise_none(self) -> None:
         read = base.PlateRead(text="ABC", ocr_confidence=0.7, raw_text="ABC")
