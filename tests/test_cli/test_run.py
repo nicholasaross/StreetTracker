@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -190,3 +191,38 @@ def test_cli_root_dispatches_run_help() -> None:
         assert exc.code == 0
         return
     raise AssertionError("--help did not raise SystemExit")
+
+
+# ----------------------------------------------------------------------
+# Startup clock-sync wait (power-cut clock, 2026-10-23).
+
+
+def test_parser_clock_sync_timeout_defaults_to_five_minutes(tmp_path: Path) -> None:
+    args = build_parser().parse_args(["--config", str(tmp_path / "c.json")])
+    assert args.clock_sync_timeout_s == 300.0
+
+
+def test_run_waits_for_the_clock_before_the_session_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The session label and start are stamped inside run_session, so the
+    wait has to finish before it is called."""
+    cfg_path = _prepare_cwd_config(tmp_path, monkeypatch)
+    calls: list[str] = []
+
+    def _wait(timeout_s: float) -> bool:
+        calls.append(f"wait {timeout_s:.0f}")
+        return True
+
+    async def _session(*args: object, **kwargs: object) -> int:
+        calls.append("run_session")
+        return 0
+
+    with (
+        patch("streettracker.cli.run.wait_for_clock_sync", side_effect=_wait),
+        patch("streettracker.device.runtime.run_session", side_effect=_session),
+        patch("streettracker.sources.rtsp.RtspSource"),
+    ):
+        rc = main(["--config", str(cfg_path), "--clock-sync-timeout-s", "42"])
+    assert rc == 0
+    assert calls == ["wait 42", "run_session"]

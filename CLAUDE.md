@@ -555,6 +555,13 @@ Single import root: `from streettracker.common.schema import TrackRecord`.
   on Reolink keyframes.
 - MP4 input on Orin uses GStreamer + `nvv4l2decoder` (NVDEC); only the
   live-RTSP case is broken with cv2-GStreamer.
+- **No time through a power cut.** The Orin's RTC comes back unset and
+  systemd-timesyncd restores a stale saved time (3 h slow on 2026-10-23), so
+  `streettracker run` waits up to 300 s for the boot's first NTP sync
+  (timesyncd's `/run/systemd/timesync/synchronized`, else `timedatectl`)
+  before naming the session; `--clock-sync-timeout-s` (0 = off). A restart
+  on a synced device doesn't wait. Fitting an RTC backup battery would avoid
+  the wait.
 
 ## Output schema (preserved from NanoTracker)
 

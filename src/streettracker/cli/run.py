@@ -19,6 +19,8 @@ import sys
 from pathlib import Path
 
 from streettracker.common.config import ConfigError, StreetTrackerConfig
+from streettracker.device.clock import DEFAULT_TIMEOUT_S as DEFAULT_CLOCK_SYNC_TIMEOUT_S
+from streettracker.device.clock import wait_for_clock_sync
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +77,17 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Seconds to allow for in-flight track drain after SIGTERM. "
             "Should be < systemd unit's TimeoutStopSec (default 30s)."
+        ),
+    )
+    p.add_argument(
+        "--clock-sync-timeout-s",
+        type=float,
+        default=DEFAULT_CLOCK_SYNC_TIMEOUT_S,
+        help=(
+            "Seconds to wait at startup for the boot's first NTP sync, so a "
+            "session started after a power cut is not named and dated from "
+            "a stale clock. No wait once synced; 0 disables "
+            f"(default {DEFAULT_CLOCK_SYNC_TIMEOUT_S:.0f})."
         ),
     )
     return p
@@ -140,6 +153,10 @@ async def _run(args: argparse.Namespace) -> int:
 
     rtsp_url = _build_rtsp_url(config, stream_name)
     logger.info("[run] using stream %r -> %s", stream_name, _redact_url(rtsp_url))
+
+    # run_session stamps the session's start and directory name from the
+    # wall clock, so let the boot's first NTP sync land first.
+    await asyncio.to_thread(wait_for_clock_sync, args.clock_sync_timeout_s)
 
     source = RtspSource(
         rtsp_url=rtsp_url,
