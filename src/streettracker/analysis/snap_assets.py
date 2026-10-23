@@ -119,6 +119,27 @@ def load_done_bbox_index(
     return out
 
 
+def image_size(image_path: Path) -> tuple[int, int] | None:
+    """``(width, height)`` from the image header (no pixel decode), or
+    ``None`` when the file can't be read as an image.
+
+    Any failure counts as unreadable, not just PIL's own ``OSError``. Once
+    Ultralytics is imported it replaces ``PIL.Image.open`` with a wrapper
+    that, on any failure, tries to install ``pi-heif`` and then imports
+    it. A 0-byte snap (the file being written when the Orin lost power,
+    2026-10-23) therefore raised ``ModuleNotFoundError`` here and killed an
+    alpr-run 12 minutes in. A size probe must never end a job.
+    """
+    try:
+        from PIL import Image
+
+        with Image.open(image_path) as im:
+            w, h = im.size
+    except Exception:
+        return None
+    return int(w), int(h)
+
+
 def _scale_bbox_to_image(
     image_path: Path,
     bbox: tuple[float, float, float, float],
@@ -129,17 +150,10 @@ def _scale_bbox_to_image(
     sub_w, sub_h = sub_size
     if sub_w <= 0 or sub_h <= 0:
         return None
-    # Read image dimensions from the JPEG header without decoding pixels.
-    # PIL.Image.open is lazy: ``.size`` only parses the header.
-    try:
-        from PIL import Image
-    except ImportError:
+    size = image_size(image_path)
+    if size is None:
         return None
-    try:
-        with Image.open(image_path) as im:
-            w, h = im.size
-    except (OSError, ValueError):
-        return None
+    w, h = size
     # Sub-stream and main may have slightly different aspect ratios, so
     # scale x and y independently rather than picking a single ratio.
     sx = w / sub_w

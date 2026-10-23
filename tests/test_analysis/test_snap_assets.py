@@ -10,10 +10,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from streettracker.analysis.snap_assets import (
     discover_vehicle_snaps,
+    image_size,
     load_bbox_index,
     load_done_bbox_index,
     resolve_bbox_hint,
@@ -185,7 +187,12 @@ def test_window_ignores_done_index_without_entry(tmp_path: Path) -> None:
     sess, idx, sub = _window_session(tmp_path, bboxes)
 
     hint = resolve_bbox_hint_window(
-        sess / "vehicle_7_main_2.jpg", 7, 2, idx, sub, lookahead=3,
+        sess / "vehicle_7_main_2.jpg",
+        7,
+        2,
+        idx,
+        sub,
+        lookahead=3,
         done_index={(7, 99): (0, 0, 10, 10)},
     )
 
@@ -216,9 +223,7 @@ def test_load_done_bbox_index_reads_parallel_field(tmp_path: Path) -> None:
 def test_load_done_bbox_index_empty_for_older_sessions(tmp_path: Path) -> None:
     """Sessions written before the field existed yield an empty map --
     callers fall back to fire-time windows."""
-    sess, idx, sub = _window_session(
-        tmp_path, [[200, 100, 280, 140], [160, 100, 240, 140]]
-    )
+    sess, idx, sub = _window_session(tmp_path, [[200, 100, 280, 140], [160, 100, 240, 140]])
     assert load_done_bbox_index(sess) == {}
 
 
@@ -245,3 +250,41 @@ def test_window_scales_to_snap_pixels(tmp_path: Path) -> None:
 
     # Union in sub coords: (64,36,192,108); sx=0.625, sy=0.8333.
     assert hint == (40, 30, 120, 90)
+
+
+# ----------------------------------------------------------------------
+# Unreadable snaps (power-cut 0-byte files, 2026-10-23).
+
+
+def test_image_size_reads_the_header(tmp_path: Path) -> None:
+    sess = _session(tmp_path)
+    assert image_size(sess / "vehicle_1_main_1.jpg") == (400, 300)
+    assert image_size(sess / "absent.jpg") is None
+
+
+def test_empty_snap_gives_no_hint_instead_of_crashing(tmp_path: Path) -> None:
+    """The file being written when the Orin lost power is 0 bytes; its hint
+    is simply unavailable (alpr-run then records imread_failed)."""
+    sess = _session(tmp_path)
+    (sess / "vehicle_1_main_1.jpg").write_bytes(b"")
+    idx, sub = load_bbox_index(sess)
+    assert image_size(sess / "vehicle_1_main_1.jpg") is None
+    assert resolve_bbox_hint(sess / "vehicle_1_main_1.jpg", 1, 1, idx, sub) is None
+    assert resolve_bbox_hint_window(sess / "vehicle_1_main_1.jpg", 1, 1, idx, sub) is None
+
+
+def test_image_size_survives_ultralytics_patched_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ultralytics replaces PIL.Image.open with a wrapper that, on failure,
+    imports pi_heif -- so the error is ModuleNotFoundError, not OSError.
+    That escaped the old (OSError, ValueError) catch and killed alpr-run."""
+
+    def _patched_open(*args: object, **kwargs: object) -> None:
+        raise ModuleNotFoundError("No module named 'pi_heif'")
+
+    monkeypatch.setattr(Image, "open", _patched_open)
+    sess = _session(tmp_path)
+    idx, sub = load_bbox_index(sess)
+    assert image_size(sess / "vehicle_1_main_1.jpg") is None
+    assert resolve_bbox_hint(sess / "vehicle_1_main_1.jpg", 1, 1, idx, sub) is None
