@@ -62,7 +62,7 @@ from streettracker.analysis.makemodel.dataset import (
     SurveillanceLabels,
 )
 from streettracker.analysis.makemodel.model import load_checkpoint
-from streettracker.analysis.snap_assets import discover_vehicle_snaps
+from streettracker.analysis.snap_assets import discover_vehicle_snaps, read_image
 from streettracker.analysis.vehicle_locator import SnapVehicleLocator, resolve_crop_settings
 
 if TYPE_CHECKING:
@@ -284,7 +284,6 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    import cv2  # type: ignore[import-untyped]  # opencv ships no py.typed
 
     device = "cuda" if (torch.cuda.is_available() and not args.cpu) else "cpu"
     clf = MakeModelClassifier(
@@ -325,7 +324,7 @@ def main(argv: list[str] | None = None) -> int:
     per_image: list[dict[str, Any]] = []
     n_no_hint = 0
     for i, (path, tid, snap_index, _cls) in enumerate(snaps, 1):
-        image = cv2.imread(str(path))
+        image = read_image(path)
         box, source = locator.locate(path, tid, snap_index, image)
         if box is None:
             n_no_hint += 1

@@ -85,12 +85,13 @@ class PipelineRunner:
         ghost_rects: list[tuple[int, int, int, int]] | None = None,
         ghost_source_size: tuple[int, int] | None = None,
     ) -> PlateResult:
-        import cv2  # deferred — pipelines can import this module without cv2
+        # deferred — pipelines can import this module without cv2
+        from streettracker.analysis.snap_assets import read_image
 
         image_name = image_path.name
         with Timer() as t:
             try:
-                image = cv2.imread(str(image_path))
+                image = read_image(image_path)
                 if image is None:
                     return PlateResult(
                         image_path=str(image_path), image_name=image_name,

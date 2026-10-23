@@ -420,9 +420,8 @@ def compare(
     include_trained_cars: bool = False,
 ) -> dict[str, Any]:
     """Run the head-to-head and return the report dict (see module doc)."""
-    import cv2  # type: ignore[import-untyped]
 
-    from streettracker.analysis.snap_assets import discover_vehicle_snaps
+    from streettracker.analysis.snap_assets import discover_vehicle_snaps, read_image
     from streettracker.analysis.vehicle_locator import SnapVehicleLocator, VehicleBoxCache
 
     exclude = excluded_cars(
@@ -510,7 +509,7 @@ def compare(
                 for mode in modes
             }
             cur_sess = sess
-        image = cv2.imread(str(path))
+        image = read_image(path)
         if image is not None:
             boxes = {mode: loc.locate(path, tid, n, image)[0] for mode, loc in locs.items()}
             for name, clf in contenders.items():

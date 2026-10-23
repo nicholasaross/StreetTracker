@@ -99,9 +99,8 @@ def rescore_records(
     confidence cleared (``None``, which every gate treats as 0) -- the old
     value is the bug, so it can't be kept.
     """
-    import cv2
-
     from streettracker.analysis.dvsa import is_canonical_uk_plate
+    from streettracker.analysis.snap_assets import read_image
 
     stats = RescoreStats()
     todo = [r for r in records if is_rescorable(r)]
@@ -111,7 +110,7 @@ def rescore_records(
         if r.get("ocr_conf") is not None:
             stats.old_conf.append(float(r["ocr_conf"]))
         path = crop_path_for(r, session_dir)
-        image = cv2.imread(str(path)) if path is not None else None
+        image = read_image(path) if path is not None else None
         if image is None:
             stats.n_missing += 1
             r["ocr_conf"] = None

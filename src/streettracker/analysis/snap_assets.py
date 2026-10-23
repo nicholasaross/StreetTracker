@@ -16,8 +16,30 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from streettracker.analysis.alpr.base import parse_snap_filename
+
+if TYPE_CHECKING:
+    import numpy as np
+
+
+def read_image(path: Path | str) -> np.ndarray | None:
+    """``cv2.imread`` that returns ``None`` for any unreadable file.
+
+    Callers check for ``None``, but once Ultralytics is imported
+    ``cv2.imread`` is its wrapper (``np.fromfile`` + ``cv2.imdecode``), and
+    that raises ``cv2.error`` on a 0-byte file instead of returning
+    ``None``. The Orin's 2026-10-23 power cut left such files, and
+    makemodel/bodytype/colour/compare/build-uk would have died on them. Use
+    this for every snap or crop read in a loop.
+    """
+    import cv2
+
+    try:
+        return cv2.imread(str(path))  # type: ignore[no-any-return]
+    except Exception:
+        return None
 
 
 def discover_vehicle_snaps(session_dir: Path) -> list[tuple[Path, int, int, str]]:

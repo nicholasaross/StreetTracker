@@ -18,6 +18,7 @@ from streettracker.analysis.snap_assets import (
     image_size,
     load_bbox_index,
     load_done_bbox_index,
+    read_image,
     resolve_bbox_hint,
     resolve_bbox_hint_window,
 )
@@ -187,12 +188,7 @@ def test_window_ignores_done_index_without_entry(tmp_path: Path) -> None:
     sess, idx, sub = _window_session(tmp_path, bboxes)
 
     hint = resolve_bbox_hint_window(
-        sess / "vehicle_7_main_2.jpg",
-        7,
-        2,
-        idx,
-        sub,
-        lookahead=3,
+        sess / "vehicle_7_main_2.jpg", 7, 2, idx, sub, lookahead=3,
         done_index={(7, 99): (0, 0, 10, 10)},
     )
 
@@ -223,7 +219,9 @@ def test_load_done_bbox_index_reads_parallel_field(tmp_path: Path) -> None:
 def test_load_done_bbox_index_empty_for_older_sessions(tmp_path: Path) -> None:
     """Sessions written before the field existed yield an empty map --
     callers fall back to fire-time windows."""
-    sess, idx, sub = _window_session(tmp_path, [[200, 100, 280, 140], [160, 100, 240, 140]])
+    sess, idx, sub = _window_session(
+        tmp_path, [[200, 100, 280, 140], [160, 100, 240, 140]]
+    )
     assert load_done_bbox_index(sess) == {}
 
 
@@ -288,3 +286,22 @@ def test_image_size_survives_ultralytics_patched_open(
     idx, sub = load_bbox_index(sess)
     assert image_size(sess / "vehicle_1_main_1.jpg") is None
     assert resolve_bbox_hint(sess / "vehicle_1_main_1.jpg", 1, 1, idx, sub) is None
+
+
+def test_read_image_returns_none_when_imread_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ultralytics' cv2.imread raises cv2.error on a 0-byte file; read_image
+    turns that into the None every caller already handles."""
+    import cv2
+
+    sess = _session(tmp_path)
+    assert read_image(sess / "vehicle_1_main_1.jpg").shape == (300, 400, 3)
+    (sess / "empty.jpg").write_bytes(b"")
+    assert read_image(sess / "empty.jpg") is None  # plain OpenCV
+
+    def _raising_imread(*args: object, **kwargs: object) -> None:
+        raise cv2.error("(-215:Assertion failed) !buf.empty()")
+
+    monkeypatch.setattr(cv2, "imread", _raising_imread)
+    assert read_image(sess / "empty.jpg") is None
