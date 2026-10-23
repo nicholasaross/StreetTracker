@@ -8,6 +8,8 @@ network-touching paths.
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import subprocess
 import threading
@@ -657,3 +659,155 @@ def test_main_only_main_size_counts_vehicle_crops(
 def test_crops_only_and_only_main_are_exclusive(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         pull.main(["--key", str(tmp_path), "--only-main", "--crops-only"])
+
+
+def test_sftp_batch_drops_the_per_file_echo() -> None:
+    """sftp echoes every batch command to stdout; a 14k-file pull buried the
+    panel's log in ``sftp> -get`` lines. stdout is dropped, stderr kept."""
+    with patch("streettracker.cli.pull.subprocess.run") as mock_run:
+        mock_run.return_value = _fake_completed()
+        pull._run_sftp_batch("orin", "u", "/k", "/p", Path("x"), ["a.jpg"])
+    kwargs = mock_run.call_args.kwargs
+    assert kwargs["stdout"] is subprocess.DEVNULL
+    assert "stderr" not in kwargs
+
+
+def _device_copy_stub(
+    local_session: Path, remote: dict[str, float], payload: dict[str, bytes]
+) -> Any:
+    """Fake sftp that copies each requested file as the device holds it,
+    stamping the device mtime the way ``get -p`` does on completion."""
+
+    def _run(args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        for name in _GET_RE.findall(kwargs.get("input", "")):
+            if name in payload:
+                path = local_session / name
+                path.write_bytes(payload[name])
+                os.utime(path, (int(remote[name]), int(remote[name])))
+        return _fake_completed()
+
+    return _run
+
+
+def test_sftp_get_missing_separates_device_damaged_from_lost(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A file that is 0 bytes on the device itself (being written when the
+    power went, 2026-10-23) is reported as such, not as "re-run to retry";
+    a file that never arrived still is."""
+    local_session = tmp_path / "session_x"
+    local_session.mkdir()
+    remote = {
+        "vehicle_1_main_1.jpg": 1792731269.3,  # fine
+        "vehicle_2_main_1.jpg": 1792731270.9,  # 0 bytes on the device
+        "vehicle_3_main_1.jpg": 1792731271.0,  # pruned before its get
+    }
+    payload = {"vehicle_1_main_1.jpg": _JPEG, "vehicle_2_main_1.jpg": b""}
+    # A corpse from an earlier killed transfer: corrupt, no device mtime.
+    (local_session / "vehicle_3_main_1.jpg").write_bytes(b"\x00" * 64)
+    with (
+        patch("streettracker.cli.pull._remote_entries", return_value=remote),
+        patch(
+            "streettracker.cli.pull.subprocess.run",
+            side_effect=_device_copy_stub(local_session, remote, payload),
+        ),
+    ):
+        n = pull.sftp_get_missing(
+            "orin", "u", "/k", "/p", local_session, "*_main_*.jpg", dry_run=False, jobs=1
+        )
+    out = capsys.readouterr().out
+    assert n == 1
+    assert "NOTE: 1 of 3 are empty or truncated on the device itself" in out
+    assert "vehicle_2_main_1.jpg" in out
+    assert "WARNING: 1 of 3 did not land" in out
+
+
+def test_sftp_get_missing_device_damage_alone_is_not_flagged_as_an_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The panel's issue scanner keys off "error": nothing to fix -> no flag."""
+    from streettracker.control.prompts import summarize_issue
+
+    local_session = tmp_path / "session_x"
+    local_session.mkdir()
+    remote = {"vehicle_28768_hq.jpg": 1792731274.6}
+    with (
+        patch("streettracker.cli.pull._remote_entries", return_value=remote),
+        patch(
+            "streettracker.cli.pull.subprocess.run",
+            side_effect=_device_copy_stub(local_session, remote, {"vehicle_28768_hq.jpg": b""}),
+        ),
+    ):
+        pull.sftp_get_missing(
+            "orin", "u", "/k", "/p", local_session, "vehicle_*_hq.jpg", dry_run=False, jobs=1
+        )
+    out = capsys.readouterr().out
+    assert "WARNING" not in out
+    assert summarize_issue(0, out.splitlines()) is None
+
+
+def test_live_sessions_reads_the_runtimes_open_logs() -> None:
+    out = (
+        "/home/st/output/session_20261023_061647/session_20261023_061647_events.jsonl\n"
+        "/home/st/output/session_20261023_061647/session_20261023_061647_ir_events.jsonl\n"
+        "END\n"
+    )
+    with patch("streettracker.cli.pull.subprocess.run", return_value=_fake_completed(out)):
+        assert pull.live_sessions("orin", "u", "/k") == {"session_20261023_061647"}
+    with patch("streettracker.cli.pull.subprocess.run", return_value=_fake_completed("END\n")):
+        assert pull.live_sessions("orin", "u", "/k") == set()  # service down
+    with patch(
+        "streettracker.cli.pull.subprocess.run", return_value=_fake_completed("", returncode=255)
+    ):
+        assert pull.live_sessions("orin", "u", "/k") is None  # could not ask
+
+
+def _crashed_session(tmp_path: Path) -> Path:
+    d = tmp_path / "session_20261021_161948"
+    d.mkdir()
+    rec = {
+        "track_id": 2,
+        "class_name": "car",
+        "time_start_unix": 1792595990.0,
+        "time_end_unix": 1792595996.0,
+    }
+    (d / "session_20261021_161948_events.jsonl").write_text(json.dumps(rec) + "\n")
+    return d
+
+
+def test_recover_if_crashed_rebuilds_a_closed_session(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    d = _crashed_session(tmp_path)
+    with patch("streettracker.cli.pull.live_sessions", return_value={"session_20261023_061647"}):
+        pull.recover_if_crashed("orin", "u", "/k", d.name, d)
+    assert (d / f"{d.name}_data.json").exists()
+    assert (d / f"{d.name}_meta.json").exists()
+    out = capsys.readouterr().out
+    assert "ended without a clean shutdown" in out
+    assert "error" not in out.lower()
+
+
+def test_recover_if_crashed_leaves_the_live_session_alone(tmp_path: Path) -> None:
+    d = _crashed_session(tmp_path)
+    with patch("streettracker.cli.pull.live_sessions", return_value={d.name}):
+        pull.recover_if_crashed("orin", "u", "/k", d.name, d)
+    assert not (d / f"{d.name}_data.json").exists()
+
+
+def test_recover_if_crashed_asks_the_operator_when_the_device_cannot_say(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    d = _crashed_session(tmp_path)
+    with patch("streettracker.cli.pull.live_sessions", return_value=None):
+        pull.recover_if_crashed("orin", "u", "/k", d.name, d)
+    assert not (d / f"{d.name}_data.json").exists()
+    assert "streettracker recover-session" in capsys.readouterr().out
+
+
+def test_recover_if_crashed_skips_a_finalised_session(tmp_path: Path) -> None:
+    d = _crashed_session(tmp_path)
+    (d / f"{d.name}_data.json").write_text("[]")
+    with patch("streettracker.cli.pull.live_sessions") as mock_live:
+        pull.recover_if_crashed("orin", "u", "/k", d.name, d)
+    mock_live.assert_not_called()  # no ssh round-trip for the normal case
