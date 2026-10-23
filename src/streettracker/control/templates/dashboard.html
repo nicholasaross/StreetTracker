@@ -162,7 +162,7 @@
         ? `<button class="btn sm" onclick="pullSession('${esc(s.name)}')" title="Re-pull: fetches only files missing locally">re-pull</button>`
         : `<button class="btn sm primary" onclick="pullSession('${esc(s.name)}')">${partial ? "resume" : "pull"}</button>`;
       h += `<tr>
-        <td class="mono" style="white-space:nowrap">${esc(s.name)}${s.is_live ? ' <span class="pill"><span class="dot live"></span>live</span>' : (s.closed ? "" : ' <span class="muted">(open)</span>')}</td>
+        <td class="mono" style="white-space:nowrap">${esc(s.name)}${s.is_live ? ' <span class="pill"><span class="dot live"></span>live</span>' : (s.closed ? "" : ' <span class="muted" title="No _meta.json on the device: the tracker stopped without a clean shutdown (power cut or crash). pull rebuilds the session files from its logs.">(not finalised)</span>')}</td>
         <td class="num">${fmtInt(s.main_snaps)}</td>
         <td class="${cls}">${txt}</td>
         <td>${state}</td>

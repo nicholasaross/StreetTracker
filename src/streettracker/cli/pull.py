@@ -22,6 +22,9 @@ latest remote state (scp merges into the existing session dir). With
 are write-once), so re-pulling a grown or still-live session is cheap.
 ``--crops-only`` fetches just the missing vehicle HQ crops and never
 touches the metadata, so it can backfill an already-enriched session.
+A pulled session the device never finalised (power cut, crash) gets its
+``_data.json`` / ``_meta.json`` / ``_hourly.json`` rebuilt from its logs
+(:func:`recover_if_crashed`).
 """
 
 from __future__ import annotations
@@ -34,7 +37,9 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+
+from streettracker.common.recover import needs_recovery, recover_session
 
 DEFAULT_HOST = "orin"
 DEFAULT_USER = "streettracker"
@@ -101,6 +106,55 @@ def find_latest_session(host: str, user: str, key: str, remote_parent: str) -> s
     if not name:
         sys.exit(f"[pull] No session_* directories found in {host}:{remote_parent}")
     return name
+
+
+def live_sessions(host: str, user: str, key: str) -> set[str] | None:
+    """Session dirs the device's tracker is writing right now, or ``None``
+    when the device could not be asked.
+
+    Read from the runtime's open file handles: it holds its session's
+    ``_events.jsonl`` open from start to shutdown. The newest-named dir is
+    not a safe proxy -- the Orin keeps no time through a power cut (its RTC
+    came up unset on 2026-10-23), so a session started before NTP syncs is
+    named from a stale clock and can sort before the session the outage
+    ended. The ``END`` marker tells "nothing open" from "ssh failed".
+    """
+    cmd = (
+        "find /proc/[0-9]*/fd -maxdepth 1 -lname '*_events.jsonl' -printf '%l\\n' "
+        "2>/dev/null; echo END"
+    )
+    out = _ssh_run(host, user, key, cmd, check=False)
+    lines = out.splitlines()
+    if not lines or lines[-1].strip() != "END":
+        return None
+    return {PurePosixPath(line.strip()).parent.name for line in lines[:-1] if line.strip()}
+
+
+def recover_if_crashed(host: str, user: str, key: str, session: str, local_session: Path) -> None:
+    """Rebuild ``_data.json`` & co. for a pulled session the device never
+    finalised (power cut, crash), so enrichment can run on it.
+
+    A session the device is still recording legitimately has no
+    ``_data.json`` yet and is left alone; the device writes the real files
+    when it ends, and a later pull fetches them.
+    """
+    if not needs_recovery(local_session):
+        return
+    live = live_sessions(host, user, key)
+    if live is None:
+        print(
+            f"[pull] NOTE: {session} has no _data.json and the device could not say whether "
+            f"it is still recording; if it ended in a power cut or crash, run "
+            f"`streettracker recover-session {local_session}`"
+        )
+        return
+    if session in live:
+        return
+    result = recover_session(local_session)
+    print(
+        f"[pull] NOTE: {session} ended without a clean shutdown (power cut or crash), "
+        f"so the device never wrote its end-of-session files -- {result.describe()}"
+    )
 
 
 def remote_inventory(host: str, user: str, key: str, remote_path: str) -> RemoteInventory:
@@ -313,6 +367,13 @@ def _run_sftp_batch(
     its ``get`` would otherwise kill the whole stream and strand every
     later file in it. Connection-level failures still surface as a
     non-zero exit code.
+
+    sftp echoes every batch command to stdout (``-q`` does not stop it),
+    one ``sftp> -get ...`` line per file, interleaved across the parallel
+    streams. That buried the pull's own summary lines in the control
+    panel's 500-line log (a 14k-file pull, 2026-10-23), so stdout is
+    dropped; per-file and connection errors arrive on stderr, which is
+    kept. The panel's byte bar watches the local dir, not this output.
     """
     # Forward slashes for the local lcd target: sftp treats backslash as an
     # escape, and it accepts forward-slash paths on Windows.
@@ -320,7 +381,7 @@ def _run_sftp_batch(
     lines = [f'cd "{remote_path}"', f'lcd "{local_lcd}"']
     lines += [f'-get -p "{name}"' for name in names]
     args = ["sftp", "-i", key, "-o", "BatchMode=yes", "-q", "-b", "-", f"{user}@{host}"]
-    proc = subprocess.run(args, input="\n".join(lines) + "\n", text=True)
+    proc = subprocess.run(args, input="\n".join(lines) + "\n", text=True, stdout=subprocess.DEVNULL)
     return proc.returncode
 
 
@@ -401,9 +462,35 @@ def sftp_get_missing(
     # Per-file errors are swallowed by the `-get` prefix, so count what
     # actually arrived rather than assuming the whole list landed.
     landed = sum(1 for name in missing if _is_intact_jpeg(local_session / name))
-    if landed < len(missing):
+
+    # A file that is not a whole JPEG yet carries the device's mtime was
+    # copied faithfully: ``get -p`` stamps the remote mtime (whole seconds)
+    # only once a transfer completes, so a killed transfer's corpse never
+    # has it. Such a file is empty or cut short on the device itself -- the
+    # one being written when the device lost power or crashed (2026-10-23:
+    # vehicle_28768's three 4K snaps and HQ crop, all 0 bytes on the Orin).
+    # A re-run fetches the same bytes again, so it is reported apart from
+    # the files that never arrived.
+    def _device_copy(name: str) -> bool:
+        try:
+            return int((local_session / name).stat().st_mtime) == int(remote[name])
+        except OSError:
+            return False
+
+    damaged = sorted(
+        n for n in missing if not _is_intact_jpeg(local_session / n) and _device_copy(n)
+    )
+    lost = len(missing) - landed - len(damaged)
+    if damaged:
+        shown = ", ".join(damaged[:4]) + (" ..." if len(damaged) > 4 else "")
         print(
-            f"[pull] WARNING: {len(missing) - landed} of {len(missing)} did not land "
+            f"[pull] NOTE: {len(damaged)} of {len(missing)} are empty or truncated on the "
+            f"device itself (being written when it lost power or crashed); a re-run will "
+            f"not change them: {shown}"
+        )
+    if lost:
+        print(
+            f"[pull] WARNING: {lost} of {len(missing)} did not land "
             "(pruned on the device mid-pull, or a transfer error) -- re-run to retry"
         )
     if failed:
@@ -600,6 +687,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.dry_run:
         landed = local_parent / session
+        if not args.crops_only:
+            recover_if_crashed(args.host, args.user, key, session, landed)
         print(f"[pull] done -> {landed}")
         html = landed / f"{session}_summary.html"
         if html.exists():

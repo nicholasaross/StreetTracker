@@ -4,6 +4,7 @@ Subcommands:
 - ``streettracker run`` — live RTSP (Orin only)
 - ``streettracker batch <video>`` — file input
 - ``streettracker pull`` — scp session from device
+- ``streettracker recover-session <session>`` — rebuild a crashed session's data/meta JSON
 - ``streettracker recolor <session>`` — rerun color heuristic
 - ``streettracker debug-color <crop.jpg>`` — inspect a single crop
 - ``streettracker vehicles <session>`` — plate-anchored per-vehicle aggregation
@@ -43,6 +44,7 @@ commands:
   run             live RTSP tracker (Orin only)
   batch           batch process a video file
   pull            scp a session from a remote device
+  recover-session rebuild a crashed session's data/meta/hourly JSON from its events log
   recolor         rerun color heuristic on a closed session
   debug-color     inspect HSV vote on one or more crop JPEGs
   vehicles        plate-anchored per-vehicle aggregation
@@ -113,6 +115,10 @@ def main(argv: list[str] | None = None) -> int:
         from streettracker.cli.pull import main as pull_main
 
         return pull_main(rest)
+    if head == "recover-session":
+        from streettracker.cli.recover_session import main as recover_session_main
+
+        return recover_session_main(rest)
     if head == "export-engine":
         from streettracker.cli.export_engine import main as export_engine_main
 
