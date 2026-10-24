@@ -16,8 +16,30 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from streettracker.analysis.alpr.base import parse_snap_filename
+
+if TYPE_CHECKING:
+    import numpy as np
+
+
+def read_image(path: Path | str) -> np.ndarray | None:
+    """``cv2.imread`` that returns ``None`` for any unreadable file.
+
+    Callers check for ``None``, but once Ultralytics is imported
+    ``cv2.imread`` is its wrapper (``np.fromfile`` + ``cv2.imdecode``), and
+    that raises ``cv2.error`` on a 0-byte file instead of returning
+    ``None``. The Orin's 2026-10-23 power cut left such files, and
+    makemodel/bodytype/colour/compare/build-uk would have died on them. Use
+    this for every snap or crop read in a loop.
+    """
+    import cv2
+
+    try:
+        return cv2.imread(str(path))  # type: ignore[no-any-return]
+    except Exception:
+        return None
 
 
 def discover_vehicle_snaps(session_dir: Path) -> list[tuple[Path, int, int, str]]:
@@ -119,6 +141,27 @@ def load_done_bbox_index(
     return out
 
 
+def image_size(image_path: Path) -> tuple[int, int] | None:
+    """``(width, height)`` from the image header (no pixel decode), or
+    ``None`` when the file can't be read as an image.
+
+    Any failure counts as unreadable, not just PIL's own ``OSError``. Once
+    Ultralytics is imported it replaces ``PIL.Image.open`` with a wrapper
+    that, on any failure, tries to install ``pi-heif`` and then imports
+    it. A 0-byte snap (the file being written when the Orin lost power,
+    2026-10-23) therefore raised ``ModuleNotFoundError`` here and killed an
+    alpr-run 12 minutes in. A size probe must never end a job.
+    """
+    try:
+        from PIL import Image
+
+        with Image.open(image_path) as im:
+            w, h = im.size
+    except Exception:
+        return None
+    return int(w), int(h)
+
+
 def _scale_bbox_to_image(
     image_path: Path,
     bbox: tuple[float, float, float, float],
@@ -129,17 +172,10 @@ def _scale_bbox_to_image(
     sub_w, sub_h = sub_size
     if sub_w <= 0 or sub_h <= 0:
         return None
-    # Read image dimensions from the JPEG header without decoding pixels.
-    # PIL.Image.open is lazy: ``.size`` only parses the header.
-    try:
-        from PIL import Image
-    except ImportError:
+    size = image_size(image_path)
+    if size is None:
         return None
-    try:
-        with Image.open(image_path) as im:
-            w, h = im.size
-    except (OSError, ValueError):
-        return None
+    w, h = size
     # Sub-stream and main may have slightly different aspect ratios, so
     # scale x and y independently rather than picking a single ratio.
     sx = w / sub_w

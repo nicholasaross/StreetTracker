@@ -101,7 +101,8 @@ def recolor_session(session_dir: Path) -> RecolorStats:
 
     Raises ``FileNotFoundError`` if no ``*_events.jsonl`` is present.
     """
-    import cv2  # deferred — analysis hosts without cv2 can still import this module
+    # deferred — analysis hosts without cv2 can still import this module
+    from streettracker.analysis.snap_assets import read_image
 
     jsonl_paths = sorted(session_dir.glob("*_events.jsonl"))
     if not jsonl_paths:
@@ -127,7 +128,7 @@ def recolor_session(session_dir: Path) -> RecolorStats:
             new = old
             stats.records_missing_crop += 1
         else:
-            img = cv2.imread(str(crop_path))
+            img = read_image(crop_path)
             new = vote_color(img) if img is not None else "unknown"
         stats.distribution_after[new] = stats.distribution_after.get(new, 0) + 1
         if new != old:

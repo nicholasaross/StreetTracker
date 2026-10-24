@@ -35,6 +35,7 @@ instead of having the top-level parser intercept it.
 
 from __future__ import annotations
 
+import os
 import sys
 
 _HELP = """\
@@ -85,6 +86,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     head, rest = argv[0], argv[1:]
+
+    # Stop Ultralytics installing packages into the venv mid-job (its
+    # check_requirements "AutoUpdate"). Every dependency is pinned in
+    # pyproject.toml, and an unplanned install can break the venv (a CPU
+    # onnxruntime install wrecks onnxruntime-gpu). On 2026-10-23 a 0-byte
+    # snap made it try `uv pip install pi-heif` during an alpr-run. Ultralytics
+    # reads this when first imported, which every subcommand does lazily,
+    # after this line. Set YOLO_AUTOINSTALL=true to allow it.
+    os.environ.setdefault("YOLO_AUTOINSTALL", "false")
 
     if head in ("-h", "--help"):
         _print_help()

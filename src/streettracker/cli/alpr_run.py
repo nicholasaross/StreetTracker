@@ -30,6 +30,9 @@ from streettracker.analysis.snap_assets import (
     discover_vehicle_snaps as _discover_snaps,
 )
 from streettracker.analysis.snap_assets import (
+    image_size as _image_size,
+)
+from streettracker.analysis.snap_assets import (
     load_bbox_index as _load_bbox_index,
 )
 from streettracker.analysis.snap_assets import (
@@ -303,7 +306,11 @@ def main(argv: list[str] | None = None) -> int:
             all_records.append(result.to_json())
             if i % 10 == 0 or i == len(snaps):
                 print(f"  [{runner.name}] {i}/{len(snaps)} done")
-            if result.error:
+            if result.error == "imread_failed" and _is_empty(str(image_path)):
+                # Nothing to fix (see the NOTE at the end), so not an ERROR
+                # line for the panel's issue scanner.
+                print(f"  [{runner.name}] {image_path.name}: skipped (empty file)")
+            elif result.error:
                 print(f"  [{runner.name}] {image_path.name}: ERROR {result.error}")
 
     session_label = session_dir.name
@@ -370,17 +377,36 @@ def main(argv: list[str] | None = None) -> int:
     # truncated file left by an interrupted pull. Surface it as one clear
     # line so the operator (and the panel's issue detector) sees the
     # cause and the fix, instead of digging through per-record errors.
-    n_unreadable = sum(1 for r in all_records if r.get("error") == "imread_failed")
-    if n_unreadable:
-        pct = 100.0 * n_unreadable / len(all_records) if all_records else 0.0
+    unreadable = [r for r in all_records if r.get("error") == "imread_failed"]
+    # 0-byte snaps are a different case: the file was empty on the device
+    # itself, the one being written when it lost power or crashed (pull
+    # reports these as a NOTE). An interrupted pull leaves full-size
+    # zero-filled files instead, so a re-pull can fix those but not these.
+    n_empty = sum(1 for r in unreadable if _is_empty(r.get("image_path")))
+    n_corrupt = len(unreadable) - n_empty
+    if n_corrupt:
+        pct = 100.0 * n_corrupt / len(all_records) if all_records else 0.0
         print(
-            f"[alpr] WARNING: {n_unreadable}/{len(all_records)} snaps unreadable "
+            f"[alpr] WARNING: {n_corrupt}/{len(all_records)} snaps unreadable "
             f"({pct:.1f}%) -- corrupt/zero-filled inputs, most likely an "
             f"interrupted pull. Re-run `streettracker pull --skip-existing` "
             f"for this session to re-fetch them (fixed to overwrite corrupt "
             f"local files), then re-run alpr-run."
         )
+    if n_empty:
+        print(
+            f"[alpr] NOTE: {n_empty} snap(s) are empty (0 bytes), normally because the "
+            f"device lost power or crashed while writing them; they were skipped and a "
+            f"re-pull only helps if the device still holds them intact."
+        )
     return 0
+
+
+def _is_empty(image_path: str | None) -> bool:
+    try:
+        return image_path is not None and Path(image_path).stat().st_size == 0
+    except OSError:
+        return False
 
 
 def _first_snap_size(
@@ -393,15 +419,9 @@ def _first_snap_size(
     resolution, so the first is representative.
     """
     for image_path, _tid, _snap, _cls in snaps:
-        try:
-            from PIL import Image
-        except ImportError:
-            return None
-        try:
-            with Image.open(image_path) as im:
-                return (int(im.size[0]), int(im.size[1]))
-        except (OSError, ValueError):
-            continue
+        size = _image_size(image_path)
+        if size is not None:
+            return size
     return None
 
 

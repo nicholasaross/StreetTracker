@@ -142,3 +142,32 @@ def test_alpr_score_writes_scores_json_with_no_labels(
     assert scores["n_labels"] == 0
     assert scores["detection_rate"]["bespoke"] == 1.0
     assert scores["agreement"]["bespoke_vs_preferred_exact"] == 1.0
+
+
+def test_first_snap_size_skips_an_empty_snap(tmp_path: Path) -> None:
+    """A 0-byte snap (written as the device lost power) is skipped, not fatal."""
+    from PIL import Image
+
+    empty = tmp_path / "vehicle_1_main_1.jpg"
+    empty.write_bytes(b"")
+    good = tmp_path / "vehicle_1_main_2.jpg"
+    Image.new("RGB", (64, 48)).save(good)
+    snaps = [(empty, 1, 1, "vehicle"), (good, 1, 2, "vehicle")]
+    assert alpr_run._first_snap_size(snaps) == (64, 48)
+    assert alpr_run._is_empty(str(empty))
+    assert not alpr_run._is_empty(str(good))
+    assert not alpr_run._is_empty(None)
+
+
+def test_cli_turns_off_ultralytics_autoinstall(monkeypatch) -> None:  # noqa: ANN001
+    """No package installs into the venv mid-job unless explicitly allowed."""
+    import os
+
+    from streettracker.cli import main as cli_main
+
+    monkeypatch.delenv("YOLO_AUTOINSTALL", raising=False)
+    cli_main(["--version"])
+    assert os.environ["YOLO_AUTOINSTALL"] == "false"
+    monkeypatch.setenv("YOLO_AUTOINSTALL", "true")
+    cli_main(["--version"])
+    assert os.environ["YOLO_AUTOINSTALL"] == "true"  # an explicit opt-in wins

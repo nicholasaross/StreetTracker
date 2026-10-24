@@ -124,7 +124,7 @@ def mark_colour_suspects(
     safe: earlier annotations are replaced. Returns label counts plus
     ``suspect`` and ``no_crop``.
     """
-    import cv2
+    from streettracker.analysis.snap_assets import read_image
 
     stats: Counter[str] = Counter()
     for r in records:
@@ -133,7 +133,7 @@ def mark_colour_suspects(
         if r.get("pipeline") != "preferred" or not r.get("ocr_text"):
             continue
         path = _crop_path(r, session_dir)
-        img = cv2.imread(str(path)) if path is not None else None
+        img = read_image(path) if path is not None else None
         if img is None:
             stats["no_crop"] += 1
             continue

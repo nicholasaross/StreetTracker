@@ -316,3 +316,29 @@ def test_plate_pad_frac_defaults_to_010(vehicle_snap: Path, tmp_path: Path) -> N
     # crop is 48 wide x 24 tall.
     ch, cw = rec.last_crop.shape[:2]
     assert (cw, ch) == (48, 24)
+
+
+def test_run_empty_file_is_imread_failed_even_when_imread_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once Ultralytics is imported, cv2.imread is its wrapper, which raises
+    cv2.error on a 0-byte file instead of returning None. The runner must
+    still record imread_failed, so alpr-run reports it as an empty file
+    rather than a processing ERROR (2026-10-23 power cut)."""
+    import cv2
+
+    def _raising_imread(*args: object, **kwargs: object) -> None:
+        raise cv2.error("(-215:Assertion failed) !buf.empty() in function 'cv::imdecode_'")
+
+    monkeypatch.setattr(cv2, "imread", _raising_imread)
+    empty = tmp_path / "vehicle_28768_main_1.jpg"
+    empty.write_bytes(b"")
+    runner = PipelineRunner("fake", _FakeDetector(detection=None), _FakeRecognizer(read=None))
+    res = runner.run(
+        image_path=empty,
+        track_id=28768,
+        snap_index=1,
+        class_name="vehicle",
+        crop_out_dir=tmp_path / "crops",
+    )
+    assert res.error == "imread_failed"

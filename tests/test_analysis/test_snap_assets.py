@@ -10,12 +10,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from streettracker.analysis.snap_assets import (
     discover_vehicle_snaps,
+    image_size,
     load_bbox_index,
     load_done_bbox_index,
+    read_image,
     resolve_bbox_hint,
     resolve_bbox_hint_window,
 )
@@ -245,3 +248,60 @@ def test_window_scales_to_snap_pixels(tmp_path: Path) -> None:
 
     # Union in sub coords: (64,36,192,108); sx=0.625, sy=0.8333.
     assert hint == (40, 30, 120, 90)
+
+
+# ----------------------------------------------------------------------
+# Unreadable snaps (power-cut 0-byte files, 2026-10-23).
+
+
+def test_image_size_reads_the_header(tmp_path: Path) -> None:
+    sess = _session(tmp_path)
+    assert image_size(sess / "vehicle_1_main_1.jpg") == (400, 300)
+    assert image_size(sess / "absent.jpg") is None
+
+
+def test_empty_snap_gives_no_hint_instead_of_crashing(tmp_path: Path) -> None:
+    """The file being written when the Orin lost power is 0 bytes; its hint
+    is simply unavailable (alpr-run then records imread_failed)."""
+    sess = _session(tmp_path)
+    (sess / "vehicle_1_main_1.jpg").write_bytes(b"")
+    idx, sub = load_bbox_index(sess)
+    assert image_size(sess / "vehicle_1_main_1.jpg") is None
+    assert resolve_bbox_hint(sess / "vehicle_1_main_1.jpg", 1, 1, idx, sub) is None
+    assert resolve_bbox_hint_window(sess / "vehicle_1_main_1.jpg", 1, 1, idx, sub) is None
+
+
+def test_image_size_survives_ultralytics_patched_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ultralytics replaces PIL.Image.open with a wrapper that, on failure,
+    imports pi_heif -- so the error is ModuleNotFoundError, not OSError.
+    That escaped the old (OSError, ValueError) catch and killed alpr-run."""
+
+    def _patched_open(*args: object, **kwargs: object) -> None:
+        raise ModuleNotFoundError("No module named 'pi_heif'")
+
+    monkeypatch.setattr(Image, "open", _patched_open)
+    sess = _session(tmp_path)
+    idx, sub = load_bbox_index(sess)
+    assert image_size(sess / "vehicle_1_main_1.jpg") is None
+    assert resolve_bbox_hint(sess / "vehicle_1_main_1.jpg", 1, 1, idx, sub) is None
+
+
+def test_read_image_returns_none_when_imread_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ultralytics' cv2.imread raises cv2.error on a 0-byte file; read_image
+    turns that into the None every caller already handles."""
+    import cv2
+
+    sess = _session(tmp_path)
+    assert read_image(sess / "vehicle_1_main_1.jpg").shape == (300, 400, 3)
+    (sess / "empty.jpg").write_bytes(b"")
+    assert read_image(sess / "empty.jpg") is None  # plain OpenCV
+
+    def _raising_imread(*args: object, **kwargs: object) -> None:
+        raise cv2.error("(-215:Assertion failed) !buf.empty()")
+
+    monkeypatch.setattr(cv2, "imread", _raising_imread)
+    assert read_image(sess / "empty.jpg") is None

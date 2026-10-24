@@ -63,6 +63,7 @@ from streettracker.analysis.makemodel.training import (
 from streettracker.analysis.snap_assets import (
     discover_vehicle_snaps,
     load_bbox_index,
+    read_image,
     resolve_bbox_hint,
 )
 from streettracker.analysis.vehicle_locator import (
@@ -246,7 +247,7 @@ def extract_crops(
             done += 1
             if done % 500 == 0 or done == total:
                 print(f"[makemodel-build-uk] {done}/{total} cropped", flush=True)
-            image = cv2.imread(cand.src_path)
+            image = read_image(cand.src_path)
             if image is None:
                 continue
             crop_box: tuple[int, int, int, int] | None = cand.hint
