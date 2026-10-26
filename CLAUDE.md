@@ -2,7 +2,7 @@
 
 Guidance for Claude Code when working in StreetTracker.
 
-**System map (2026-10-05): [`docs/architecture/`](docs/architecture/README.md)**, published
+**System map (2026-10-26): [`docs/architecture/`](docs/architecture/README.md)**, published
 as a private artifact. It is a one-page architecture of the hardware, the live pipeline,
 enrichment, training, storage and sites, and gives every component a discussion ID (`RT-6`,
 `EN-5` …). Update and republish it when a component changes; the README says how.

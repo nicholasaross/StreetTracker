@@ -19,6 +19,7 @@
   --r2l: #1fb6a8;          /* right → left traffic (front plate) */
   --plate: #f2c200;        /* UK rear plate yellow: IDs and the masthead */
   --plate-ink: #1b2026;
+  --plate-front: #f7f8fa;  /* UK front plate white: alternate section IDs */
   --amber: #f59e0b;
   --bad: #ff6b6b;
   --good: #3fb950;
@@ -65,7 +66,8 @@ p { margin: 0; }
 .pid { display: inline-flex; align-items: center; font: 600 .74rem/1 var(--f-mono); letter-spacing: .08em;
   background: var(--plate); color: var(--plate-ink); border-radius: 4px; padding: .28em .5em .26em;
   box-shadow: inset 0 0 0 1.5px rgba(27,32,38,.45); white-space: nowrap; }
-.pid.ghost { background: transparent; color: var(--muted); box-shadow: inset 0 0 0 1px var(--line-2); }
+/* Section IDs alternate rear (yellow) and front (white) plates, in index order. */
+.pid.front { background: var(--plate-front); }
 
 /* ---------- masthead ---------- */
 .mast { padding-block: 40px 28px; border-bottom: 1px solid var(--line); }
@@ -298,9 +300,9 @@ dialog::backdrop { background: rgba(5,7,10,.66); }
     </div>
     <p class="sub">One camera on a residential street, a Jetson Orin Nano that detects and tracks everything passing, and a Windows dev box that reads plates, looks them up with the DVSA, trains UK make, colour and body-type classifiers, and serves two local websites. Every component below has a plate-style ID you can quote, and each one opens a pop-up with its metrics, files and photos.</p>
     <div class="meta">
-      <span><b>As of</b> 2026-10-05</span>
-      <span><b>Data</b> 2026-05-24 → 2026-10-04</span>
-      <span><b>Code</b> main @ 1ce37b8 · Orin @ 5f4ceb4</span>
+      <span><b>As of</b> 2026-10-26</span>
+      <span><b>Data</b> 2026-05-24 → 2026-10-04 (figures from 5 Oct)</span>
+      <span><b>Code</b> main @ ae433ed · Orin @ 6707789</span>
       <span><b>Repo</b> nicholasaross/StreetTracker</span>
     </div>
   </div>
@@ -310,17 +312,17 @@ dialog::backdrop { background: rgba(5,7,10,.66); }
   <nav class="toc" aria-label="Sections">
     <h4>Index</h4>
     <ol>
-      <li><a href="#overview">Overview <span class="pid ghost">KPI</span></a></li>
+      <li><a href="#overview">Overview <span class="pid front">KPI</span></a></li>
       <li><a href="#map">System map <span class="pid">SYS</span></a></li>
-      <li><a href="#hardware">Hardware <span class="pid">HW</span></a></li>
+      <li><a href="#hardware">Hardware <span class="pid front">HW</span></a></li>
       <li><a href="#runtime">Live runtime <span class="pid">RT</span></a></li>
-      <li><a href="#enrich">Enrichment <span class="pid">EN</span></a></li>
+      <li><a href="#enrich">Enrichment <span class="pid front">EN</span></a></li>
       <li><a href="#training">Training <span class="pid">ML</span></a></li>
-      <li><a href="#storage">Data &amp; storage <span class="pid">ST</span></a></li>
+      <li><a href="#storage">Data &amp; storage <span class="pid front">ST</span></a></li>
       <li><a href="#sites">Web apps <span class="pid">WEB</span></a></li>
-      <li><a href="#metrics">Metrics <span class="pid">MX</span></a></li>
+      <li><a href="#metrics">Metrics <span class="pid front">MX</span></a></li>
       <li><a href="#decisions">Decisions <span class="pid">DEC</span></a></li>
-      <li><a href="#tech">Technology <span class="pid">TECH</span></a></li>
+      <li><a href="#tech">Technology <span class="pid front">TECH</span></a></li>
     </ol>
     <p class="hint">Quote an ID (e.g. <b>RT-6</b>) to talk about a part. Every pop-up has a link such as <code>#rt-snap</code> that reopens it.</p>
   </nav>
@@ -329,9 +331,9 @@ dialog::backdrop { background: rgba(5,7,10,.66); }
     <!-- ================= OVERVIEW ================= -->
     <section id="overview" aria-labelledby="h-overview">
       <div class="sec-head">
-        <div class="eyebrow"><span class="pid ghost">KPI</span> Overview</div>
+        <div class="eyebrow"><span class="pid front">KPI</span> Overview</div>
         <h2 id="h-overview">What the system has done so far</h2>
-        <p>Totals across the 49 sessions pulled to the dev box. Session totals come from the control panel's inventory; traffic and people figures from the showcase <code>/stats</code> and <code>/people</code> pages.</p>
+        <p>Totals across the 49 sessions pulled to the dev box by 5 Oct; later sessions aren't counted yet. Session totals come from the control panel's inventory; traffic and people figures from the showcase <code>/stats</code> and <code>/people</code> pages.</p>
       </div>
       <div class="kpis" id="kpis"></div>
     </section>
@@ -498,7 +500,7 @@ dialog::backdrop { background: rgba(5,7,10,.66); }
             <rect class="box" x="952" y="422" width="216" height="66" rx="10"/>
             <rect class="idbg" x="964" y="432" width="36" height="16" rx="3"/><text class="tid" x="968" y="444">ST-6</text>
             <text class="t1" x="1008" y="445">GitHub (public)</text>
-            <text class="t2" x="964" y="470">code · scene geometry · Release</text>
+            <text class="t2" x="964" y="470">code · geometry · model Releases</text>
           </g>
           <path class="edge dash" d="M904,455 H952" marker-end="url(#ah)"/>
           <text class="elabel" x="906" y="448">push</text>
@@ -521,7 +523,7 @@ dialog::backdrop { background: rgba(5,7,10,.66); }
     <!-- ================= HARDWARE ================= -->
     <section id="hardware" aria-labelledby="h-hw">
       <div class="sec-head">
-        <div class="eyebrow"><span class="pid">HW</span> Hardware</div>
+        <div class="eyebrow"><span class="pid front">HW</span> Hardware</div>
         <h2 id="h-hw">Four devices, one fixed view</h2>
         <p>The camera's position is fixed and any extra camera would have to be discreet, so capture improvements come from timing, cropping and exposure rather than more hardware. Product photos are the makers' images, not this install.</p>
       </div>
@@ -557,7 +559,7 @@ dialog::backdrop { background: rgba(5,7,10,.66); }
     <!-- ================= ENRICHMENT ================= -->
     <section id="enrich" aria-labelledby="h-en">
       <div class="sec-head">
-        <div class="eyebrow"><span class="pid">EN</span> Offline enrichment on the dev box</div>
+        <div class="eyebrow"><span class="pid front">EN</span> Offline enrichment on the dev box</div>
         <h2 id="h-en">Plates, labels, vehicles, people</h2>
         <p>The control panel chains these as playbooks. GPU work runs one job at a time in the GPU lane; pulls and DVSA calls run in the net lane alongside it. Each step reads and writes sidecar JSON next to the session, so any step can be re-run alone.</p>
       </div>
@@ -600,7 +602,7 @@ dialog::backdrop { background: rgba(5,7,10,.66); }
     <!-- ================= STORAGE ================= -->
     <section id="storage" aria-labelledby="h-st">
       <div class="sec-head">
-        <div class="eyebrow"><span class="pid">ST</span> Data &amp; storage</div>
+        <div class="eyebrow"><span class="pid front">ST</span> Data &amp; storage</div>
         <h2 id="h-st">Files, not a database</h2>
         <p>Every stage writes plain JSON or JPEG next to the session it came from. That makes each step restartable and lets the websites rebuild their views from disk. The Orin keeps 4K stills for 7 days; the dev box keeps everything, which is why pulls have a deadline.</p>
       </div>
@@ -627,7 +629,7 @@ dialog::backdrop { background: rgba(5,7,10,.66); }
     <!-- ================= METRICS ================= -->
     <section id="metrics" aria-labelledby="h-mx">
       <div class="sec-head">
-        <div class="eyebrow"><span class="pid">MX</span> Metrics</div>
+        <div class="eyebrow"><span class="pid front">MX</span> Metrics</div>
         <h2 id="h-mx">Numbers worth arguing about</h2>
         <p>Each figure names its source and date. "Canonical" means the read matches a UK plate format; a canonical read isn't proof the plate belongs to the tracked car (see <span class="pid">EN-5</span>).</p>
       </div>
@@ -650,7 +652,7 @@ dialog::backdrop { background: rgba(5,7,10,.66); }
     <!-- ================= TECH ================= -->
     <section id="tech" aria-labelledby="h-tech">
       <div class="sec-head">
-        <div class="eyebrow"><span class="pid">TECH</span> Technology index</div>
+        <div class="eyebrow"><span class="pid front">TECH</span> Technology index</div>
         <h2 id="h-tech">Every named library, tool and technique</h2>
         <p>Versions are the ones pinned in <code>uv.lock</code> or read off the devices on 5 Oct 2026. Select a row to open the component that uses it.</p>
       </div>
@@ -669,7 +671,7 @@ dialog::backdrop { background: rgba(5,7,10,.66); }
 
     <footer>
       <p><b>Sources.</b> Live APIs of the showcase (<code>/api/stats</code>, <code>/api/cars</code>) and control panel (<code>/api/orin</code>, <code>/api/sessions</code>, <code>/api/model</code>, <code>/api/corpus</code>), model <code>*.meta.json</code> sidecars, session <code>_meta.json</code>, <code>uv.lock</code>, read-only shell queries on the Orin and dev box, and the project's CLAUDE.md and <code>docs/data_integrity_review.md</code> for dated historical results.</p>
-      <p><b>Photos.</b> RLC-1224A © Reolink. Jetson Orin Nano Developer Kit © NVIDIA. Alienware Aurora R13 © Dell. M.2 NVMe drive by User5515, CC0, via Wikimedia Commons (representative; the installed drive is a Lexar 1 TB). Jetson Nano Developer Kit by SparkFun Electronics, CC BY 2.0, via Wikimedia Commons.</p>
+      <p><b>Photos.</b> RLC-1224A © Reolink. Jetson Orin Nano Developer Kit © NVIDIA. Alienware Aurora R13 © Dell. M.2 NVMe drive by User5515, CC0, via Wikimedia Commons (representative; the installed drive is a Lexar 1 TB).</p>
       <p><b>Privacy.</b> Plate strings and operator tags are blocked out, plates in photos are pixelated, and no person close-ups are shown. Person-side identity work stays off this page by design.</p>
     </footer>
   </main>
@@ -712,13 +714,14 @@ const N = {
 'hw-orin': { pid: 'HW-2', kind: 'Hardware · edge computer', title: 'NVIDIA Jetson Orin Nano 8 GB, Super dev kit',
   imgs: [[A + 'hw_orin.jpg', 'Jetson Orin Nano Developer Kit. Photo © NVIDIA.'], [A + 'hw_orin2.jpg', 'Carrier board and fan module. Photo © NVIDIA.']],
   lead: 'Runs the whole live pipeline as one systemd service: decode, YOLOv8m on TensorRT, BotSORT tracking, the 4K snap planner, and the session files. Live since the cutover on 2026-05-22.',
-  specs: sp([['Board', '"Orin Nano Engineering Reference Developer Kit Super"'], ['GPU', 'Ampere, sm_87 (TensorRT engines must be built on it)'], ['CPU / RAM', '6 cores · 7.4 GiB usable'], ['OS', 'JetPack 6.2.2 (L4T R36.5) · Ubuntu 22.04.5 · kernel 5.15.185-tegra'], ['CUDA / TensorRT', '12.6.11 / 10.3.0.30'], ['Python stack', '3.10 via uv · torch 2.11.0 + torchvision 0.26.0 (jetson-ai-lab jp6/cu126)'], ['Engine', '<code>yolov8m.engine</code>, 55 MB, FP16, built 2026-05-21'], ['Power mode', '<code>nvpmodel</code> reports <b>15W</b>'], ['Throughput', '≈9.5 fps pipeline · 98–106 ms avg inference'], ['Service', 'active since 2026-10-04 09:52 · 0 restarts · code 5f4ceb4 (PR #123) · up 99 days']]),
+  specs: sp([['Board', '"Orin Nano Engineering Reference Developer Kit Super"'], ['GPU', 'Ampere, sm_87 (TensorRT engines must be built on it)'], ['CPU / RAM', '6 cores · 7.4 GiB usable'], ['OS', 'JetPack 6.2.2 (L4T R36.5) · Ubuntu 22.04.5 · kernel 5.15.185-tegra'], ['CUDA / TensorRT', '12.6.11 / 10.3.0.30'], ['Python stack', '3.10 via uv · torch 2.11.0 + torchvision 0.26.0 (jetson-ai-lab jp6/cu126)'], ['Engine', '<code>yolov8m.engine</code>, 55 MB, FP16, built 2026-05-21'], ['Power mode', '<code>nvpmodel</code> reports <b>15W</b>'], ['Throughput', '≈9.5 fps pipeline · 98–106 ms avg inference'], ['Service', 'started by a panel roll 2026-10-26 13:43 GMT · 0 restarts · code 6707789 (PRs #135–#137)'], ['Clock', 'no RTC backup battery, so the time is lost in a power cut; systemd-timesyncd resets it about 2 min after boot']]),
   html: `<div class="callout">Discussion point: the board reports the <b>15W</b> power mode, not the Super kit's higher modes, while inference averages ~100 ms per frame. Whether more power would buy frame rate (and fewer short-dwell misses) hasn't been measured.</div>
   <p>The unit file passes <code>--no-sync</code> so a <code>uv</code> hiccup can't replace the Jetson torch wheel with a PyPI one. A rebuilt <code>.venv</code> loses the system TensorRT symlinks; <code>scripts/setup_orin.sh --symlinks-only</code> restores them.</p>
+  <div class="callout">Power cut, 23 Oct: the Orin came back at about 09:22 with its clock reading 06:16 (timesyncd's last saved time) and named the new session 3 h early before NTP corrected it. The tracker now waits for the boot's first NTP sync before it starts a session (<span class="pid">RT-8</span>; see <a href="#dec-powercut">DEC: power cut</a>).</div>
   <p>JetPack 7.2 is out but blocked: there is no jp7 sm_87 torch wheel on jetson-ai-lab yet, and there is only one Orin, so a flash goes on a second NVMe with the JP6 drive kept as rollback.</p>`,
   io: { in: ['RTSP + HTTP from <span class="pid">HW-1</span>'], out: ['Session files on <span class="pid">HW-3</span>', 'Dashboard <span class="pid">WEB-1</span>'] },
   files: ['scripts/systemd/streettracker.service', 'scripts/setup_orin.sh', 'scripts/check_jp7_wheel.ps1', '/etc/sudoers.d/streettracker-svc'],
-  rel: ['rt-source', 'rt-detect', 'rt-track', 'rt-planner', 'rt-snap', 'hw-nvme', 'ext-wheels', 'hw-nano'] },
+  rel: ['rt-source', 'rt-detect', 'rt-track', 'rt-planner', 'rt-snap', 'rt-summary', 'hw-nvme', 'ext-wheels', 'dec-powercut'] },
 
 'hw-nvme': { pid: 'HW-3', kind: 'Hardware · storage', title: '1 TB NVMe on the Orin',
   imgs: [[A + 'hw_nvme.jpg', 'Representative M.2 2280 NVMe drive. User5515, CC0, Wikimedia Commons. The installed drive reports as a Lexar 1 TB.', 'white']],
@@ -737,13 +740,6 @@ const N = {
   <p>DataLoader workers > 0 stall on Windows, so training uses <code>--num-workers 0</code>.</p>`,
   io: { in: ['<span class="pid">EN-1</span> pulls from the Orin'], out: ['<span class="pid">WEB-2</span>, <span class="pid">WEB-3</span>', 'pushes to <span class="pid">ST-6</span>'] },
   files: ['scripts/control_panel.ps1', '.claude/*.vbs launchers'], rel: ['st-output', 'ml-train', 'web-control', 'web-showcase'] },
-
-'hw-nano': { pid: 'HW-0', kind: 'Hardware · retired', title: 'Jetson Nano (NanoTracker), retired',
-  imgs: [[A + 'hw_nano.jpg', 'NVIDIA Jetson Nano Developer Kit. SparkFun Electronics, CC BY 2.0, Wikimedia Commons.']],
-  lead: 'The original device. StreetTracker replaced its hand-written YOLOv8 decode, NumPy NMS and IoU tracker with Ultralytics on TensorRT plus BotSORT.',
-  specs: sp([['Last run', '986,619 frames over 27.6 h, stopped cleanly 2026-05-22'], ['Successor', 'Orin service live 15:42 BST, 2026-05-22'], ['Repos', 'VehicleTracker + NanoTracker archived 2026-07-07']]),
-  html: '<p>The session output schema (tiles, HQ crops, <code>_main_N</code> stills, jsonl events) was kept from NanoTracker, so old dashboards and tools kept working.</p>',
-  rel: ['hw-orin', 'dec-asyncio'] },
 
 /* ---------------- runtime ---------------- */
 'rt-source': { pid: 'RT-1', kind: 'Runtime · input', title: 'Frame source', lead: 'Reads the camera sub-stream and hands frames to the async loop.',
@@ -781,12 +777,13 @@ const N = {
   imgs: [[A + 'sample_hq.jpg', 'The tracker\'s HQ crop of track 2676 (349 × 247 sub-stream pixels, shown 3×). Plates pixelated.']],
   lead: 'When a track ends it is filtered, its images are saved, and its TrackRecord is appended to events.jsonl with fsync.',
   specs: sp([['Filters', 'min duration 1.0 s · parked if displacement < 50 px'], ['Images', 'tile q85 ~80 px · HQ crop q95 ~250 px (sharpest, largest view)'], ['Log', 'one JSON line per track, fsync (crash-safe)'], ['Trajectories', 'every 3rd box + last, ≤ ~200 rows (since 2026-10-04)']]),
-  html: '<div class="callout bad">Known gap: an estimated 36–45 % of person appearances are dropped at finalize by the parked/duration filters, which deletes their records but not their images. Door trips are the worst hit.</div><p>Since 4 Oct the HQ crop is pulled with the stills, because fast cars often leave the frame before their 4K still lands.</p>',
+  html: '<div class="callout bad">Known gap: an estimated 36–45 % of person appearances are dropped at finalize by the parked/duration filters, which deletes their records but not their images. Door trips are the worst hit.</div><p>Since 4 Oct the HQ crop is pulled with the stills, because fast cars often leave the frame before their 4K still lands.</p><p>A file being written when the power goes can be left empty on the Orin (four on 23 Oct). Pull reports them, and the analysis steps skip them.</p>',
   files: ['src/streettracker/common/output.py', 'src/streettracker/device/track_buffer.py'], rel: ['rt-summary', 'st-orin', 'en-people'] },
-'rt-summary': { pid: 'RT-8', kind: 'Runtime · outputs', title: 'Summary, rollups, shutdown',
-  lead: 'Regenerates the dashboard when the street goes quiet and writes the session files on shutdown.',
-  specs: sp([['Idle regen', 'summary HTML after 10 s with no active tracks'], ['Shutdown', 'SIGTERM → stop source, drain tracks, write data/meta/hourly, bounded at 30 s'], ['Dashboard', 'aiohttp static server on :8080']]),
-  files: ['src/streettracker/common/summary.py', 'src/streettracker/common/hourly.py', 'src/streettracker/device/dashboard.py'], rel: ['web-orin', 'rt-finalize'] },
+'rt-summary': { pid: 'RT-8', kind: 'Runtime · session lifecycle', title: 'Session start, summary, shutdown',
+  lead: 'Waits for a trustworthy clock before naming the session, regenerates the dashboard when the street goes quiet, and writes the session files on a clean shutdown.',
+  specs: sp([['Start', 'waits up to 300 s for the boot\'s first NTP sync (timesyncd\'s marker, else <code>timedatectl</code>) before stamping the session; no wait once synced; <code>--clock-sync-timeout-s</code> (PR #136)'], ['Idle regen', 'summary HTML after 10 s with no active tracks'], ['Shutdown', 'SIGTERM → stop source, drain tracks, write data/meta/hourly, bounded at 30 s'], ['Crash', 'no data/meta/hourly; the fsynced <code>events.jsonl</code> and the idle summary survive, and <span class="pid">EN-1</span> rebuilds the rest'], ['Dashboard', 'aiohttp static server on :8080']]),
+  html: '<p>A session named before NTP syncs gets a wrong name and start time: on 23 Oct the label came out 3 h 05 m early. Track times were right, because each record is stamped from the live clock.</p>',
+  files: ['src/streettracker/device/clock.py', 'src/streettracker/cli/run.py', 'src/streettracker/common/summary.py', 'src/streettracker/common/hourly.py', 'src/streettracker/device/dashboard.py'], rel: ['web-orin', 'rt-finalize', 'en-pull', 'dec-powercut'] },
 'rt-ir': { pid: 'RT-9', kind: 'Runtime · night', title: 'IR detector',
   lead: 'Watches for the camera\'s monochrome IR mode; frames in IR mode skip inference.',
   specs: sp([['Behaviour', 'monochrome frames → no inference (<code>device/runtime.py</code>)'], ['September', 'IR mode took 41.7 % of session time'], ['Now', 'camera forced to colour since 2026-09-28']]),
@@ -803,15 +800,15 @@ const N = {
   rel: ['en-pull', 'en-alpr', 'en-rescore', 'en-colour', 'en-gate', 'en-dvsa', 'en-vehicles', 'en-cnn', 'en-people', 'en-classify'] },
 'en-pull': { pid: 'EN-1', kind: 'Enrichment · transfer', title: 'pull',
   lead: 'Copies a session from the Orin to the dev box over SSH/scp.',
-  specs: sp([['Default', '<code>--only-main</code>: 4K stills + vehicle HQ crops + JSON'], ['Rate', '≈25 MB/s; the live session is ≈6.5 GB, ~4.5 min'], ['Resume', '<code>--skip-existing</code>, re-fetches zero-filled JPEGs (PR #97)'], ['Parallelism', 'knee at 4 streams']]),
+  specs: sp([['Default', '<code>--only-main</code>: 4K stills + vehicle HQ crops + JSON'], ['Rate', '≈25 MB/s; the live session is ≈6.5 GB, ~4.5 min'], ['Resume', '<code>--skip-existing</code>, re-fetches zero-filled JPEGs (PR #97)'], ['Parallelism', 'knee at 4 streams'], ['Crash rebuild', 'a session the Orin never finalised gets its <code>_data</code> / <code>_meta</code> / <code>_hourly.json</code> rebuilt from <code>events.jsonl</code> and the summary\'s embedded meta (<code>recover-session</code>, PR #135)'], ['Live check', 'the runtime\'s open <code>events.jsonl</code> handle, not the newest session name'], ['Damaged files', 'files empty on the Orin itself are reported as such, not as "re-run to retry"']]),
   html: '<p>An interrupted pull once left 634 full-size all-zero JPEGs that the old name-only diff never re-fetched (195 cars lost). Run it from PowerShell: Git Bash rewrites <code>/home/...</code> arguments.</p>',
-  files: ['src/streettracker/cli/pull.py'], rel: ['hw-nvme', 'st-output', 'web-control'] },
+  files: ['src/streettracker/cli/pull.py', 'src/streettracker/common/recover.py', 'src/streettracker/cli/recover_session.py'], rel: ['hw-nvme', 'st-output', 'rt-summary', 'web-control', 'dec-powercut'] },
 'en-alpr': { pid: 'EN-2', kind: 'Enrichment · plates', title: 'alpr-run',
   imgs: [[A + 'track_snaps.jpg', 'The 4K stills alpr-run reads. Plates pixelated.']],
   lead: 'Finds and reads the tracked car\'s plate in each 4K still, using the full frame matched against the car\'s trajectory instead of the stale fire-time box.',
-  specs: sp([['Crop mode', '<code>fullframe</code> (default since 2026-07-28): trajectory-matched'], ['Detector', 'open-image-models <code>yolo-v9-t-640-license-plate-end2end</code>'], ['OCR', 'fast-plate-ocr <code>global-plates-mobile-vit-v2-model</code>'], ['Runtime', 'ONNX Runtime CUDA EP (onnxruntime-gpu 1.19.2)'], ['Masks', 'ghost mask zero-fills a parked car; static filter drops background plates'], ['Result', 'net per-car canonical read <b>68.3 %</b> (R→L 69.7, L→R 66.8), from ~45 %']]),
-  html: '<p>Output per still in <code>_alpr.json</code>, best read per track in <code>_alpr_by_track.json</code>, plate crops in <code>alpr_crops/</code>. Never run on the Orin: it is compute-bound with the live tracker.</p>',
-  files: ['src/streettracker/analysis/alpr/fullframe.py', 'src/streettracker/analysis/alpr/preferred.py', 'src/streettracker/analysis/alpr/staticfilter.py', '.claude/ghost_mask.json'], rel: ['en-rescore', 'en-colour', 'dec-rlcap', 'rt-snap'] },
+  specs: sp([['Crop mode', '<code>fullframe</code> (default since 2026-07-28): trajectory-matched'], ['Detector', 'open-image-models <code>yolo-v9-t-640-license-plate-end2end</code>'], ['OCR', 'fast-plate-ocr <code>global-plates-mobile-vit-v2-model</code>'], ['Runtime', 'ONNX Runtime CUDA EP (onnxruntime-gpu 1.19.2)'], ['Masks', 'ghost mask zero-fills a parked car; static filter drops background plates'], ['Tall vehicles', 'bottom-centre retry when a van\'s box centre is off the road (<code>bottom_retry</code>, PR #134)'], ['Result', 'net per-car canonical read <b>68.3 %</b> (R→L 69.7, L→R 66.8), from ~45 %']]),
+  html: '<p>Output per still in <code>_alpr.json</code>, best read per track in <code>_alpr_by_track.json</code>, plate crops in <code>alpr_crops/</code>. Never run on the Orin: it is compute-bound with the live tracker.</p><p>Once Ultralytics is imported it replaces <code>cv2.imread</code> and <code>PIL.Image.open</code> for the whole process, and both raise on an empty file instead of returning nothing. Snaps are therefore read through <code>snap_assets.read_image</code> / <code>image_size</code>, and the CLI stops Ultralytics installing packages mid-job (PR #137).</p>',
+  files: ['src/streettracker/analysis/alpr/fullframe.py', 'src/streettracker/analysis/alpr/preferred.py', 'src/streettracker/analysis/alpr/staticfilter.py', 'src/streettracker/analysis/snap_assets.py', '.claude/ghost_mask.json'], rel: ['en-rescore', 'en-colour', 'dec-rlcap', 'rt-snap', 'dec-powercut'] },
 'en-rescore': { pid: 'EN-3', kind: 'Enrichment · confidence', title: 'alpr-rescore (min-character confidence)',
   imgs: [[A + 'plate_masked.png', 'Track 2676\'s best plate crop, characters masked.']],
   lead: 'Recomputes each read\'s confidence as the probability of its weakest character, from the saved crops.',
@@ -841,7 +838,7 @@ const N = {
   files: ['src/streettracker/analysis/vehicles.py', 'src/streettracker/analysis/parked.py', 'src/streettracker/web/aggregate.py'], rel: ['web-showcase', 'en-classify', 'en-dvsa'] },
 'en-cnn': { pid: 'EN-8', kind: 'Enrichment · classifiers', title: 'makemodel · bodytype · colour inference',
   lead: 'Runs the three EfficientNet heads on every vehicle still, cropped to the car, and votes per track by confidence.',
-  specs: sp([['Crop', '<code>fullframe</code>, pad 0.1: the vehicle box holding the plate read, else the nearest on-road vehicle'], ['Box cache', '<code>_vehicle_boxes.json</code>: YOLOv8m @1920, shared by all three heads'], ['Make', 'B6 @528 · 62 makes'], ['Colour', 'B0 @384 · 11 colours (replaces the HSV vote)'], ['Body', 'B0 @384 · 7 shapes']]),
+  specs: sp([['Crop', '<code>fullframe</code>, pad 0.1: the vehicle box holding the plate read, else the nearest on-road vehicle'], ['Box cache', '<code>_vehicle_boxes.json</code>: YOLOv8m @1920, shared by all three heads'], ['Make', 'B6 @528 · 62 makes'], ['Colour', 'B0 @384 · 11 colours (replaces the HSV vote)'], ['Body', 'B0 @384 · 7 shapes'], ['Bad files', 'empty or corrupt stills skipped via <code>read_image</code> (PR #137)']]),
   html: '<div class="callout">Pad matters: the body-type head at pad 0.25 drifted toward "van" and its agreement with DVSA fell from 79 % to 42 %. Inference reads <code>crop_mode</code> and <code>crop_pad_frac</code> from the checkpoint.</div><p>On tracks without a plate read the crop falls back to the nearest vehicle, with ~7 % estimated wrong picks.</p>',
   files: ['src/streettracker/analysis/vehicle_locator.py', 'src/streettracker/analysis/makemodel/infer.py', 'src/streettracker/analysis/makemodel/colour_infer.py', 'src/streettracker/analysis/makemodel/bodytype_infer.py'], rel: ['ml-make', 'st-models', 'dec-crops'] },
 'en-people': { pid: 'EN-9', kind: 'Enrichment · pedestrians', title: 'people',
@@ -873,11 +870,11 @@ const N = {
   specs: sp([['Fresh mode', '<code>--eval-session</code>: cars in no training corpus'], ['Known mode', '<code>--include-trained-cars</code>: every car, new passes only'], ['Output', '<code>compare.json</code> (+ <code>compare.prev.json</code>)'], ['Promote rule', 'panel recommends only a clear win; other crop families are "can\'t compare"']]),
   html: '<p>Comparing raw validation accuracy across corpora stopped working once corpora shared cars: the 0929 head-to-head on the val split collapsed to 67 held-out cars.</p>',
   files: ['src/streettracker/analysis/makemodel/compare.py'], rel: ['ml-promote', 'ml-make'] },
-'ml-promote': { pid: 'ML-4', kind: 'Training · release', title: 'promote + reinfer',
-  lead: 'Backs up the production checkpoint, copies the winner in, writes the metadata sidecar, then re-runs inference on every session.',
-  specs: sp([['Sidecar', '<code>*.meta.json</code> with arch, input, corpus, crop mode, head-to-head results'], ['Backups', 'timestamped <code>makemodel_b0.YYYYMMDDTHHMMSS.pt</code>'], ['Reinfer', 'one job per session (48–49), then a showcase refresh']]),
-  html: '<p>The promote playbook is destructive, so the panel asks for confirmation and only allows it from localhost.</p>',
-  files: ['src/streettracker/control/playbooks.py', 'src/streettracker/analysis/makemodel/models/'], rel: ['st-models', 'web-control'] },
+'ml-promote': { pid: 'ML-4', kind: 'Training · release', title: 'promote, release + reinfer',
+  lead: 'Backs up the production checkpoint, copies the winner in, writes the metadata sidecar, publishes the model as a GitHub Release, then re-runs inference on every session.',
+  specs: sp([['Sidecar', '<code>*.meta.json</code> with arch, input, corpus, crop mode, head-to-head results'], ['Backups', 'timestamped <code>makemodel_b0.YYYYMMDDTHHMMSS.pt</code>'], ['Release', 'step 2, <code>model-release</code>: public Release <code>makemodel-&lt;run&gt;</code>, SHA-256 checked against GitHub\'s digest; idempotent; refuses checkpoints holding plate-shaped strings or paths (PR #140)'], ['Reinfer', 'one job per session (48–49), then a showcase refresh']]),
+  html: '<p>The promote playbook is destructive, so the panel asks for confirmation and only allows it from localhost.</p><p>The 165 MB make model is over GitHub\'s 100 MB file limit, so a Release is its only off-box copy; until 26 Oct it was uploaded by hand. A panel started before 26 Oct gets the release step at its next restart.</p>',
+  files: ['src/streettracker/control/playbooks.py', 'src/streettracker/cli/model_release.py', 'src/streettracker/analysis/makemodel/models/'], rel: ['st-models', 'st-github', 'web-control'] },
 'ml-make': { pid: 'ML-5', kind: 'Training · registry', title: 'Production classifiers',
   lead: 'Three EfficientNet heads trained on the same plate-anchored, label-clean corpus.',
   specs: sp([['Make', 'B6 @528 · 62 makes · fresh 85.0 % (+4.2) · known 95.1 % (+1.5) · promoted 2026-10-01'], ['Colour', 'B0 @384 · 11 · fresh 83.3 % / 86.9 % grouped · known 93.5 % · 2026-10-03'], ['Body type', 'B0 @384 · 7 · fresh 89.1 % · known 95.9 % · 2026-10-03'], ['Checkpoint sizes', 'make 164.7 MB · body 16 MB']]),
@@ -891,7 +888,7 @@ const N = {
   lead: 'Every pulled session with all derived sidecars. The analysis source of truth, and full of plate PII.',
   specs: sp([['Size', '1.01 TB over 49 sessions · median 17.9 GB · max 60.0 GB'], ['Stills', '339,906 vehicle + 310,106 person = 650,012'], ['Recorded', '≈3,165 h, 2026-05-24 → 2026-10-04'], ['Root files', '<code>showcase_metadata.json</code> · <code>cross_session_repeats.json</code> · <code>control_jobs.json</code> · <code>control_playbooks.json</code>']]),
   html: `<h4>TrackRecord (per track)</h4><p class="mono" style="font-size:.78rem;line-height:1.6;color:var(--muted)">track_id · class_id · class_name · class_suspect · time_start/end (+ _s, _unix) · duration_visible · direction · speed_px_s · color · lane · avg_confidence · displacement_px · net_displacement_px · num_detections · asset_prefix · main_snaps · main_snap_bboxes · main_snap_bboxes_done · main_snap_fire_unix · main_snap_done_unix · entry_point_frac · exit_point_frac · make · model · year · make_model_source</p>
-  <h4 style="margin-top:10px">SessionMeta</h4><p class="mono" style="font-size:.78rem;line-height:1.6;color:var(--muted)">session_label · session_start_unix · frames_processed · pipe_fps · avg_infer_ms · ir_periods · snap_stats {attempts, successes, failures, dropped, blur_skipped_frames, pipeline_fires, pipeline_throttled, pipeline_budget_exhausted, latency{p50,p90,p99,max}, fires_per_track, time_in_band_ms_per_track} · frame_size</p>
+  <h4 style="margin-top:10px">SessionMeta</h4><p class="mono" style="font-size:.78rem;line-height:1.6;color:var(--muted)">session_label · session_start_unix · frames_processed · pipe_fps · avg_infer_ms · ir_periods · snap_stats {attempts, successes, failures, dropped, blur_skipped_frames, pipeline_fires, pipeline_throttled, pipeline_budget_exhausted, latency{p50,p90,p99,max}, fires_per_track, time_in_band_ms_per_track} · frame_size · recovered (only on a session rebuilt after a crash)</p>
   <div class="callout">Not in GitHub and not yet backed up off the box: this folder and the training corpora are the irreplaceable part.</div>`,
   files: ['src/streettracker/common/schema.py', 'src/streettracker/common/output.py'], rel: ['en-pull', 'web-showcase', 'st-runs'] },
 'st-runs': { pid: 'ST-3', kind: 'Storage · training', title: 'runs/', lead: 'Training corpora and runs. The corpora are distilled from sessions whose stills the Orin has long since pruned.',
@@ -900,7 +897,8 @@ const N = {
   rel: ['ml-build', 'ml-train', 'dec-crops'] },
 'st-models': { pid: 'ST-4', kind: 'Storage · weights', title: 'Model files',
   lead: 'Production checkpoints live inside the package so inference finds them without flags.',
-  specs: sp([['Folder', '<code>src/streettracker/analysis/makemodel/models/</code>'], ['Make', '<code>makemodel_b0.pt</code> (B6, 164.7 MB, untracked)'], ['Small heads', '<code>colour_b0.pt</code>, <code>bodytype_b0.pt</code> + sidecars'], ['ALPR', '<code>license_plate_detector.pt</code> 6 MB (legacy bespoke pipeline)'], ['Release', '<code>models-2026-07-09</code> holds the old 0707 B6; production 0929 B6 not uploaded yet']]),
+  specs: sp([['Folder', '<code>src/streettracker/analysis/makemodel/models/</code>'], ['Make', '<code>makemodel_b0.pt</code> (B6, 164.7 MB, untracked)'], ['Small heads', '<code>colour_b0.pt</code>, <code>bodytype_b0.pt</code> + sidecars'], ['ALPR', '<code>license_plate_detector.pt</code> 6 MB (legacy bespoke pipeline)'], ['Release', '<code>models-2026-10-26</code> holds production 0929 B6 (SHA-256 <code>f660a9eb…</code>); <code>models-2026-07-09</code> the 0707 B6; promotions now publish <code>makemodel-&lt;run&gt;</code>']]),
+  html: '<p>The make model is over GitHub\'s 100 MB file limit, so <code>.gitignore</code> keeps it out of the repo and a Release is its backup. The colour and body-type heads (about 16 MB each) and the plate detector are committed.</p>',
   rel: ['ml-promote', 'st-github', 'en-cnn'] },
 'st-configs': { pid: 'ST-5', kind: 'Storage · configuration', title: 'Configs and secrets',
   lead: 'Strict JSON configs: an unknown key is a startup error.',
@@ -908,7 +906,7 @@ const N = {
   files: ['src/streettracker/common/config.py', 'configs/*.example.json'], rel: ['dec-schema', 'rt-planner'] },
 'st-github': { pid: 'ST-6', kind: 'Storage · code', title: 'GitHub (public repo)',
   lead: 'Code, tests, scene geometry, analysis scripts and small models. No plates, imagery or secrets.',
-  specs: sp([['Repo', 'nicholasaross/StreetTracker'], ['History', '322 commits since 2026-05-19 · PRs up to #131'], ['Size', '26.4k lines of Python in <code>src/</code> · 2.6k template lines · 20.8k test lines'], ['Tests', '1,101 passing on Python 3.10 in CI'], ['Lint/type', 'ruff · mypy']]),
+  specs: sp([['Repo', 'nicholasaross/StreetTracker'], ['History', '342 commits since 2026-05-19 · PRs up to #140'], ['Size', '27.4k lines of Python in <code>src/</code> · 2.6k template lines · 21.7k test lines'], ['Tests', '1,306 passing on the dev box (26 Oct); CI skips 8 torch-only modules'], ['Releases', '<code>models-2026-07-09</code> (model bundle) · <code>models-2026-10-26</code> (production make model)'], ['Lint/type', 'ruff · mypy']]),
   rel: ['st-models', 'hw-orin'] },
 
 /* ---------------- external ---------------- */
@@ -937,8 +935,8 @@ const N = {
 'web-control': { pid: 'WEB-3', kind: 'Web app · dev box', title: 'Operator control panel (:8095)',
   imgs: [[A + 'site_control.webp', 'Dashboard: Orin status and pull estimate, production model and corpus, recommendations, playbooks, jobs.'], [A + 'site_training.webp', '/training during a B6 run (July 2026 capture from docs/assets).']],
   lead: 'Lets the operator run pulls, enrichment, training and promotion with no Claude session attached.',
-  specs: sp([['Routes', '<code>/</code> · <code>/training</code> · <code>/api/orin</code> · <code>/api/sessions</code> · <code>/api/jobs</code> · <code>/api/playbooks</code> · <code>/api/pull-preview/{session}</code>'], ['Lanes', 'GPU lane (alpr, makemodel, build, train) · net lane (pull, dvsa, vehicles)'], ['Playbooks', 'enrich · build-train · roll · promote · reinfer · rescore · platecheck · relabel'], ['Access', 'viewable on the LAN; every action localhost-only'], ['Pollers', 'Orin ~45 s (SSH) · local inventory ~30 s'], ['On failure', 'a "Copy Claude prompt" button with the job\'s output tail']]),
-  html: '<div class="callout bad">Seen while capturing this page: a pull-estimate SSH call (<code>du -sb</code> on the live session) hung for 16 minutes and the Orin card showed "unreachable" the whole time, although the Orin was fine. Killing that one <code>ssh.exe</code> cleared it, which suggests the poller waits behind the hung estimate.</div>',
+  specs: sp([['Routes', '<code>/</code> · <code>/training</code> · <code>/api/orin</code> · <code>/api/sessions</code> · <code>/api/jobs</code> · <code>/api/playbooks</code> · <code>/api/pull-preview/{session}</code>'], ['Lanes', 'GPU lane (alpr, makemodel, build, train) · net lane (pull, dvsa, vehicles)'], ['Playbooks', 'enrich · build-train · roll · promote (+ model Release) · reinfer · rescore · platecheck · relabel'], ['Access', 'viewable on the LAN; every action localhost-only'], ['Pollers', 'Orin ~45 s (SSH) · local inventory ~30 s'], ['On failure', 'a "Copy Claude prompt" button with the job\'s output tail']]),
+  html: '<div class="callout bad">Seen while capturing this page: a pull-estimate SSH call (<code>du -sb</code> on the live session) hung for 16 minutes and the Orin card showed "unreachable" the whole time, although the Orin was fine. Killing that one <code>ssh.exe</code> cleared it, which suggests the poller waits behind the hung estimate.</div><p>A device session that stopped without a clean shutdown is marked "(not finalised)" in the Orin sessions list.</p>',
   files: ['src/streettracker/control/server.py', 'src/streettracker/control/jobs.py', 'src/streettracker/control/playbooks.py', 'src/streettracker/control/orin.py'], rel: ['en-overview', 'ml-overview', 'hw-devbox'] },
 'web-triage': { pid: 'WEB-4', kind: 'Web app · ad hoc', title: 'Failure triage site (:8091)',
   lead: 'A one-file labelling site used to sort 99 failed R→L stills into causes. 96 % turned out to be snap latency.',
@@ -956,6 +954,8 @@ const N = {
   html: '<p>2026-05-31: capping the shutter for sharper near-camera plates halved the daylight canonical rate (48.5 → 25.1 %), because gain noise cost more than the blur removed. Day plates were never blur-limited; dusk plates are, which keeps a night-only faster shutter on the table.</p>', rel: ['hw-camera', 'dec-lowlight'] },
 'dec-schema': { pid: 'DEC', kind: 'Decision record', title: 'Schema-additive deploy order',
   html: '<p>The strict loader rejects unknown keys. A new config field must be merged, pulled onto the Orin and run with the old <code>camera.json</code> before the config is edited. Skipping this crash-looped the service on 2026-05-27.</p>', rel: ['st-configs', 'rt-planner'] },
+'dec-powercut': { pid: 'DEC', kind: 'Decision record', title: 'Surviving a power cut',
+  html: '<p>On 23 Oct the Orin lost power at 07:54:53, 39.5 h into a session, and came back at about 09:22. Four changes followed (PRs #135–#137, live on the Orin since 26 Oct):</p><ul><li><b>Rebuild, don\'t lose.</b> The session never wrote its <code>_data.json</code>, but all 1,885 finished tracks were safe in the fsynced <code>events.jsonl</code>. <code>pull</code> now rebuilds the missing files from it and from the meta the summary page carries.</li><li><b>Report empty files as empty.</b> Four files being written at the cut were 0 bytes on the Orin itself; pull says so instead of advising a re-run.</li><li><b>Read images defensively.</b> Ultralytics\' replacement image readers raise on an empty file, which killed <code>alpr-run</code> 12 minutes in. Snaps now go through one safe reader, and the CLI stops Ultralytics installing packages mid-job.</li><li><b>Wait for the clock.</b> With no RTC battery the Orin booted 3 h slow and misnamed the next session. <code>run</code> now waits up to 5 min for the first NTP sync.</li></ul>', rel: ['en-pull', 'rt-summary', 'en-alpr', 'hw-orin'] },
 'dec-asyncio': { pid: 'DEC', kind: 'Decision record', title: 'Asyncio throughout', html: '<p>Entry is <code>asyncio.run(run_session(config))</code>; the frame reader runs in a thread, inference in an executor, HTTP via aiohttp; SIGTERM drains within 30 s.</p>', rel: ['rt-source', 'rt-summary'] },
 'dec-py310': { pid: 'DEC', kind: 'Decision record', title: 'Python pinned to 3.10', html: '<p>The JP6 wheel index only has cp310 torch. A bump to 3.11 broke the Orin on 2026-05-25. 3.12 moves with the JP7 flash.</p>', rel: ['ext-wheels', 'hw-orin'] },
 'dec-privacy': { pid: 'DEC', kind: 'Decision record', title: 'Privacy lines', html: '<p>No cross-session person re-identification in the analytics. Person-side statistics are aggregate. Biometric work stays on the dev box and never reaches the public repo or a release. The public repo carries no plates, imagery or secrets.</p>', rel: ['en-people', 'st-github'] },
@@ -967,7 +967,6 @@ const HW = [
   ['hw-orin', A + 'hw_orin.jpg', '', 'JetPack 6.2.2 · TRT 10.3 · 15W mode · ~9.5 fps'],
   ['hw-nvme', A + 'hw_nvme.jpg', 'contain', '937 GB fs · 88 GB used · 4K pruned at 7 d'],
   ['hw-devbox', A + 'hw_devbox.jpg', 'contain', 'i7-12700KF · 32 GB · RTX 3080 10 GB'],
-  ['hw-nano', A + 'hw_nano.jpg', '', 'retired 2026-05-22 after 27.6 h final run'],
 ];
 const RT = [
   ['rt-source', 'H.264 896×512 over RTSP/TCP', '≈9.5 fps'],
@@ -977,12 +976,12 @@ const RT = [
   ['rt-planner', 'road polygon, bands, triggers, 400 ms pipeline', '8,529 fires / 62.7 h'],
   ['rt-snap', '4K JPEG over HTTP, fire + landing boxes', 'p50 640 ms · 0 fails'],
   ['rt-finalize', 'filters, tile + HQ crop, fsync jsonl', '2,719 tracks kept'],
-  ['rt-summary', 'idle summary, hourly rollup, 30 s shutdown', ':8080'],
+  ['rt-summary', 'NTP wait at start, idle summary, 30 s shutdown', ':8080'],
   ['rt-ir', 'IR frames skip inference', '41.7 % of Sept'],
   ['rt-prune', '4K stills deleted after 7 days', 'hourly'],
 ];
 const EN = [
-  ['en-pull', 'SSH/scp: stills, HQ crops, JSON', '≈25 MB/s', 'net'],
+  ['en-pull', 'stills, HQ crops, JSON; rebuilds crashed sessions', '≈25 MB/s', 'net'],
   ['en-alpr', 'trajectory-matched plate read', '68.3 % per car', 'GPU'],
   ['en-rescore', 'weakest-character confidence', 'R1 fix 28 Sep', 'GPU'],
   ['en-colour', 'plate colour vs direction', '2.5 % flagged', 'GPU'],
@@ -997,7 +996,7 @@ const ML = [
   ['ml-build', 'plate-anchored crops, split by car', '76,033 crops'],
   ['ml-train', 'torchvision EfficientNet B0/B6', '≈100 min/epoch'],
   ['ml-compare', 'same cars, per track, bootstrap CI', 'fresh + known'],
-  ['ml-promote', 'backup, sidecar, reinfer all sessions', '49 sessions'],
+  ['ml-promote', 'backup, sidecar, GitHub Release, reinfer', '49 sessions'],
 ];
 const ST = [
   ['st-orin', 'Orin NVMe · 59 GB · 7-day stills'],
@@ -1005,7 +1004,7 @@ const ST = [
   ['st-runs', '56.3 GB · 21 corpora + runs · private backup'],
   ['st-models', 'checkpoints + sidecars'],
   ['st-configs', 'strict JSON · secrets gitignored'],
-  ['st-github', 'public · 322 commits · 1,101 tests'],
+  ['st-github', 'public · 342 commits · 1,306 tests · model Releases'],
 ];
 const WEB = [
   ['web-orin', A + 'site_orin_th.webp', 'LAN · regenerated on idle'],
@@ -1017,10 +1016,10 @@ const FILES = [
   ['{prefix}_{id}_main_{N}.jpg', 'RT-6', 'EN-2, EN-8, ML-1, WEB-2', 'JPEG 4512×2512', '≈1.45 MB each · 9,049', 'Orin 7 d · dev box kept'],
   ['vehicle_{id}_hq.jpg', 'RT-7', '/stats fastest cars', 'JPEG q95 ~250 px', '≈32 KB each · 2,396', 'kept'],
   ['{prefix}_{id}.jpg (tile)', 'RT-7', 'WEB-1', 'JPEG q85 ~80 px', 'not pulled', 'Orin'],
-  ['_events.jsonl', 'RT-7 (fsync)', 'EN-6, crash recovery', 'JSON lines', '2.0 MB', 'kept'],
+  ['_events.jsonl', 'RT-7 (fsync)', 'EN-6, EN-1 crash rebuild', 'JSON lines', '2.0 MB', 'kept'],
   ['_trajectories.jsonl', 'RT-7 (since 4 Oct)', 'snap-timing analysis', 'JSON lines', 'new', 'kept'],
-  ['_data.json', 'RT-8, EN-6', 'everything', 'TrackRecord array', '3.6 MB', 'kept'],
-  ['_meta.json', 'RT-8', 'WEB-3, analysis', 'SessionMeta', '1 KB', 'kept'],
+  ['_data.json', 'RT-8 (EN-1 after a crash), EN-6', 'everything', 'TrackRecord array', '3.6 MB', 'kept'],
+  ['_meta.json', 'RT-8 (EN-1 after a crash)', 'WEB-3, analysis', 'SessionMeta', '1 KB', 'kept'],
   ['_hourly.json · _summary.html', 'RT-8', 'WEB-1', 'JSON · HTML', '25 KB · 752 KB', 'kept'],
   ['_alpr.json · _alpr_by_track.json', 'EN-2..4', 'EN-5..7, ML-1', 'JSON', '2.8 MB · 0.6 MB', 'kept'],
   ['alpr_crops/', 'EN-2', 'EN-3, EN-4', 'JPEG plate crops', '15 MB', 'kept'],
@@ -1043,7 +1042,7 @@ const KPI = [
   ['68.3 %', 'cars with a canonical plate read', 'net, Jul 28 measure'],
   ['85.0 %', 'make@1 on unseen cars', 'B6 @528, 62 makes'],
   ['1.01 TB', 'session data on the dev box', '+ 56 GB training data · Orin 59 GB'],
-  ['1,101', 'tests', '26.4k lines of Python'],
+  ['1,306', 'tests', '27.4k lines of Python · 26 Oct'],
 ];
 
 /* metrics panels -------------------------------------------------------- */
@@ -1064,6 +1063,8 @@ const DEC_LOCKED = [
   ['ml-compare', 'Promote on head-to-head only', 'Same cars, per track, bootstrap CI; raw val accuracy can\'t be compared across corpora.'],
   ['en-dvsa', 'DVSA labels as ground truth', 'Labels come from the register, not from people.'],
   ['dec-privacy', 'Privacy lines', 'Aggregate person stats; no cross-day person matching; nothing identifying in the public repo.'],
+  ['dec-powercut', 'Survive a power cut', 'Rebuild unfinalised sessions from the fsynced log, skip empty files, wait for NTP before naming a session.'],
+  ['ml-promote', 'Back the make model up as a Release', 'It is over GitHub\'s 100 MB file limit; promote publishes it and checks the SHA-256.'],
 ];
 const DEC_FALSE = [
   ['dec-rlcap', '2026-07-28', 'R→L capped by camera geometry', 'It was the crop: landing boxes ~510 px off the car plus parked plates.', 'false'],
@@ -1086,9 +1087,10 @@ const TECH = [
   ['Platform', 'CUDA', '12.6', 'Orin 12.6.11; dev box torch cu126', ['hw-orin', 'hw-devbox']],
   ['Platform', 'TensorRT', '10.3.0.30', 'YOLOv8m FP16 engine on the Orin', ['rt-detect']],
   ['Platform', 'systemd', '—', 'streettracker.service, scoped sudoers', ['hw-orin']],
+  ['Platform', 'systemd-timesyncd', '249', 'NTP clock; run waits for its first sync after boot', ['rt-summary', 'hw-orin']],
   ['Platform', 'Windows 11 + Task Scheduler', '26200', 'dev box; showcase/panel start at logon via VBS launchers', ['hw-devbox']],
   ['Platform', 'SetThreadExecutionState', 'Win32', 'wake-lock held for whole playbooks', ['web-control']],
-  ['Vision & ML', 'Ultralytics', '8.4.51', 'YOLO + BotSORT tracking, engine export', ['rt-detect', 'rt-track']],
+  ['Vision & ML', 'Ultralytics', '8.4.51', 'YOLO + BotSORT tracking, engine export; auto-install off', ['rt-detect', 'rt-track']],
   ['Vision & ML', 'YOLOv8m', 'COCO', 'live detector @640; offline vehicle locator @1920', ['rt-detect', 'en-cnn']],
   ['Vision & ML', 'BotSORT', 'Ultralytics', 'multi-object tracker, sparse optical-flow GMC', ['rt-track']],
   ['Vision & ML', 'PyTorch', '2.12.0+cu126 / 2.11.0', 'dev box / Orin (jetson-ai-lab)', ['ml-train', 'hw-orin']],
@@ -1115,7 +1117,7 @@ const TECH = [
   ['Tooling', 'ruff · mypy', '0.15.13 · 2.1.0', 'lint, format, type-check', ['st-github']],
   ['Tooling', 'hatchling', '—', 'wheel build backend', ['st-github']],
   ['Tooling', 'OpenSSH / scp', '—', 'pull, roll, Orin status', ['en-pull', 'web-control']],
-  ['Tooling', 'GitHub + gh', '—', 'PRs, CI, Releases', ['st-github']],
+  ['Tooling', 'GitHub + gh', '2.92.0', 'PRs, CI, model Releases (model-release)', ['st-github', 'ml-promote']],
   ['External', 'DVSA MOT History API', 'v1', 'plate → make/model/year/colour', ['ext-dvsa', 'en-dvsa']],
   ['External', 'jetson-ai-lab index', 'jp6/cu126', 'sm_87 torch wheels', ['ext-wheels']],
   ['External', 'Reolink HTTP + RTSP', 'firmware API', 'cmd=Snap stills, GetIsp/SetIsp, RTSP streams', ['hw-camera', 'rt-snap']],
@@ -1132,6 +1134,8 @@ const TECH = [
   ['Technique', 'Plate-anchored corpus, split by car', '—', 'leak-free UK training data', ['ml-build']],
   ['Technique', 'Bootstrap CI by car', '—', 'promotion decisions', ['ml-compare']],
   ['Technique', 'Time-shift null', '—', 'chance floor for round trips', ['en-people']],
+  ['Technique', 'Crash rebuild from the event log', '—', 'unfinalised sessions recovered on pull', ['en-pull']],
+  ['Technique', 'SHA-256-checked Release upload', '—', 'off-box copy of the make model', ['ml-promote']],
 ];
 
 /* ------------------------------------------------------------------ */
@@ -1184,7 +1188,7 @@ function chip(parent, id, x, y, w, h, label) {
 }
 const oc = $('#orin-chips');
 [['rt-source', 'frame source'], ['rt-detect', 'YOLOv8m TRT'], ['rt-track', 'BotSORT'], ['rt-attr', 'attributes'], ['rt-ir', 'IR detector']].forEach((c, i) => chip(oc, c[0], 54, 286 + i * 44, 158, 34, c[1]));
-[['rt-planner', 'snap planner'], ['rt-snap', 'snapshotter'], ['rt-finalize', 'finalize + log'], ['rt-summary', 'summary'], ['rt-prune', '4K prune']].forEach((c, i) => chip(oc, c[0], 220, 286 + i * 44, 158, 34, c[1]));
+[['rt-planner', 'snap planner'], ['rt-snap', 'snapshotter'], ['rt-finalize', 'finalize + log'], ['rt-summary', 'start + shutdown'], ['rt-prune', '4K prune']].forEach((c, i) => chip(oc, c[0], 220, 286 + i * 44, 158, 34, c[1]));
 const ec = $('#en-chips');
 [['en-alpr', 'alpr-run'], ['en-rescore', 'rescore'], ['en-colour', 'plate colour'], ['en-gate', 'gate H']].forEach((c, i) => chip(ec, c[0], 612, 280 + i * 38, 140, 30, c[1]));
 [['en-dvsa', 'DVSA label'], ['en-vehicles', 'vehicles'], ['en-cnn', 'CNN heads'], ['en-people', 'people']].forEach((c, i) => chip(ec, c[0], 758, 280 + i * 38, 136, 30, c[1]));
