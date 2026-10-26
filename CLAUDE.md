@@ -740,6 +740,7 @@ uv run streettracker pull --session <S> --only-main      # pull a session's 4K s
 uv run streettracker pull --session <S> --crops-only     # fetch just the missing vehicle HQ crops (never the JSON, so safe on an enriched session)
 uv run streettracker recover-session output/<session>    # rebuild data/meta/hourly JSON for a session the device never finalised (pull does this itself)
 uv run streettracker makemodel-build-uk runs/uk_crops --output-size 512  # DVSA-labelled UK make crops @512 (auto-discovers sessions); --crop-mode plate (default) = plate-anchored crops, needs alpr-run output
+uv run streettracker model-release                       # publish the production make model as a public GitHub Release (promote's last step; idempotent; refuses checkpoints holding plate-shaped strings or paths; --dry-run)
 uv run streettracker makemodel-compare runs/uk_crops --candidate runs/uk_make_X/best.pt  # head-to-head vs production on shared held-out cars -> runs/uk_make_X/compare.json (the report it replaces is kept as compare.prev.json); --target colour|body_type for the other heads (colour also reports a grouped score); --eval-session <S>... scores fresh sessions' cars instead of the corpus val split, minus every car in production's and the candidate's corpora (+ --include-trained-cars to keep those cars and score their new passes)
 uv run streettracker makemodel-train-uk runs/uk_crops --input-size 512   # train the UK make classifier (B0@512; +--backbone b4/b5). honest make@1 ~28% on 1229 cars (old "37.6%" was small-val optimism)
 ```
@@ -890,7 +891,9 @@ ctx, …)` dispatches, `PlaybookContext` carries paths + device config):
     a new one, verifies the handover + counts finalised tracks → then a `pull`
     job of the closed session) and **promote** (action: back up `makemodel_b0.pt`
     → copy the best run's `best.pt` in → write the metadata sidecar + corpus
-    fingerprint) — **destructive**, so the submit route refuses them without
+    fingerprint → then a `model-release` job publishes the model as the
+    **public** GitHub Release `makemodel-<run>`, its only off-box copy since it
+    is too big to commit; since 2026-10-26) — **destructive**, so the submit route refuses them without
     `confirm=true` and the UI shows a confirm dialog. `roll` resolves the live
     session over SSH at submit and refuses if the device is down/idle.
   - **reinfer** (one `makemodel` job per local session → an action that POSTs
@@ -1445,7 +1448,7 @@ imagery are deliberately kept out):
 | Operator-traced **scene geometry** (`.claude/{ghost_mask,snap_gate,triggers_proposal,road_polygon_user,road_zones,road_polygon,reolink_isp_current}.json` + `sketch_me_done.png`) | **In repo** (gitignore negations)                                    | Irreplaceable without the physical camera + operator re-sketch + weeks of band re-tuning |
 | **Analysis / measurement scripts** (`.claude/*.py` — verdict/band/eval/bakeoff/coverage)                                                                                          | **In repo**                                                          | Re-derive methodology from scratch                                                       |
 | **Small inference models** (`bodytype_b0.pt` 16 MB, ALPR `license_plate_detector.pt` 6 MB) + all `*.meta.json` sidecars                                                           | **In repo**                                                          | 12 h train / hard to reacquire                                                           |
-| **Production make model** `makemodel_b0.pt` (164 MB, B6)                                                                                                                          | **GitHub Release `models-2026-10-26`** holds production `uk_make_0929_b6` (SHA-256 `f660a9eb…`); `models-2026-07-09` holds the older 0707 B6 | ~1.5 days train on a months-built corpus                                                 |
+| **Production make model** `makemodel_b0.pt` (164 MB, B6)                                                                                                                          | **GitHub Release `models-2026-10-26`** holds production `uk_make_0929_b6` (SHA-256 `f660a9eb…`); `models-2026-07-09` holds the older 0707 B6. Promotions from 2026-10-26 on publish `makemodel-<run>` automatically | ~1.5 days train on a months-built corpus                                                 |
 
 Still **NOT** in GitHub — keep a private/external backup (too big, or
 PII, or secret):

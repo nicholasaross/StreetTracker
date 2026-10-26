@@ -126,6 +126,8 @@ ALLOWED_JOB_KINDS = frozenset(
         "makemodel-build-uk",
         "makemodel-train-uk",
         "makemodel-compare",
+        # Promote's last step; allowed alone so a failed upload can be retried.
+        "model-release",
         "export-engine",
     }
 )

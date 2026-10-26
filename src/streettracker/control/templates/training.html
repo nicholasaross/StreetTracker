@@ -25,7 +25,7 @@
     } catch(e){ showToast("Launch failed: " + e.message); }
   }
   async function promoteRun(run){
-    if (!window.confirm(`Promote ${run} to the production model? The current model is backed up first.`)) return;
+    if (!window.confirm(`Promote ${run} to the production model? The current model is backed up first, and ${run} is then published as a PUBLIC GitHub Release.`)) return;
     try {
       await fetchJSON("/api/playbooks", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({name:"promote", confirm:true, run})});
       showToast("Promoting " + run); pollNow();

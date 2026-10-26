@@ -516,7 +516,7 @@
     if (def.destructive){
       const what = name==="roll"
         ? "Restart the Orin camera service? This ends the current recording session, starts a new one, then pulls the closed session."
-        : "Overwrite the production model with the best training run? (The current model is backed up first.)";
+        : "Overwrite the production model with the best training run? (The current model is backed up first.) It is then published as a PUBLIC GitHub Release.";
       if (!window.confirm(what)) return;
     }
     const body = {name};
