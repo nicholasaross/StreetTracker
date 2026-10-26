@@ -6,8 +6,8 @@ hardware, the live Orin pipeline, offline enrichment, the training loop, storage
 web apps. Every component has a plate-style discussion ID (`HW-1`, `RT-6`, `EN-5` …), and
 `#<id>` links (e.g. `#rt-snap`) open its pop-up.
 
-Figures are as of **2026-10-05** (data 2026-05-24 → 2026-10-04). Update them when a component
-changes.
+The architecture is as of **2026-10-26** (PRs up to #140); the figures are as of **2026-10-05**
+(data 2026-05-24 → 2026-10-04). Update them when a component changes.
 
 ## Files
 
@@ -49,4 +49,3 @@ raw captures still show plates):
 - Alienware Aurora R13 photo © Dell.
 - M.2 NVMe drive by User5515, CC0, via Wikimedia Commons (representative; the Orin's drive is a
   Lexar 1 TB).
-- Jetson Nano Developer Kit by SparkFun Electronics, CC BY 2.0, via Wikimedia Commons.
