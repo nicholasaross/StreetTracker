@@ -284,9 +284,14 @@ step 6's E1.5(c) is the one Orin deploy. In order:
 Anything that reads session data runs on the dev box, and the operator
 pastes the output back.
 
-**Live on the Orin** (#63 runtime bundle deployed 2026-06-13, service active,
-NRestarts=0; code updated to `5f4ceb4` on 2026-10-04 for E1.5(c), see step
-6.2 above):
+**Live on the Orin** (#63 runtime bundle deployed 2026-06-13; code updated to
+`5f4ceb4` on 2026-10-04 for E1.5(c), see step 6.2 above; **now `6707789`**,
+pulled on 2026-10-26 and started by a panel roll at 13:43 GMT; service
+active, NRestarts=0). Its runtime changes over `5f4ceb4` are the startup wait
+for the boot's first NTP sync (PR #136, see
+[Device runtime notes](#device-runtime-notes-orin-nano-8gb-super)) and
+`YOLO_AUTOINSTALL=false` (#137). Rollback: `git checkout 5f4ceb4` + restart.
+Still live from earlier deploys:
 
 - **per-direction pipeline bands** `pipeline_t_usable_by_direction =
 {forward(R→L):[0.10,0.20], reverse(L→R):[0.30,0.60]}` (reverse lower edge
