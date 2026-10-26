@@ -271,8 +271,9 @@ step 6's E1.5(c) is the one Orin deploy. In order:
    Also from Phase 0: show joggers as "fast-moving person tracks" until E3.2
    (E0.7).
 
-   Also outstanding: upload the production `uk_make_0929_b6` to a new GitHub
-   Release (see [Dev-box disaster recovery](#dev-box-disaster-recovery)).
+   The production `uk_make_0929_b6` is backed up as GitHub Release
+   `models-2026-10-26` (2026-10-26; see
+   [Dev-box disaster recovery](#dev-box-disaster-recovery)).
 
 **Cloud sessions have no `output/`**, so they can only do code work there:
 - step 6.1's fixes;
@@ -1444,7 +1445,7 @@ imagery are deliberately kept out):
 | Operator-traced **scene geometry** (`.claude/{ghost_mask,snap_gate,triggers_proposal,road_polygon_user,road_zones,road_polygon,reolink_isp_current}.json` + `sketch_me_done.png`) | **In repo** (gitignore negations)                                    | Irreplaceable without the physical camera + operator re-sketch + weeks of band re-tuning |
 | **Analysis / measurement scripts** (`.claude/*.py` — verdict/band/eval/bakeoff/coverage)                                                                                          | **In repo**                                                          | Re-derive methodology from scratch                                                       |
 | **Small inference models** (`bodytype_b0.pt` 16 MB, ALPR `license_plate_detector.pt` 6 MB) + all `*.meta.json` sidecars                                                           | **In repo**                                                          | 12 h train / hard to reacquire                                                           |
-| **Production make model** `makemodel_b0.pt` (164 MB, B6)                                                                                                                          | **GitHub Release `models-2026-07-09`** holds the OLD 0707 B6; production since 2026-10-01 is `uk_make_0929_b6`, **not yet uploaded** — add a new release | ~1.5 days train on a months-built corpus                                                 |
+| **Production make model** `makemodel_b0.pt` (164 MB, B6)                                                                                                                          | **GitHub Release `models-2026-10-26`** holds production `uk_make_0929_b6` (SHA-256 `f660a9eb…`); `models-2026-07-09` holds the older 0707 B6 | ~1.5 days train on a months-built corpus                                                 |
 
 Still **NOT** in GitHub — keep a private/external backup (too big, or
 PII, or secret):
