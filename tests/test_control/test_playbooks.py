@@ -280,9 +280,20 @@ def test_build_playbook_roll(tmp_path: Path) -> None:
 
 
 def test_build_playbook_promote(tmp_path: Path) -> None:
-    label, steps = build_playbook("promote", _ctx(tmp_path))
+    ctx = _ctx(tmp_path)
+    label, steps = build_playbook("promote", ctx)
     assert "Promote" in label
-    assert len(steps) == 1 and steps[0].action is not None
+    assert len(steps) == 2 and steps[0].action is not None  # backup + swap + sidecar
+    # ...then the off-box backup: the make model is too big to commit.
+    assert steps[1].job is not None and steps[1].job.kind == "model-release"
+    assert steps[1].job.args == ["--model", str(ctx.model_path)]
+
+
+def test_model_release_is_a_panel_job_kind() -> None:
+    """Allowed alone too, so a failed upload can be retried from the panel."""
+    from streettracker.control.server import ALLOWED_JOB_KINDS
+
+    assert "model-release" in ALLOWED_JOB_KINDS
 
 
 def test_build_playbook_errors(tmp_path: Path) -> None:

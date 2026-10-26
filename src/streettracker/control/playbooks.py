@@ -531,10 +531,24 @@ def _run_corpus(run: introspect.TrainingRunInfo, runs_dir: Path) -> introspect.C
 
 
 def promote_steps(ctx: PlaybookContext, run_name: str | None = None) -> list[Step]:
+    """Swap the model in, then back it up as a GitHub Release.
+
+    The make model is over GitHub's 100 MB file limit, so it can't be
+    committed, and a Release is its only off-box copy. Promotion used to stop
+    at the swap, and production ran a month ahead of its only backup (fixed
+    by hand on 2026-10-26). If the release fails, the promote has already
+    happened: re-run ``model-release`` alone (it is idempotent)."""
+
     async def act() -> StepResult:
         return await asyncio.to_thread(promote_model, ctx, run_name)
 
-    return [Step("Promote model (backup + swap + sidecar)", action=act)]
+    return [
+        Step("Promote model (backup + swap + sidecar)", action=act),
+        Step(
+            "Back up as a public GitHub Release",
+            job=JobSpec("model-release", ["--model", str(ctx.model_path)]),
+        ),
+    ]
 
 
 # /api/refresh rebuilds every session's vehicle aggregation, so it can take well
