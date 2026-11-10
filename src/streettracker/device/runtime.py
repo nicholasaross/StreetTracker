@@ -59,6 +59,7 @@ from streettracker.common.door_zone import DoorZone
 from streettracker.common.hourly import build_hourly_rollup
 from streettracker.common.output import EventLog, IREventLog, format_wall, save_json
 from streettracker.common.schema import IRPeriod, SessionMeta, TrackRecord
+from streettracker.common.session_files import SessionFiles
 from streettracker.common.summary import generate_html
 from streettracker.device.dashboard import Dashboard, start_dashboard
 from streettracker.device.ir_detector import IRDetector
@@ -224,17 +225,17 @@ def make_session_label(prefix: str, t_start_wall: float) -> str:
 
 def session_paths(output_root: Path, session_label: str) -> dict[str, Path]:
     """The file paths the runtime writes during / after a session."""
-    base = output_root / session_label
+    files = SessionFiles(output_root / session_label)
     return {
-        "dir": base,
-        "events_jsonl": base / f"{session_label}_events.jsonl",
-        "ir_events_jsonl": base / f"{session_label}_ir_events.jsonl",
-        "trajectories_jsonl": base / f"{session_label}_trajectories.jsonl",
-        "data_json": base / f"{session_label}_data.json",
-        "meta_json": base / f"{session_label}_meta.json",
-        "hourly_json": base / f"{session_label}_hourly.json",
-        "summary_html": base / f"{session_label}_summary.html",
-        "heartbeat": base / ".heartbeat",
+        "dir": files.session_dir,
+        "events_jsonl": files.events,
+        "ir_events_jsonl": files.ir_events,
+        "trajectories_jsonl": files.trajectories,
+        "data_json": files.data,
+        "meta_json": files.meta,
+        "hourly_json": files.hourly,
+        "summary_html": files.summary_html,
+        "heartbeat": files.session_dir / ".heartbeat",
     }
 
 

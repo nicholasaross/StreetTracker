@@ -30,7 +30,6 @@ live.
 
 from __future__ import annotations
 
-import json
 import os
 from collections import Counter
 from collections.abc import Collection
@@ -46,6 +45,8 @@ from streettracker.analysis.vehicles import (
     build_vehicles,
     make_distinct_vehicle_checker,
 )
+from streettracker.common.fileio import read_json
+from streettracker.common.session_files import SessionFiles
 from streettracker.web.classify import classify_vehicle
 
 
@@ -150,9 +151,7 @@ def discover_sessions(output_root: Path) -> list[Path]:
     name (chronological, since names are ``session_YYYYMMDD_HHMMSS``)."""
     if not output_root.is_dir():
         return []
-    return sorted(
-        d for d in output_root.iterdir() if d.is_dir() and (d / f"{d.name}_data.json").exists()
-    )
+    return sorted(d for d in output_root.iterdir() if d.is_dir() and SessionFiles(d).data.exists())
 
 
 def _load_dvsa_extras(session_dir: Path) -> dict[str, dict[str, Any]]:
@@ -160,26 +159,16 @@ def _load_dvsa_extras(session_dir: Path) -> dict[str, dict[str, Any]]:
 
     The rows carry ``primary_colour`` / ``fuel_type`` / ``engine_size_cc`` in
     addition to make/model/year -- fields the ``Vehicle`` dataclass drops."""
-    path = session_dir / f"{session_dir.name}_dvsa_labels.json"
-    if not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    labels = payload.get("labels")
+    payload = read_json(SessionFiles(session_dir).dvsa_labels)
+    labels = payload.get("labels") if isinstance(payload, dict) else None
     return labels if isinstance(labels, dict) else {}
 
 
 def _load_colour_by_track(session_dir: Path) -> dict[int, str]:
     """Return ``{track_id -> CNN colour}`` from a session's
     ``_colour_by_track.json`` (confident tracks only), or ``{}``."""
-    path = session_dir / f"{session_dir.name}_colour_by_track.json"
-    if not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    payload = read_json(SessionFiles(session_dir).colour_by_track)
+    if not isinstance(payload, dict):
         return {}
     out: dict[int, str] = {}
     for t in payload.get("tracks", []):

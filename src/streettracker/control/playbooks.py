@@ -614,7 +614,7 @@ def sessions_needing_rescore(output_root: Path) -> list[Path]:
         d
         for d in introspect.discover_session_dirs(output_root)
         if (d / f"{d.name}_alpr.json").is_file()
-        and introspect.alpr_stamp(d, d.name, "ocr_conf") != OCR_CONF_METHOD
+        and introspect.alpr_stamp(d, "ocr_conf") != OCR_CONF_METHOD
     ]
 
 
@@ -653,7 +653,7 @@ def sessions_rescored(output_root: Path) -> list[Path]:
         d
         for d in introspect.discover_session_dirs(output_root)
         if (d / f"{d.name}_alpr.json").is_file()
-        and introspect.alpr_stamp(d, d.name, "ocr_conf") == OCR_CONF_METHOD
+        and introspect.alpr_stamp(d, "ocr_conf") == OCR_CONF_METHOD
     ]
 
 

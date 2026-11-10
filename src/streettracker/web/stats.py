@@ -55,6 +55,7 @@ from streettracker.analysis.alpr.gate import PlateGate, load_plate_support, plat
 from streettracker.analysis.dvsa import is_canonical_uk_plate
 from streettracker.analysis.makemodel.bodytype import body_type_for
 from streettracker.analysis.makemodel.colour import colour_class_for
+from streettracker.common.session_files import SessionFiles
 from streettracker.web.aggregate import discover_sessions, resolve_image_urls
 from streettracker.web.uk_makes import make_benchmark
 
@@ -536,8 +537,9 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:  
 
     for d in sessions:
         name = d.name
+        files = SessionFiles(d)
         try:
-            data = json.loads((d / f"{name}_data.json").read_text(encoding="utf-8"))
+            data = json.loads(files.data.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             data = []
 
@@ -554,7 +556,7 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:  
         track_body: dict[int, str] = {}
         track_colour: dict[int, str] = {}
         track_make: dict[int, str] = {}
-        dl = d / f"{name}_dvsa_labels.json"
+        dl = files.dvsa_labels
         if dl.exists():
             try:
                 labels = json.loads(dl.read_text(encoding="utf-8")).get("labels", {})
@@ -579,7 +581,7 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:  
                         track_colour[int(tid)] = col
                     if make:
                         track_make[int(tid)] = make.upper()
-        bp = d / f"{name}_bodytype_by_track.json"
+        bp = files.bodytype_by_track
         if bp.exists():
             try:
                 bt_tracks = json.loads(bp.read_text(encoding="utf-8")).get("tracks", [])
@@ -589,7 +591,7 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:  
                 tid, bt = t.get("track_id"), t.get("body_type")
                 if bt and tid is not None and tid not in track_body:  # DVSA wins
                     track_body[int(tid)] = bt
-        cp = d / f"{name}_colour_by_track.json"
+        cp = files.colour_by_track
         if cp.exists():
             try:
                 col_tracks = json.loads(cp.read_text(encoding="utf-8")).get("tracks", [])
@@ -672,7 +674,7 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:  
                     if cnn_col:
                         speeds_by_colour[cnn_col].append(sp)
 
-        pp = d / f"{name}_people.json"
+        pp = files.people
         if pp.exists():
             try:
                 pdoc = json.loads(pp.read_text(encoding="utf-8"))
@@ -920,7 +922,7 @@ def _build_fastest(
     # once per session involved.
     best_reads: dict[tuple[str, int], dict[str, Any]] = {}
     for sess in {s for _sp, s, _r in top}:
-        p = output_root / sess / f"{sess}_alpr_by_track.json"
+        p = SessionFiles(output_root / sess).alpr_by_track
         if not p.exists():
             continue
         try:

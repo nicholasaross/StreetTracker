@@ -23,7 +23,6 @@ only when no sidecar exists yet.
 
 from __future__ import annotations
 
-import contextlib
 import functools
 import json
 import re
@@ -34,7 +33,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from streettracker.common.fileio import atomic_write_json, read_json
+from streettracker.common.fileio import atomic_write_json, iter_jsonl, read_json
+from streettracker.common.session_files import SessionFiles
 from streettracker.control.orin import parse_session_start
 
 # ----------------------------------------------------------------------
@@ -237,11 +237,11 @@ def _count_snaps(session_dir: Path, prefix: str) -> int:
     return _by_mtime(session_dir, f"snapcount_{prefix}", _do) or 0
 
 
-def _track_counts(session_dir: Path, label: str) -> dict[str, Any]:
+def _track_counts(files: SessionFiles) -> dict[str, Any]:
     """Track totals + time span, parsed once per session (raw JSON, no
     dataclass construction — cheaper and forward-compatible)."""
-    data_path = session_dir / f"{label}_data.json"
-    events_path = session_dir / f"{label}_events.jsonl"
+    data_path = files.data
+    events_path = files.events
 
     def _from_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         starts = [r["time_start_unix"] for r in records if r.get("time_start_unix") is not None]
@@ -265,15 +265,10 @@ def _track_counts(session_dir: Path, label: str) -> dict[str, Any]:
     if events_path.is_file():
 
         def _do_ev() -> dict[str, Any]:
-            recs: list[dict[str, Any]] = []
             try:
-                for raw_line in events_path.read_text(encoding="utf-8").splitlines():
-                    line = raw_line.strip()
-                    if line:
-                        with contextlib.suppress(json.JSONDecodeError):
-                            recs.append(json.loads(line))
+                recs = list(iter_jsonl(events_path, on_torn=lambda _line_number, _exc: None))
             except OSError:
-                pass
+                recs = []
             return _from_records(recs)
 
         return _by_mtime(events_path, "trackcounts", _do_ev) or _empty_counts()
@@ -285,8 +280,8 @@ def _empty_counts() -> dict[str, Any]:
     return {"n_tracks": 0, "n_cars": 0, "n_persons": 0, "start_unix": None, "end_unix": None}
 
 
-def _dvsa_label_count(session_dir: Path, label: str) -> int:
-    path = session_dir / f"{label}_dvsa_labels.json"
+def _dvsa_label_count(files: SessionFiles) -> int:
+    path = files.dvsa_labels
     if not path.is_file():
         return 0
 
@@ -298,7 +293,7 @@ def _dvsa_label_count(session_dir: Path, label: str) -> int:
     return _by_mtime(path, "dvsacount", _do) or 0
 
 
-def alpr_stamp(session_dir: Path, label: str, key: str) -> str | None:
+def alpr_stamp(session_dir: Path, key: str) -> str | None:
     """One provenance stamp from ``<session>_static_plates.json``.
 
     The sidecar (written by alpr-run since the static filter shipped)
@@ -307,7 +302,7 @@ def alpr_stamp(session_dir: Path, label: str, key: str) -> str | None:
     or ``None`` when the sidecar or stamp is absent -- i.e. the session's
     ALPR predates that change.
     """
-    path = session_dir / f"{label}_static_plates.json"
+    path = SessionFiles(session_dir).static_plates
     if not path.is_file():
         return None
 
@@ -322,12 +317,13 @@ def alpr_stamp(session_dir: Path, label: str, key: str) -> str | None:
 def session_info(session_dir: Path) -> SessionInfo:
     """Build a :class:`SessionInfo` for one ``session_*`` directory."""
     label = session_dir.name
-    counts = _track_counts(session_dir, label)
+    files = SessionFiles(session_dir)
+    counts = _track_counts(files)
     start = counts["start_unix"]
     end = counts["end_unix"]
     # Prefer the meta's recorded session start (the true t0) over the first
     # finalised track; fall back to the label timestamp.
-    meta_path = session_dir / f"{label}_meta.json"
+    meta_path = files.meta
     if meta_path.is_file():
         meta = _by_mtime(meta_path, "metastart", lambda: _read_json(meta_path))
         if isinstance(meta, dict) and meta.get("session_start_unix") is not None:
@@ -347,15 +343,15 @@ def session_info(session_dir: Path) -> SessionInfo:
         n_persons=counts["n_persons"],
         n_vehicle_snaps=_count_snaps(session_dir, "vehicle"),
         n_person_snaps=_count_snaps(session_dir, "person"),
-        has_alpr=(session_dir / f"{label}_alpr_by_track.json").is_file(),
-        alpr_crop_mode=alpr_stamp(session_dir, label, "crop_mode"),
-        alpr_ocr_conf=alpr_stamp(session_dir, label, "ocr_conf"),
-        alpr_plate_colour=alpr_stamp(session_dir, label, "plate_colour"),
-        n_dvsa_labels=_dvsa_label_count(session_dir, label),
-        has_vehicles=(session_dir / f"{label}_vehicles.json").is_file(),
-        has_makemodel=(session_dir / f"{label}_makemodel_by_track.json").is_file(),
-        has_colour=(session_dir / f"{label}_colour_by_track.json").is_file(),
-        has_people=(session_dir / f"{label}_people.json").is_file(),
+        has_alpr=files.alpr_by_track.is_file(),
+        alpr_crop_mode=alpr_stamp(session_dir, "crop_mode"),
+        alpr_ocr_conf=alpr_stamp(session_dir, "ocr_conf"),
+        alpr_plate_colour=alpr_stamp(session_dir, "plate_colour"),
+        n_dvsa_labels=_dvsa_label_count(files),
+        has_vehicles=files.vehicles.is_file(),
+        has_makemodel=files.makemodel_by_track.is_file(),
+        has_colour=files.colour_by_track.is_file(),
+        has_people=files.people.is_file(),
     )
 
 
