@@ -6,9 +6,11 @@ per-record computation, and rewrites the JSONL + data.json + summary.html.
 Pattern documented in NanoTracker's `scripts/recolor_session.py`.
 """
 
-import sys as _sys
+# Plain `sys`, not an alias: mypy only recognises the platform guard below
+# (and skips the Windows-only `os.add_dll_directory`) in this exact spelling.
+import sys
 
-if _sys.platform == "win32":
+if sys.platform == "win32":
     # PyTorch's Windows cu126 wheels bundle the CUDA 12.6 runtime + cuDNN 9
     # DLLs under `torch/lib/`. ONNX Runtime's CUDAExecutionProvider needs
     # those DLLs on Windows' loader search path, but it only inspects PATH
