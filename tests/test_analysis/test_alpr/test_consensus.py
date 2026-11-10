@@ -98,7 +98,7 @@ def test_consensus_drops_minority_length_reads() -> None:
     reads = [
         _read(9, 1, "AB12CDE", 0.55),
         _read(9, 2, "AB12CDE", 0.55),
-        _read(9, 3, "ABCDEF", 0.95),    # different length -- dropped
+        _read(9, 3, "ABCDEF", 0.95),  # different length -- dropped
     ]
     out = consensus_plate(reads)
     assert out is not None
@@ -134,7 +134,7 @@ def test_consensus_by_track_groups_per_track_and_filters_pipeline() -> None:
         _read(1, 1, "PLATE1", 0.55, pipeline="preferred"),
         _read(1, 2, "PLATE1", 0.55, pipeline="preferred"),
         _read(2, 1, "PLATE2", 0.10, pipeline="preferred"),  # below floor
-        _read(3, 1, "BESPOKE", 0.99, pipeline="bespoke"),   # wrong pipeline
+        _read(3, 1, "BESPOKE", 0.99, pipeline="bespoke"),  # wrong pipeline
         _read(4, 1, "PLATE4", 0.40, pipeline="preferred"),
     ]
     out = consensus_by_track(records, pipeline="preferred")
@@ -216,8 +216,8 @@ def test_sum_logprobs_argmax_handles_missing_classes_per_snap() -> None:
     """Different snaps can carry different label sets; missing classes
     are treated as -inf log-prob for that snap."""
     snaps = [
-        _logp({"sedan": 0.7, "SUV": 0.3}),       # snap A: no van column
-        _logp({"sedan": 0.5, "van": 0.5}),       # snap B: no SUV column
+        _logp({"sedan": 0.7, "SUV": 0.3}),  # snap A: no van column
+        _logp({"sedan": 0.5, "van": 0.5}),  # snap B: no SUV column
         _logp({"sedan": 0.9, "SUV": 0.05, "van": 0.05}),
     ]
     result = sum_logprobs_argmax(snaps)

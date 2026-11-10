@@ -110,7 +110,7 @@ def cross_pipeline_agreement(records: list[dict]) -> dict[str, float]:
     pipelines_sorted = sorted(pipelines)
     out: dict[str, float] = {}
     for i, a in enumerate(pipelines_sorted):
-        for b in pipelines_sorted[i + 1:]:
+        for b in pipelines_sorted[i + 1 :]:
             exact, canon, total = 0, 0, 0
             for reads in by_image.values():
                 ta, tb = reads.get(a), reads.get(b)
@@ -127,9 +127,7 @@ def cross_pipeline_agreement(records: list[dict]) -> dict[str, float]:
     return out
 
 
-def label_based_accuracy(
-    records: list[dict], labels: dict[str, dict]
-) -> dict[str, dict]:
+def label_based_accuracy(records: list[dict], labels: dict[str, dict]) -> dict[str, dict]:
     """Per-pipeline exact / canonical accuracy + mean edit distance.
 
     Only counts images where the user labeled a real plate string (not
@@ -174,9 +172,7 @@ def label_based_accuracy(
     return summary
 
 
-def per_track_best_of_n(
-    records: list[dict], labels: dict[str, dict]
-) -> dict[str, dict]:
+def per_track_best_of_n(records: list[dict], labels: dict[str, dict]) -> dict[str, dict]:
     """Per-pipeline "did any snap of this track produce the correct
     plate?" rate.
 

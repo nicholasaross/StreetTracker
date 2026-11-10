@@ -155,9 +155,7 @@ def recolor_session(session_dir: Path) -> RecolorStats:
         html_path = html_paths[0]
         html = html_path.read_text(encoding="utf-8")
         new_blob = json.dumps([_embedded_row(r) for r in records], separators=(",", ":"))
-        new_html, n = _EMBEDDED_JSON_RE.subn(
-            lambda m: m.group(1) + new_blob + m.group(3), html
-        )
+        new_html, n = _EMBEDDED_JSON_RE.subn(lambda m: m.group(1) + new_blob + m.group(3), html)
         if n == 1:
             _atomic_write(html_path, new_html)
         # else: leave HTML untouched; the summary will catch up on next

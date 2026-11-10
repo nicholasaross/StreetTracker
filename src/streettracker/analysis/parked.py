@@ -219,9 +219,7 @@ def detect_parked(
             }
             counted = tids - self_hosts
             moving = {
-                t
-                for t in counted
-                if (recs.get(t, {}).get("speed_px_s") or 0.0) >= moving_speed_min
+                t for t in counted if (recs.get(t, {}).get("speed_px_s") or 0.0) >= moving_speed_min
             }
             if len(moving) < min_tracks:
                 continue

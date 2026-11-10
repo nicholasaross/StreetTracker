@@ -164,9 +164,7 @@ class _State:
         """Session names added or changed on disk since the cached view was
         built -- i.e. what a refresh would pick up. Empty when up to date."""
         current = _session_fingerprint(self.output_root)
-        return sorted(
-            name for name, mtime in current.items() if self._disk_fp.get(name) != mtime
-        )
+        return sorted(name for name, mtime in current.items() if self._disk_fp.get(name) != mtime)
 
     def reaggregate(self) -> None:
         """Synchronous full rebuild. Used at startup, before the event loop

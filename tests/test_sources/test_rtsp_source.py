@@ -30,5 +30,6 @@ def test_rtsp_source_satisfies_protocol() -> None:
 def test_frames_without_open_raises() -> None:
     src = RtspSource("rtsp://example/feed")
     import pytest
+
     with pytest.raises(RuntimeError, match="not opened"):
         next(src.frames())

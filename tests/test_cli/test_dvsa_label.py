@@ -47,22 +47,34 @@ def test_collect_plate_requests_groups_split_tracks() -> None:
             {
                 "track_id": 1,
                 "best_preferred": {
-                    "track_id": 1, "snap_index": 1, "image": "x.jpg",
-                    "ocr_text": "AE13SJX", "ocr_conf": 0.99, "det_conf": 0.9,
+                    "track_id": 1,
+                    "snap_index": 1,
+                    "image": "x.jpg",
+                    "ocr_text": "AE13SJX",
+                    "ocr_conf": 0.99,
+                    "det_conf": 0.9,
                 },
             },
             {
                 "track_id": 2,
                 "best_preferred": {
-                    "track_id": 2, "snap_index": 1, "image": "y.jpg",
-                    "ocr_text": "AE13SJX", "ocr_conf": 0.95, "det_conf": 0.9,
+                    "track_id": 2,
+                    "snap_index": 1,
+                    "image": "y.jpg",
+                    "ocr_text": "AE13SJX",
+                    "ocr_conf": 0.95,
+                    "det_conf": 0.9,
                 },
             },
             {
                 "track_id": 3,
                 "best_preferred": {
-                    "track_id": 3, "snap_index": 1, "image": "z.jpg",
-                    "ocr_text": "LD22BMG", "ocr_conf": 0.97, "det_conf": 0.9,
+                    "track_id": 3,
+                    "snap_index": 1,
+                    "image": "z.jpg",
+                    "ocr_text": "LD22BMG",
+                    "ocr_conf": 0.97,
+                    "det_conf": 0.9,
                 },
             },
         ]
@@ -82,15 +94,23 @@ def test_collect_plate_requests_drops_below_threshold() -> None:
             {
                 "track_id": 1,
                 "best_preferred": {
-                    "track_id": 1, "snap_index": 1, "image": "x.jpg",
-                    "ocr_text": "AE13SJX", "ocr_conf": 0.85, "det_conf": 0.9,
+                    "track_id": 1,
+                    "snap_index": 1,
+                    "image": "x.jpg",
+                    "ocr_text": "AE13SJX",
+                    "ocr_conf": 0.85,
+                    "det_conf": 0.9,
                 },
             },
             {
                 "track_id": 2,
                 "best_preferred": {
-                    "track_id": 2, "snap_index": 1, "image": "y.jpg",
-                    "ocr_text": "LD22BMG", "ocr_conf": 0.95, "det_conf": 0.9,
+                    "track_id": 2,
+                    "snap_index": 1,
+                    "image": "y.jpg",
+                    "ocr_text": "LD22BMG",
+                    "ocr_conf": 0.95,
+                    "det_conf": 0.9,
                 },
             },
         ]
@@ -107,15 +127,23 @@ def test_collect_plate_requests_normalises_plate_string() -> None:
             {
                 "track_id": 1,
                 "best_preferred": {
-                    "track_id": 1, "snap_index": 1, "image": "x.jpg",
-                    "ocr_text": "ae13 sjx", "ocr_conf": 0.99, "det_conf": 0.9,
+                    "track_id": 1,
+                    "snap_index": 1,
+                    "image": "x.jpg",
+                    "ocr_text": "ae13 sjx",
+                    "ocr_conf": 0.99,
+                    "det_conf": 0.9,
                 },
             },
             {
                 "track_id": 2,
                 "best_preferred": {
-                    "track_id": 2, "snap_index": 1, "image": "y.jpg",
-                    "ocr_text": "AE13SJX", "ocr_conf": 0.95, "det_conf": 0.9,
+                    "track_id": 2,
+                    "snap_index": 1,
+                    "image": "y.jpg",
+                    "ocr_text": "AE13SJX",
+                    "ocr_conf": 0.95,
+                    "det_conf": 0.9,
                 },
             },
         ]
@@ -141,22 +169,34 @@ def test_collect_plate_requests_skips_non_canonical_by_default() -> None:
             {
                 "track_id": 1,
                 "best_preferred": {
-                    "track_id": 1, "snap_index": 1, "image": "x.jpg",
-                    "ocr_text": "AE13SJX", "ocr_conf": 0.99, "det_conf": 0.9,
+                    "track_id": 1,
+                    "snap_index": 1,
+                    "image": "x.jpg",
+                    "ocr_text": "AE13SJX",
+                    "ocr_conf": 0.99,
+                    "det_conf": 0.9,
                 },
             },
             {
                 "track_id": 2,
                 "best_preferred": {
-                    "track_id": 2, "snap_index": 1, "image": "y.jpg",
-                    "ocr_text": "123889", "ocr_conf": 0.99, "det_conf": 0.9,
+                    "track_id": 2,
+                    "snap_index": 1,
+                    "image": "y.jpg",
+                    "ocr_text": "123889",
+                    "ocr_conf": 0.99,
+                    "det_conf": 0.9,
                 },
             },
             {
                 "track_id": 3,
                 "best_preferred": {
-                    "track_id": 3, "snap_index": 1, "image": "z.jpg",
-                    "ocr_text": "1157WHT", "ocr_conf": 0.95, "det_conf": 0.9,
+                    "track_id": 3,
+                    "snap_index": 1,
+                    "image": "z.jpg",
+                    "ocr_text": "1157WHT",
+                    "ocr_conf": 0.95,
+                    "det_conf": 0.9,
                 },
             },
         ]
@@ -174,8 +214,12 @@ def test_collect_plate_requests_include_non_canonical_keeps_everything() -> None
             {
                 "track_id": 1,
                 "best_preferred": {
-                    "track_id": 1, "snap_index": 1, "image": "y.jpg",
-                    "ocr_text": "123889", "ocr_conf": 0.99, "det_conf": 0.9,
+                    "track_id": 1,
+                    "snap_index": 1,
+                    "image": "y.jpg",
+                    "ocr_text": "123889",
+                    "ocr_conf": 0.99,
+                    "det_conf": 0.9,
                 },
             },
         ]
@@ -195,8 +239,12 @@ def test_collect_plate_requests_accepts_prefix_format() -> None:
             {
                 "track_id": 1,
                 "best_preferred": {
-                    "track_id": 1, "snap_index": 1, "image": "x.jpg",
-                    "ocr_text": "X123ABC", "ocr_conf": 0.99, "det_conf": 0.9,
+                    "track_id": 1,
+                    "snap_index": 1,
+                    "image": "x.jpg",
+                    "ocr_text": "X123ABC",
+                    "ocr_conf": 0.99,
+                    "det_conf": 0.9,
                 },
             },
         ]
@@ -214,8 +262,12 @@ def test_collect_plate_requests_accepts_suffix_format() -> None:
             {
                 "track_id": 1,
                 "best_preferred": {
-                    "track_id": 1, "snap_index": 1, "image": "x.jpg",
-                    "ocr_text": "ABC123X", "ocr_conf": 0.99, "det_conf": 0.9,
+                    "track_id": 1,
+                    "snap_index": 1,
+                    "image": "x.jpg",
+                    "ocr_text": "ABC123X",
+                    "ocr_conf": 0.99,
+                    "det_conf": 0.9,
                 },
             },
         ]
@@ -260,15 +312,23 @@ def _write_minimal_session(tmp_path: Path) -> Path:
                     {
                         "track_id": 1,
                         "best_preferred": {
-                            "track_id": 1, "snap_index": 1, "image": "x.jpg",
-                            "ocr_text": "AE13SJX", "ocr_conf": 0.99, "det_conf": 0.9,
+                            "track_id": 1,
+                            "snap_index": 1,
+                            "image": "x.jpg",
+                            "ocr_text": "AE13SJX",
+                            "ocr_conf": 0.99,
+                            "det_conf": 0.9,
                         },
                     },
                     {
                         "track_id": 2,
                         "best_preferred": {
-                            "track_id": 2, "snap_index": 1, "image": "y.jpg",
-                            "ocr_text": "LD22BMG", "ocr_conf": 0.97, "det_conf": 0.9,
+                            "track_id": 2,
+                            "snap_index": 1,
+                            "image": "y.jpg",
+                            "ocr_text": "LD22BMG",
+                            "ocr_conf": 0.97,
+                            "det_conf": 0.9,
                         },
                     },
                 ]
@@ -456,15 +516,23 @@ def test_main_records_skipped_non_canonical_in_output(tmp_path: Path) -> None:
                     {
                         "track_id": 1,
                         "best_preferred": {
-                            "track_id": 1, "snap_index": 1, "image": "x.jpg",
-                            "ocr_text": "AE13SJX", "ocr_conf": 0.99, "det_conf": 0.9,
+                            "track_id": 1,
+                            "snap_index": 1,
+                            "image": "x.jpg",
+                            "ocr_text": "AE13SJX",
+                            "ocr_conf": 0.99,
+                            "det_conf": 0.9,
                         },
                     },
                     {
                         "track_id": 2,
                         "best_preferred": {
-                            "track_id": 2, "snap_index": 1, "image": "y.jpg",
-                            "ocr_text": "123889", "ocr_conf": 0.99, "det_conf": 0.9,
+                            "track_id": 2,
+                            "snap_index": 1,
+                            "image": "y.jpg",
+                            "ocr_text": "123889",
+                            "ocr_conf": 0.99,
+                            "det_conf": 0.9,
                         },
                     },
                 ]
@@ -513,8 +581,12 @@ def test_main_include_non_canonical_flag_queries_garbage(tmp_path: Path) -> None
                     {
                         "track_id": 1,
                         "best_preferred": {
-                            "track_id": 1, "snap_index": 1, "image": "y.jpg",
-                            "ocr_text": "123889", "ocr_conf": 0.99, "det_conf": 0.9,
+                            "track_id": 1,
+                            "snap_index": 1,
+                            "image": "y.jpg",
+                            "ocr_text": "123889",
+                            "ocr_conf": 0.99,
+                            "det_conf": 0.9,
                         },
                     },
                 ]
@@ -539,9 +611,7 @@ def test_main_include_non_canonical_flag_queries_garbage(tmp_path: Path) -> None
     with patch("streettracker.cli.dvsa_label.DvsaClient") as cls:
         client = cls.return_value
         client.lookup_plate.return_value = None  # plate genuinely not on register
-        dvsa_label.main(
-            [str(session), "--config", str(cfg), "--include-non-canonical"]
-        )
+        dvsa_label.main([str(session), "--config", str(cfg), "--include-non-canonical"])
         assert client.lookup_plate.call_count == 1
 
     payload = json.loads((session / "session_demo_dvsa_labels.json").read_text())
@@ -560,9 +630,12 @@ def test_collect_plate_requests_parked_suppression() -> None:
 
     def _read(tid: int, snap: int, text: str, conf: float) -> dict:
         return {
-            "track_id": tid, "snap_index": snap,
+            "track_id": tid,
+            "snap_index": snap,
             "image": f"vehicle_{tid}_main_{snap}.jpg",
-            "ocr_text": text, "ocr_conf": conf, "det_conf": 0.9,
+            "ocr_text": text,
+            "ocr_conf": conf,
+            "det_conf": 0.9,
         }
 
     def _track(tid: int, snap: int) -> dict:
@@ -589,11 +662,11 @@ def test_collect_plate_requests_parked_suppression() -> None:
     )
 
     by_plate = {r.plate: r for r in requests_}
-    assert by_plate["LX19PXR"].track_ids == [9]   # only the genuine read
-    assert by_plate["AB12CDE"].track_ids == [1]   # re-anchored to own plate
+    assert by_plate["LX19PXR"].track_ids == [9]  # only the genuine read
+    assert by_plate["AB12CDE"].track_ids == [1]  # re-anchored to own plate
     assert skipped == []
     all_tids = [t for r in requests_ for t in r.track_ids]
-    assert 2 not in all_tids                      # nothing genuine left -> dropped
+    assert 2 not in all_tids  # nothing genuine left -> dropped
 
 
 def test_main_clears_track_ids_on_orphaned_labelled_plates(tmp_path: Path) -> None:
@@ -613,14 +686,20 @@ def test_main_clears_track_ids_on_orphaned_labelled_plates(tmp_path: Path) -> No
             {
                 "labels": {
                     "ZZ99ZZZ": {
-                        "plate": "ZZ99ZZZ", "plate_conf": 0.99,
+                        "plate": "ZZ99ZZZ",
+                        "plate_conf": 0.99,
                         "track_ids": [101, 102, 103],
-                        "make": "DACIA", "model": "DUSTER", "year": 2019,
+                        "make": "DACIA",
+                        "model": "DUSTER",
+                        "year": 2019,
                     },
                     "AE13SJX": {
-                        "plate": "AE13SJX", "plate_conf": 0.99,
+                        "plate": "AE13SJX",
+                        "plate_conf": 0.99,
                         "track_ids": [55],
-                        "make": "PORSCHE", "model": "911", "year": 2013,
+                        "make": "PORSCHE",
+                        "model": "911",
+                        "year": 2013,
                     },
                 },
                 "unknown": [],
@@ -637,8 +716,8 @@ def test_main_clears_track_ids_on_orphaned_labelled_plates(tmp_path: Path) -> No
     assert rc == 0
     payload = json.loads(out_path.read_text())
     orphan = payload["labels"]["ZZ99ZZZ"]
-    assert orphan["track_ids"] == []              # attributions scrubbed
-    assert orphan["make"] == "DACIA"              # DVSA data retained
+    assert orphan["track_ids"] == []  # attributions scrubbed
+    assert orphan["make"] == "DACIA"  # DVSA data retained
     # The still-present plate's track_ids reflect the current rollup.
     assert payload["labels"]["AE13SJX"]["track_ids"] == [1]
 

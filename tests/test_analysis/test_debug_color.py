@@ -39,7 +39,7 @@ def test_analyze_solid_white(tmp_path: Path) -> None:
 
 def test_analyze_tiny_crop_returns_unknown(tmp_path: Path) -> None:
     p = tmp_path / "tiny.jpg"
-    _write_solid(p, 30, 30, (0, 0, 255))   # too small to vote
+    _write_solid(p, 30, 30, (0, 0, 255))  # too small to vote
     a = analyze_crop(p)
     assert a.result == "unknown"
     assert "min" in a.rule

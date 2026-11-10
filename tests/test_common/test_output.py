@@ -19,26 +19,20 @@ from streettracker.common.output import (
 from streettracker.common.schema import SessionMeta, TrackRecord
 
 
-def test_event_log_appends_one_line_per_record(
-    tmp_path: Path, sample_track: TrackRecord
-) -> None:
+def test_event_log_appends_one_line_per_record(tmp_path: Path, sample_track: TrackRecord) -> None:
     log_path = tmp_path / "events.jsonl"
     with EventLog(log_path) as log:
         log.append(sample_track)
         log.append(sample_track)
         log.append(sample_track)
     assert log.count == 3
-    lines = [
-        l for l in log_path.read_text().splitlines() if l.strip()  # noqa: E741
-    ]
+    lines = [line for line in log_path.read_text().splitlines() if line.strip()]
     assert len(lines) == 3
     parsed = json.loads(lines[0])
     assert parsed["track_id"] == sample_track.track_id
 
 
-def test_event_log_appends_to_existing_file(
-    tmp_path: Path, sample_track: TrackRecord
-) -> None:
+def test_event_log_appends_to_existing_file(tmp_path: Path, sample_track: TrackRecord) -> None:
     log_path = tmp_path / "events.jsonl"
     with EventLog(log_path) as log:
         log.append(sample_track)
@@ -64,9 +58,7 @@ def test_save_data_json_round_trip(tmp_path: Path, sample_track: TrackRecord) ->
     assert back[0] == sample_track
 
 
-def test_save_meta_json_round_trip(
-    tmp_path: Path, sample_session_meta: SessionMeta
-) -> None:
+def test_save_meta_json_round_trip(tmp_path: Path, sample_session_meta: SessionMeta) -> None:
     p = tmp_path / "meta.json"
     save_meta_json(sample_session_meta, p)
     parsed = json.loads(p.read_text())
@@ -85,9 +77,7 @@ def test_save_json_writes_both(
     assert meta.exists()
 
 
-def test_read_events_jsonl_skips_blank_lines(
-    tmp_path: Path, sample_track: TrackRecord
-) -> None:
+def test_read_events_jsonl_skips_blank_lines(tmp_path: Path, sample_track: TrackRecord) -> None:
     p = tmp_path / "events.jsonl"
     with EventLog(p) as log:
         log.append(sample_track)

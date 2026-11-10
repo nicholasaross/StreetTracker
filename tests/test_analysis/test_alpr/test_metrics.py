@@ -15,9 +15,9 @@ class TestLevenshtein:
         [
             ("", "", 0),
             ("ABC", "ABC", 0),
-            ("ABC", "ABD", 1),     # one substitution
-            ("ABC", "AC", 1),      # one deletion
-            ("AC", "ABC", 1),      # one insertion
+            ("ABC", "ABD", 1),  # one substitution
+            ("ABC", "AC", 1),  # one deletion
+            ("AC", "ABC", 1),  # one insertion
             ("", "ABC", 3),
             ("ABC", "", 3),
             ("KITTEN", "SITTING", 3),  # textbook example
@@ -58,8 +58,16 @@ class TestPlateMatch:
 # ---------------------------------------------------------- aggregate metrics
 
 
-def _rec(image: str, pipeline: str, *, det: bool = True, ocr: str | None = None,
-         track_id: int = 1, snap_index: int = 1, ocr_conf: float | None = None) -> dict:
+def _rec(
+    image: str,
+    pipeline: str,
+    *,
+    det: bool = True,
+    ocr: str | None = None,
+    track_id: int = 1,
+    snap_index: int = 1,
+    ocr_conf: float | None = None,
+) -> dict:
     """Factory for synthetic ALPR records used across the aggregator tests."""
     return {
         "image": image,
@@ -109,11 +117,11 @@ class TestCrossPipelineAgreement:
     def test_exact_and_canon(self) -> None:
         records = [
             _rec("a.jpg", "bespoke", ocr="ABC123"),
-            _rec("a.jpg", "preferred", ocr="ABC123"),   # exact match
+            _rec("a.jpg", "preferred", ocr="ABC123"),  # exact match
             _rec("b.jpg", "bespoke", ocr="ABCO23"),
-            _rec("b.jpg", "preferred", ocr="ABC023"),   # canon match only
+            _rec("b.jpg", "preferred", ocr="ABC023"),  # canon match only
             _rec("c.jpg", "bespoke", ocr="XYZ"),
-            _rec("c.jpg", "preferred", ocr="QQQ"),      # disagreement
+            _rec("c.jpg", "preferred", ocr="QQQ"),  # disagreement
         ]
         agg = metrics.cross_pipeline_agreement(records)
         assert agg["bespoke_vs_preferred_overlap_n"] == 3
@@ -135,7 +143,7 @@ class TestLabelBasedAccuracy:
         records = [
             _rec("vehicle_1_main_1.jpg", "bespoke", ocr="ABC123"),
             _rec("vehicle_2_main_1.jpg", "bespoke", ocr="ABCO23"),  # O vs 0
-            _rec("vehicle_3_main_1.jpg", "bespoke", ocr="ZZZZ"),    # totally wrong
+            _rec("vehicle_3_main_1.jpg", "bespoke", ocr="ZZZZ"),  # totally wrong
         ]
         labels = {
             "vehicle_1_main_1.jpg": {"plate": "ABC123"},

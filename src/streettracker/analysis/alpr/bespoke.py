@@ -56,9 +56,7 @@ class BespokeDetector:
         del bbox_hint
         import numpy as np
 
-        results = self._yolo.predict(
-            image, imgsz=self._imgsz, conf=self._det_conf, verbose=False
-        )
+        results = self._yolo.predict(image, imgsz=self._imgsz, conf=self._det_conf, verbose=False)
         best: PlateDetection | None = None
         for r in results:
             if r.boxes is None or len(r.boxes) == 0:

@@ -68,9 +68,7 @@ def consensus_plate(
         }
     """
     eligible = [
-        r for r in reads
-        if r.get("ocr_text")
-        and (r.get("ocr_conf") or 0.0) >= min_input_conf
+        r for r in reads if r.get("ocr_text") and (r.get("ocr_conf") or 0.0) >= min_input_conf
     ]
     if not eligible:
         return None
@@ -97,9 +95,7 @@ def consensus_plate(
             return None
         # max with deterministic tie-break by character ordinal so the
         # output is stable across CPython runs.
-        winner_char = max(
-            char_weight.items(), key=lambda kv: (kv[1], -ord(kv[0]))
-        )[0]
+        winner_char = max(char_weight.items(), key=lambda kv: (kv[1], -ord(kv[0])))[0]
         consensus_chars.append(winner_char)
         vote_shares.append(char_weight[winner_char] / total)
 
@@ -110,8 +106,10 @@ def consensus_plate(
     for share in vote_shares:
         # share > 0 guaranteed above.
         from math import log
+
         log_sum += log(share)
     from math import exp
+
     consensus_conf = exp(log_sum / target_len)
 
     # Find the highest-conf input read that MATCHES the consensus

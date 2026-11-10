@@ -188,7 +188,12 @@ def test_window_ignores_done_index_without_entry(tmp_path: Path) -> None:
     sess, idx, sub = _window_session(tmp_path, bboxes)
 
     hint = resolve_bbox_hint_window(
-        sess / "vehicle_7_main_2.jpg", 7, 2, idx, sub, lookahead=3,
+        sess / "vehicle_7_main_2.jpg",
+        7,
+        2,
+        idx,
+        sub,
+        lookahead=3,
         done_index={(7, 99): (0, 0, 10, 10)},
     )
 
@@ -219,9 +224,7 @@ def test_load_done_bbox_index_reads_parallel_field(tmp_path: Path) -> None:
 def test_load_done_bbox_index_empty_for_older_sessions(tmp_path: Path) -> None:
     """Sessions written before the field existed yield an empty map --
     callers fall back to fire-time windows."""
-    sess, idx, sub = _window_session(
-        tmp_path, [[200, 100, 280, 140], [160, 100, 240, 140]]
-    )
+    sess, idx, sub = _window_session(tmp_path, [[200, 100, 280, 140], [160, 100, 240, 140]])
     assert load_done_bbox_index(sess) == {}
 
 

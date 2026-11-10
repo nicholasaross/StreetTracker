@@ -58,12 +58,13 @@ def vehicle_snap(tmp_path: Path) -> Path:
 
 def test_run_imread_failure_records_error(tmp_path: Path) -> None:
     missing = tmp_path / "does_not_exist.jpg"
-    runner = PipelineRunner(
-        "fake", _FakeDetector(detection=None), _FakeRecognizer(read=None)
-    )
+    runner = PipelineRunner("fake", _FakeDetector(detection=None), _FakeRecognizer(read=None))
     res = runner.run(
-        image_path=missing, track_id=1, snap_index=1,
-        class_name="vehicle", crop_out_dir=tmp_path / "crops",
+        image_path=missing,
+        track_id=1,
+        snap_index=1,
+        class_name="vehicle",
+        crop_out_dir=tmp_path / "crops",
     )
     assert res.error == "imread_failed"
     assert res.detection is None
@@ -71,12 +72,13 @@ def test_run_imread_failure_records_error(tmp_path: Path) -> None:
 
 
 def test_run_no_detection_returns_no_error(vehicle_snap: Path, tmp_path: Path) -> None:
-    runner = PipelineRunner(
-        "fake", _FakeDetector(detection=None), _FakeRecognizer(read=None)
-    )
+    runner = PipelineRunner("fake", _FakeDetector(detection=None), _FakeRecognizer(read=None))
     res = runner.run(
-        image_path=vehicle_snap, track_id=1, snap_index=1,
-        class_name="vehicle", crop_out_dir=tmp_path / "crops",
+        image_path=vehicle_snap,
+        track_id=1,
+        snap_index=1,
+        class_name="vehicle",
+        crop_out_dir=tmp_path / "crops",
     )
     assert res.error is None
     assert res.detection is None
@@ -88,16 +90,17 @@ def test_run_no_detection_returns_no_error(vehicle_snap: Path, tmp_path: Path) -
     assert res.pipeline_ms == 0.0
 
 
-def test_run_detection_and_read_persists_crop(
-    vehicle_snap: Path, tmp_path: Path
-) -> None:
+def test_run_detection_and_read_persists_crop(vehicle_snap: Path, tmp_path: Path) -> None:
     det = PlateDetection(bbox=(40, 80, 160, 120), det_confidence=0.92)
     read = PlateRead(text="ABC123", ocr_confidence=0.88, raw_text="ABC 123")
     crops = tmp_path / "crops"
     runner = PipelineRunner("fake", _FakeDetector(det), _FakeRecognizer(read))
     res = runner.run(
-        image_path=vehicle_snap, track_id=42, snap_index=2,
-        class_name="vehicle", crop_out_dir=crops,
+        image_path=vehicle_snap,
+        track_id=42,
+        snap_index=2,
+        class_name="vehicle",
+        crop_out_dir=crops,
     )
     assert res.error is None
     assert res.detection is det
@@ -115,12 +118,13 @@ def test_run_detection_and_read_persists_crop(
 def test_run_detector_exception_surfaces_into_error_field(
     vehicle_snap: Path, tmp_path: Path
 ) -> None:
-    runner = PipelineRunner(
-        "boom", _ExplodingDetector(), _FakeRecognizer(read=None)
-    )
+    runner = PipelineRunner("boom", _ExplodingDetector(), _FakeRecognizer(read=None))
     res = runner.run(
-        image_path=vehicle_snap, track_id=1, snap_index=1,
-        class_name="vehicle", crop_out_dir=tmp_path / "crops",
+        image_path=vehicle_snap,
+        track_id=1,
+        snap_index=1,
+        class_name="vehicle",
+        crop_out_dir=tmp_path / "crops",
     )
     assert res.error is not None
     assert "RuntimeError" in res.error
@@ -155,8 +159,11 @@ def test_run_ghost_rects_zero_image_before_detect(tmp_path: Path) -> None:
 
     runner = PipelineRunner("fake", _PeekDetector(), _FakeRecognizer(read=None))
     runner.run(
-        image_path=p, track_id=1, snap_index=1,
-        class_name="vehicle", crop_out_dir=tmp_path / "crops",
+        image_path=p,
+        track_id=1,
+        snap_index=1,
+        class_name="vehicle",
+        crop_out_dir=tmp_path / "crops",
         ghost_rects=[(750, 700, 960, 860)],
         ghost_source_size=(3840, 2160),
     )
@@ -187,8 +194,11 @@ def test_run_ghost_rects_without_source_size_uses_raw_coords(
 
     runner = PipelineRunner("fake", _PeekDetector(), _FakeRecognizer(read=None))
     runner.run(
-        image_path=p, track_id=1, snap_index=1,
-        class_name="vehicle", crop_out_dir=tmp_path / "crops",
+        image_path=p,
+        track_id=1,
+        snap_index=1,
+        class_name="vehicle",
+        crop_out_dir=tmp_path / "crops",
         ghost_rects=[(50, 50, 150, 100)],
         ghost_source_size=None,
     )
@@ -196,15 +206,16 @@ def test_run_ghost_rects_without_source_size_uses_raw_coords(
     assert seen_pixel["centre"] == 0
 
 
-def test_to_json_round_trip_has_expected_fields(
-    vehicle_snap: Path, tmp_path: Path
-) -> None:
+def test_to_json_round_trip_has_expected_fields(vehicle_snap: Path, tmp_path: Path) -> None:
     det = PlateDetection(bbox=(40, 80, 160, 120), det_confidence=0.92)
     read = PlateRead(text="AB12CDE", ocr_confidence=0.88, raw_text="AB12 CDE")
     runner = PipelineRunner("fake", _FakeDetector(det), _FakeRecognizer(read))
     res = runner.run(
-        image_path=vehicle_snap, track_id=42, snap_index=2,
-        class_name="vehicle", crop_out_dir=tmp_path / "crops",
+        image_path=vehicle_snap,
+        track_id=42,
+        snap_index=2,
+        class_name="vehicle",
+        crop_out_dir=tmp_path / "crops",
     )
     j = res.to_json()
     assert j["image"] == "vehicle_1_main_1.jpg"
@@ -228,8 +239,11 @@ def test_to_json_marks_canonical_shape_false_for_ocr_garbage(
     read = PlateRead(text="1157WHT", ocr_confidence=0.99, raw_text="1157WHT")
     runner = PipelineRunner("fake", _FakeDetector(det), _FakeRecognizer(read))
     res = runner.run(
-        image_path=vehicle_snap, track_id=42, snap_index=2,
-        class_name="vehicle", crop_out_dir=tmp_path / "crops",
+        image_path=vehicle_snap,
+        track_id=42,
+        snap_index=2,
+        class_name="vehicle",
+        crop_out_dir=tmp_path / "crops",
     )
     j = res.to_json()
     assert j["ocr_text"] == "1157WHT"
@@ -238,9 +252,7 @@ def test_to_json_marks_canonical_shape_false_for_ocr_garbage(
     assert j["canonical_uk_shape"] is False
 
 
-def test_to_json_canonical_shape_is_none_when_no_read(
-    vehicle_snap: Path, tmp_path: Path
-) -> None:
+def test_to_json_canonical_shape_is_none_when_no_read(vehicle_snap: Path, tmp_path: Path) -> None:
     """If the OCR step didn't fire (no detection, or recognizer
     returned None), there's no plate string to validate -- the
     annotation must be ``None``, not ``False``, so consumers can
@@ -248,8 +260,11 @@ def test_to_json_canonical_shape_is_none_when_no_read(
     det = PlateDetection(bbox=(40, 80, 160, 120), det_confidence=0.92)
     runner = PipelineRunner("fake", _FakeDetector(det), _FakeRecognizer(None))
     res = runner.run(
-        image_path=vehicle_snap, track_id=42, snap_index=2,
-        class_name="vehicle", crop_out_dir=tmp_path / "crops",
+        image_path=vehicle_snap,
+        track_id=42,
+        snap_index=2,
+        class_name="vehicle",
+        crop_out_dir=tmp_path / "crops",
     )
     j = res.to_json()
     assert j["ocr_text"] is None
@@ -270,9 +285,7 @@ class _CropCapturingRecognizer:
         return PlateRead(text="AB12CDE", ocr_confidence=0.9, raw_text="AB12CDE")
 
 
-def test_plate_pad_frac_controls_ocr_crop_size(
-    vehicle_snap: Path, tmp_path: Path
-) -> None:
+def test_plate_pad_frac_controls_ocr_crop_size(vehicle_snap: Path, tmp_path: Path) -> None:
     """The 2026-05-30 garbage analysis traced 74% of misreads to a
     clipped edge character. --plate-pad-frac widens the OCR crop; a
     larger pad must yield a strictly larger crop fed to the recognizer
@@ -281,19 +294,21 @@ def test_plate_pad_frac_controls_ocr_crop_size(
     det = PlateDetection(bbox=(80, 90, 120, 110), det_confidence=0.9)
 
     tight_rec = _CropCapturingRecognizer()
-    PipelineRunner(
-        "tight", _FakeDetector(det), tight_rec, plate_pad_frac=0.10
-    ).run(
-        image_path=vehicle_snap, track_id=1, snap_index=1,
-        class_name="vehicle", crop_out_dir=tmp_path / "c1",
+    PipelineRunner("tight", _FakeDetector(det), tight_rec, plate_pad_frac=0.10).run(
+        image_path=vehicle_snap,
+        track_id=1,
+        snap_index=1,
+        class_name="vehicle",
+        crop_out_dir=tmp_path / "c1",
     )
 
     wide_rec = _CropCapturingRecognizer()
-    PipelineRunner(
-        "wide", _FakeDetector(det), wide_rec, plate_pad_frac=0.30
-    ).run(
-        image_path=vehicle_snap, track_id=1, snap_index=1,
-        class_name="vehicle", crop_out_dir=tmp_path / "c2",
+    PipelineRunner("wide", _FakeDetector(det), wide_rec, plate_pad_frac=0.30).run(
+        image_path=vehicle_snap,
+        track_id=1,
+        snap_index=1,
+        class_name="vehicle",
+        crop_out_dir=tmp_path / "c2",
     )
 
     th, tw = tight_rec.last_crop.shape[:2]
@@ -309,8 +324,11 @@ def test_plate_pad_frac_defaults_to_010(vehicle_snap: Path, tmp_path: Path) -> N
     runner = PipelineRunner("default", _FakeDetector(det), rec)
     assert runner._plate_pad_frac == 0.10
     runner.run(
-        image_path=vehicle_snap, track_id=1, snap_index=1,
-        class_name="vehicle", crop_out_dir=tmp_path / "c",
+        image_path=vehicle_snap,
+        track_id=1,
+        snap_index=1,
+        class_name="vehicle",
+        crop_out_dir=tmp_path / "c",
     )
     # bbox is 40x20; pad 0.10 -> +4px each side x, +2px each side y ->
     # crop is 48 wide x 24 tall.

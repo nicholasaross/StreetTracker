@@ -115,9 +115,7 @@ class SnapshotStats:
         }
 
 
-def build_snap_url(
-    ip: str, http_port: int, username: str, password: str
-) -> str:
+def build_snap_url(ip: str, http_port: int, username: str, password: str) -> str:
     """Build the Reolink ``cmd=Snap`` URL.
 
     User and password are URL-encoded with ``safe=""`` so any ``&``,
@@ -193,10 +191,7 @@ class ReolinkSnapshotter:
                     raise ValueError(f"HTTP {resp.status}")
                 data = await resp.read()
             if len(data) < _MIN_JPEG_BYTES or data[:3] != _JPEG_SOI:
-                raise ValueError(
-                    f"response is not a JPEG "
-                    f"(len={len(data)}, head={data[:16]!r})"
-                )
+                raise ValueError(f"response is not a JPEG (len={len(data)}, head={data[:16]!r})")
             # Disk write off the event loop -- 4K JPEGs are 1-3 MB and
             # write() through a userspace buffer can take a few ms on
             # the Orin's eMMC under load.
@@ -223,9 +218,7 @@ class ReolinkSnapshotter:
         HTTP reads and they'll resolve via the failure path."""
         if not self._tasks:
             return 0
-        done, _pending = await asyncio.wait(
-            self._tasks, timeout=timeout
-        )
+        done, _pending = await asyncio.wait(self._tasks, timeout=timeout)
         return len(done)
 
 
@@ -271,14 +264,14 @@ async def run_cleanup_task(
         return
     logger.info(
         "[snap] cleanup task started (parent=%s, interval=%.0fs, keep=%dd)",
-        parent_dir, interval_s, keep_days,
+        parent_dir,
+        interval_s,
+        keep_days,
     )
     while True:
         try:
             await asyncio.sleep(interval_s)
-            deleted = await asyncio.to_thread(
-                cleanup_old_snaps, parent_dir, keep_days
-            )
+            deleted = await asyncio.to_thread(cleanup_old_snaps, parent_dir, keep_days)
             if deleted:
                 logger.info("[snap] cleanup deleted %d stale snaps", deleted)
         except asyncio.CancelledError:

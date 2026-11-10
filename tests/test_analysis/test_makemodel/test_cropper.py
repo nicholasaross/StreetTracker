@@ -66,9 +66,7 @@ def test_crop_respects_custom_output_size(synthetic_image: np.ndarray) -> None:
 def test_pad_frac_adds_context_around_bbox(synthetic_image: np.ndarray) -> None:
     """pad_frac=0 returns the raw bbox region; pad_frac=0.25 widens
     the crop so the classifier sees ~20 % more pixels per side."""
-    raw_crop = VehicleCropper(pad_frac=0.0).crop(
-        synthetic_image, bbox_hint=(300, 200, 500, 400)
-    )
+    raw_crop = VehicleCropper(pad_frac=0.0).crop(synthetic_image, bbox_hint=(300, 200, 500, 400))
     padded_crop = VehicleCropper(pad_frac=0.25).crop(
         synthetic_image, bbox_hint=(300, 200, 500, 400)
     )
@@ -97,7 +95,10 @@ def test_pad_frac_zero_with_already_square_bbox_skips_letterbox(
     # The four corner pixels of the output should be content from the
     # bbox, not zero-pad sentinel values.
     assert (out[0, 0, 2], out[0, -1, 2], out[-1, 0, 2], out[-1, -1, 2]) == (
-        128, 128, 128, 128,
+        128,
+        128,
+        128,
+        128,
     )
 
 
@@ -167,8 +168,8 @@ def test_bbox_fully_outside_image_returns_none(synthetic_image: np.ndarray) -> N
     the image, clipping produces zero area -- return None rather than
     a 0x0 ndarray that downstream resize would crash on."""
     out = VehicleCropper().crop(
-        synthetic_image, bbox_hint=(_FULL_IMG_W + 50, _FULL_IMG_H + 50,
-                                    _FULL_IMG_W + 200, _FULL_IMG_H + 200),
+        synthetic_image,
+        bbox_hint=(_FULL_IMG_W + 50, _FULL_IMG_H + 50, _FULL_IMG_W + 200, _FULL_IMG_H + 200),
     )
     assert out is None
 
@@ -177,7 +178,8 @@ def test_bbox_partially_outside_image_is_clipped(synthetic_image: np.ndarray) ->
     """A bbox that overhangs the image edge clips to the image; the
     crop is smaller than the bbox but still valid for classification."""
     out = VehicleCropper().crop(
-        synthetic_image, bbox_hint=(700, 500, 900, 700),
+        synthetic_image,
+        bbox_hint=(700, 500, 900, 700),
     )
     assert out is not None
     assert out.shape == (224, 224, 3)

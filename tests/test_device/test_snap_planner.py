@@ -477,9 +477,11 @@ def test_track_inside_polygon_but_never_crossing_any_trigger() -> None:
     # gate but strictly between trigger 0 (0.25) and trigger 1 (0.50).
     gate = p.road_gate
     assert gate is not None
+
     # Convert target t' values back to image x by inverting the linear map.
     def x_for_tp(tp: float) -> float:
         return FW * (0.10 + 0.80 * tp)
+
     fires = 0
     for f in range(40):
         cx = x_for_tp(0.30 if f % 2 == 0 else 0.45)
@@ -910,18 +912,21 @@ def test_pipeline_per_direction_throttle_fires_earlier_in_forward() -> None:
     # Three distinct positions so every frame has a non-zero motion
     # delta (zero delta would fall back to base). Whichever direction
     # the polygon's PCA chose, the override (100ms for both) kicks in.
-    p.consider_pipeline(track_id=300, bbox=_bbox_at(FW * 0.30, FH * 0.5),
-                        frame_idx=0, wall_ms=1000.0)
+    p.consider_pipeline(
+        track_id=300, bbox=_bbox_at(FW * 0.30, FH * 0.5), frame_idx=0, wall_ms=1000.0
+    )
     # Frame 1: motion, but only 80ms since last fire (1000) -- below
     # the 100ms override -> throttled.
-    d1 = p.consider_pipeline(track_id=300, bbox=_bbox_at(FW * 0.50, FH * 0.5),
-                             frame_idx=1, wall_ms=1080.0)
+    d1 = p.consider_pipeline(
+        track_id=300, bbox=_bbox_at(FW * 0.50, FH * 0.5), frame_idx=1, wall_ms=1080.0
+    )
     assert d1.should_fire is False
     assert d1.reason == "pipeline_throttled"
     # Frame 2: motion, 230ms since last fire -- above the 100ms
     # override -> fires. Under base (400ms) this would still throttle.
-    d2 = p.consider_pipeline(track_id=300, bbox=_bbox_at(FW * 0.70, FH * 0.5),
-                             frame_idx=2, wall_ms=1230.0)
+    d2 = p.consider_pipeline(
+        track_id=300, bbox=_bbox_at(FW * 0.70, FH * 0.5), frame_idx=2, wall_ms=1230.0
+    )
     assert d2.should_fire is True
     assert d2.reason == "pipeline"
     assert d2.snap_index == 2
@@ -995,9 +1000,7 @@ def test_pipeline_ignores_area_threshold() -> None:
     # 30x30 = 900 px^2 / (896*512) ~= 0.2% area, well under the 5%
     # area_threshold_frac that gates trigger fires.
     tiny = (FW * 0.5 - 15, FH * 0.5 - 15, FW * 0.5 + 15, FH * 0.5 + 15)
-    d = p.consider_pipeline(
-        track_id=215, bbox=tiny, frame_idx=0, wall_ms=1000.0
-    )
+    d = p.consider_pipeline(track_id=215, bbox=tiny, frame_idx=0, wall_ms=1000.0)
     assert d.should_fire is True
     assert d.reason == "pipeline"
 
@@ -1023,9 +1026,7 @@ def test_pipeline_and_trigger_share_unique_snap_indexes() -> None:
     so the _main_N.jpg filenames never collide."""
     p = _pipeline_planner(interval_ms=400)
     # Frame 0: pipeline fires (snap_index=1). consider() sets prev_t_prime.
-    d_consider_f0 = p.consider(
-        300, _bbox_at(200, FH * 0.5), 0, sharpness=200.0
-    )
+    d_consider_f0 = p.consider(300, _bbox_at(200, FH * 0.5), 0, sharpness=200.0)
     assert d_consider_f0.should_fire is False  # first frame just sets prev_tp
     d_pipe_f0 = p.consider_pipeline(
         track_id=300,
@@ -1041,9 +1042,7 @@ def test_pipeline_and_trigger_share_unique_snap_indexes() -> None:
     # interval throttle still applies and the call site in process_frame
     # would skip it (we don't even need to call it here to prove the
     # ordering invariant).
-    d_consider_f1 = p.consider(
-        300, _bbox_at(275, FH * 0.5), 1, sharpness=200.0
-    )
+    d_consider_f1 = p.consider(300, _bbox_at(275, FH * 0.5), 1, sharpness=200.0)
     # Pipeline fire bumped st.pipeline_fires=1; trigger fire bumps
     # st.fires_committed=1; snap_index = 1 + 1 = 2.
     assert d_consider_f1.should_fire is True
@@ -1330,6 +1329,7 @@ def test_door_snap_index_does_not_collide_with_other_paths() -> None:
 # snaps produced no usable faces. Firing before the door, only while
 # closing on it, is what puts a shot where the subject still faces the
 # camera.
+
 
 # Approaching x positions in an 896-wide frame: 0.55 and 0.60.
 def _approach_bbox(x_frac: float) -> tuple[float, float, float, float]:

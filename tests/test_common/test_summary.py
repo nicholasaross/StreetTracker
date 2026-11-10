@@ -9,9 +9,7 @@ from streettracker.common.schema import TrackRecord
 from streettracker.common.summary import generate_html
 
 
-def test_generate_html_writes_page_and_sidecar(
-    tmp_path: Path, sample_track: TrackRecord
-) -> None:
+def test_generate_html_writes_page_and_sidecar(tmp_path: Path, sample_track: TrackRecord) -> None:
     html_path = tmp_path / "session_summary.html"
     generate_html(
         records=[sample_track, sample_track],
@@ -37,9 +35,7 @@ def test_generate_html_writes_page_and_sidecar(
     assert payload[0]["track_id"] == 42
 
 
-def test_index_html_redirects_to_latest_summary(
-    tmp_path: Path, sample_track: TrackRecord
-) -> None:
+def test_index_html_redirects_to_latest_summary(tmp_path: Path, sample_track: TrackRecord) -> None:
     html_path = tmp_path / "session_summary.html"
     generate_html(
         records=[sample_track],
@@ -51,7 +47,7 @@ def test_index_html_redirects_to_latest_summary(
     index = tmp_path / "index.html"
     assert index.exists()
     assert html_path.name in index.read_text()
-    assert "http-equiv=\"refresh\"" in index.read_text()
+    assert 'http-equiv="refresh"' in index.read_text()
 
 
 def test_empty_records_renders_no_detections_yet(tmp_path: Path) -> None:
@@ -69,9 +65,7 @@ def test_empty_records_renders_no_detections_yet(tmp_path: Path) -> None:
     assert sidecar == []
 
 
-def test_poll_disabled_when_refresh_zero(
-    tmp_path: Path, sample_track: TrackRecord
-) -> None:
+def test_poll_disabled_when_refresh_zero(tmp_path: Path, sample_track: TrackRecord) -> None:
     html_path = tmp_path / "session_summary.html"
     generate_html(
         records=[sample_track],

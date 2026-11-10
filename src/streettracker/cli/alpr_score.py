@@ -27,7 +27,8 @@ from streettracker.analysis.alpr.metrics import (
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        prog="streettracker alpr-score", description=__doc__,
+        prog="streettracker alpr-score",
+        description=__doc__,
     )
     ap.add_argument("session_dir", type=Path)
     args = ap.parse_args(argv)
@@ -96,8 +97,8 @@ def _print_summary(scores: dict) -> None:
         for p, s in sorted(scores["label_based"].items()):
             print(
                 f"  {p:>34}  {s['labeled_n']:>4}  "
-                f"{s['exact_accuracy']*100:>6.1f}%  "
-                f"{s['canonical_accuracy']*100:>6.1f}%  "
+                f"{s['exact_accuracy'] * 100:>6.1f}%  "
+                f"{s['canonical_accuracy'] * 100:>6.1f}%  "
                 f"{s['mean_edit_distance']:>8.2f}"
             )
     else:
@@ -107,7 +108,7 @@ def _print_summary(scores: dict) -> None:
         print("\nPer-track best-of-N accuracy:")
         for p, s in sorted(scores["per_track_best_of_n"].items()):
             print(
-                f"  {p:>34}: {s['best_of_n_accuracy']*100:5.1f}% "
+                f"  {p:>34}: {s['best_of_n_accuracy'] * 100:5.1f}% "
                 f"over {s['labeled_tracks']} tracks"
             )
 
@@ -119,10 +120,7 @@ def _print_summary(scores: dict) -> None:
                 pair = k[:-6]
                 n = agreement.get(f"{pair}_overlap_n", 0)
                 canon = agreement.get(f"{pair}_canon", 0)
-                print(
-                    f"  {pair:>34}: exact={v*100:5.1f}%  "
-                    f"canon={canon*100:5.1f}%  (n={n})"
-                )
+                print(f"  {pair:>34}: exact={v * 100:5.1f}%  canon={canon * 100:5.1f}%  (n={n})")
 
     if scores.get("char_confusions"):
         print("\nTop character confusions (truth -> ocr) per pipeline:")

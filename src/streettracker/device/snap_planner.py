@@ -1003,10 +1003,7 @@ class SnapPlanner:
             if st.door_approach_fires >= self.door_approach_max_per_track:
                 return SnapDecision(False, "door_budget_exhausted", 0.0)
             elapsed = wall_ms - st.last_door_approach_wall_ms
-            if (
-                st.last_door_approach_wall_ms > 0.0
-                and elapsed < self.door_approach_interval_ms
-            ):
+            if st.last_door_approach_wall_ms > 0.0 and elapsed < self.door_approach_interval_ms:
                 return SnapDecision(False, "door_throttled", 0.0)
             st.door_approach_fires += 1
             st.last_door_approach_wall_ms = wall_ms

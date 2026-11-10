@@ -131,15 +131,25 @@ class VehicleCropper:
             top = (cw - ch) // 2
             bottom = cw - ch - top
             squared = cv2.copyMakeBorder(
-                crop, top, bottom, 0, 0,
-                cv2.BORDER_CONSTANT, value=(self.square_pad_value,) * 3,
+                crop,
+                top,
+                bottom,
+                0,
+                0,
+                cv2.BORDER_CONSTANT,
+                value=(self.square_pad_value,) * 3,
             )
         elif ch > cw:
             left = (ch - cw) // 2
             right = ch - cw - left
             squared = cv2.copyMakeBorder(
-                crop, 0, 0, left, right,
-                cv2.BORDER_CONSTANT, value=(self.square_pad_value,) * 3,
+                crop,
+                0,
+                0,
+                left,
+                right,
+                cv2.BORDER_CONSTANT,
+                value=(self.square_pad_value,) * 3,
             )
         else:
             squared = crop
@@ -150,7 +160,8 @@ class VehicleCropper:
         # than 224 (typical 400-800 px tracked-vehicle bbox at 4K),
         # so this is the operative path.
         resized = cv2.resize(
-            squared, (self.output_size, self.output_size),
+            squared,
+            (self.output_size, self.output_size),
             interpolation=cv2.INTER_AREA,
         )
         # cv2.resize returns the same dtype as input; ensure uint8 for

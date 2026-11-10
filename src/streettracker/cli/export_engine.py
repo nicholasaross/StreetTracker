@@ -53,7 +53,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--device",
         default="0",
         help="CUDA device index, 'cpu', or 'mps' (default: 0). "
-             "Engines are only useful on CUDA; non-CUDA is for CLI smoke tests.",
+        "Engines are only useful on CUDA; non-CUDA is for CLI smoke tests.",
     )
     precision = parser.add_mutually_exclusive_group()
     precision.add_argument(
@@ -154,8 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[export-engine] precision: {args.precision}")
     print(f"[export-engine] workspace: {kwargs['workspace']} GB")
     print(f"[export-engine] device:    {kwargs['device']}")
-    print("[export-engine] starting export "
-          "(first build can take 8-12 min on Orin) ...")
+    print("[export-engine] starting export (first build can take 8-12 min on Orin) ...")
 
     model = YOLO(str(args.weights))
     result = model.export(**kwargs)

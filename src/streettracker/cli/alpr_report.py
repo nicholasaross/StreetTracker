@@ -20,7 +20,8 @@ from streettracker.analysis.alpr.report import render_html
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        prog="streettracker alpr-report", description=__doc__,
+        prog="streettracker alpr-report",
+        description=__doc__,
     )
     ap.add_argument("session_dir", type=Path)
     args = ap.parse_args(argv)

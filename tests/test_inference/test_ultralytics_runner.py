@@ -61,9 +61,7 @@ def test_empty_results_yields_empty_list() -> None:
 
 
 def test_empty_boxes_yields_empty_list() -> None:
-    out = _ultralytics_results_to_detections(
-        _make_results(xyxy=[], conf=[], cls=[], ids=[])
-    )
+    out = _ultralytics_results_to_detections(_make_results(xyxy=[], conf=[], cls=[], ids=[]))
     assert out == []
 
 
@@ -72,7 +70,7 @@ def test_single_detection_with_track_id() -> None:
         _make_results(
             xyxy=[[10.0, 20.0, 110.0, 220.0]],
             conf=[0.87],
-            cls=[2.0],          # car
+            cls=[2.0],  # car
             ids=[42.0],
         )
     )

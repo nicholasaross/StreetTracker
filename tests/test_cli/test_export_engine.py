@@ -69,9 +69,7 @@ def test_export_kwargs_custom_imgsz_and_device() -> None:
 
 
 def test_export_kwargs_no_simplify_flag() -> None:
-    args = export_engine._build_parser().parse_args(
-        ["best.pt", "--no-simplify"]
-    )
+    args = export_engine._build_parser().parse_args(["best.pt", "--no-simplify"])
     kwargs = export_engine._export_kwargs(args)
     assert kwargs["simplify"] is False
 

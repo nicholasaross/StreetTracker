@@ -86,9 +86,8 @@ def plate_conf_threshold(override: float | None = None) -> float:
     """:func:`resolve_plate_conf_threshold` without the source."""
     return resolve_plate_conf_threshold(override)[0]
 
-SNAP_FILENAME_RE = re.compile(
-    r"^(?P<cls>person|vehicle)_(?P<tid>\d+)_main_(?P<n>\d+)\.jpg$"
-)
+
+SNAP_FILENAME_RE = re.compile(r"^(?P<cls>person|vehicle)_(?P<tid>\d+)_main_(?P<n>\d+)\.jpg$")
 
 
 @dataclass(slots=True)
@@ -153,9 +152,7 @@ class PlateResult:
             # score "isn't informative below 0.95" was an artifact of
             # the max-over-slots confidence bug fixed 2026-09-28; see
             # preferred._unpack_ocr_output.)
-            "canonical_uk_shape": (
-                is_canonical_uk_plate(ocr_text) if ocr_text else None
-            ),
+            "canonical_uk_shape": (is_canonical_uk_plate(ocr_text) if ocr_text else None),
             "crop_path": self.crop_path,
             "pipeline_ms": self.pipeline_ms,
             "error": self.error,
@@ -218,13 +215,15 @@ def normalize_label_text(raw: str) -> str:
 # user-visible text). Both directions get the same canonical form so
 # 'O' and '0' compare equal; we pick the digit / letter that is more
 # common on real plates.
-_SCORING_CANON_MAP = str.maketrans({
-    "O": "0",
-    "I": "1",
-    "Z": "2",
-    "S": "5",
-    "B": "8",
-})
+_SCORING_CANON_MAP = str.maketrans(
+    {
+        "O": "0",
+        "I": "1",
+        "Z": "2",
+        "S": "5",
+        "B": "8",
+    }
+)
 
 
 def canonical_for_scoring(text: str) -> str:

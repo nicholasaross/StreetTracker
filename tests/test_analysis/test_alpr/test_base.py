@@ -133,7 +133,9 @@ class TestPlateResultJson:
             pipeline="preferred",
             detection=base.PlateDetection(bbox=(1, 2, 3, 4), det_confidence=0.9),
             read=base.PlateRead(
-                text="AB12CDE", ocr_confidence=0.35, raw_text="AB12CDE",
+                text="AB12CDE",
+                ocr_confidence=0.35,
+                raw_text="AB12CDE",
                 char_probs=[0.99, 0.35, 0.99, 0.98, 0.97, 0.99, 0.96],
             ),
             crop_path="/s/alpr_crops/preferred/vehicle_1_main_1.jpg",

@@ -22,9 +22,7 @@ def _write_session(
     (session / "session_test_events.jsonl").write_text(
         "\n".join(json.dumps(r) for r in recs) + "\n", encoding="utf-8"
     )
-    (session / "session_test_data.json").write_text(
-        json.dumps(recs), encoding="utf-8"
-    )
+    (session / "session_test_data.json").write_text(json.dumps(recs), encoding="utf-8")
     if dvsa_labels is not None:
         (session / "session_test_dvsa_labels.json").write_text(
             json.dumps(dvsa_labels), encoding="utf-8"
@@ -36,11 +34,15 @@ def _labels(track_ids: list[int]) -> dict:
     return {
         "labels": {
             "AB12CDE": {
-                "plate": "AB12CDE", "make": "FORD", "model": "FOCUS",
-                "year": 2017, "track_ids": track_ids,
+                "plate": "AB12CDE",
+                "make": "FORD",
+                "model": "FOCUS",
+                "year": 2017,
+                "track_ids": track_ids,
             },
         },
-        "unknown": [], "skipped_non_canonical": [],
+        "unknown": [],
+        "skipped_non_canonical": [],
     }
 
 
@@ -73,9 +75,7 @@ def test_apply_writes_make_model_to_data_and_events(
     assert back.make_model_source == "dvsa"
 
 
-def test_apply_leaves_unlabelled_tracks_none(
-    tmp_path: Path, sample_track: TrackRecord
-) -> None:
+def test_apply_leaves_unlabelled_tracks_none(tmp_path: Path, sample_track: TrackRecord) -> None:
     t2 = replace(sample_track, track_id=99)
     session = _write_session(tmp_path, [sample_track, t2], _labels([42]))
     apply_dvsa_labels(session)
@@ -85,22 +85,19 @@ def test_apply_leaves_unlabelled_tracks_none(
     assert data[99]["make_model_source"] is None
 
 
-def test_apply_skips_person_tracks(
-    tmp_path: Path, sample_track: TrackRecord
-) -> None:
+def test_apply_skips_person_tracks(tmp_path: Path, sample_track: TrackRecord) -> None:
     """A label whose track_ids (wrongly) include a person track must not
     write make/model onto a person record -- cars only."""
-    person = replace(sample_track, track_id=7, class_name="person",
-                     class_id=0, asset_prefix="person")
+    person = replace(
+        sample_track, track_id=7, class_name="person", class_id=0, asset_prefix="person"
+    )
     session = _write_session(tmp_path, [person], _labels([7]))
     stats = apply_dvsa_labels(session)
     assert stats.cars_labelled == 0
     assert _load_data(session)[7]["make"] is None
 
 
-def test_apply_is_idempotent(
-    tmp_path: Path, sample_track: TrackRecord
-) -> None:
+def test_apply_is_idempotent(tmp_path: Path, sample_track: TrackRecord) -> None:
     session = _write_session(tmp_path, [sample_track], _labels([42]))
     apply_dvsa_labels(session)
     first = (session / "session_test_data.json").read_text()
@@ -108,9 +105,7 @@ def test_apply_is_idempotent(
     assert (session / "session_test_data.json").read_text() == first
 
 
-def test_main_without_harvest_returns_2(
-    tmp_path: Path, sample_track: TrackRecord
-) -> None:
+def test_main_without_harvest_returns_2(tmp_path: Path, sample_track: TrackRecord) -> None:
     session = _write_session(tmp_path, [sample_track], dvsa_labels=None)
     assert dvsa_apply_main([str(session)]) == 2
 
@@ -135,12 +130,8 @@ def test_apply_clears_a_label_the_harvest_no_longer_gives(
     assert json.loads(line)["make"] is None
 
 
-def test_apply_leaves_other_sources_alone(
-    tmp_path: Path, sample_track: TrackRecord
-) -> None:
-    manual = replace(
-        sample_track, make="VOLVO", model="V40", year=2015, make_model_source="manual"
-    )
+def test_apply_leaves_other_sources_alone(tmp_path: Path, sample_track: TrackRecord) -> None:
+    manual = replace(sample_track, make="VOLVO", model="V40", year=2015, make_model_source="manual")
     session = _write_session(tmp_path, [manual], _labels([]))
     stats = apply_dvsa_labels(session)
     assert stats.cars_cleared == 0

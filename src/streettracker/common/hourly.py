@@ -33,9 +33,7 @@ def build_hourly_rollup(
             continue
         hour_unix = int(unix_ts // 3600) * 3600
         hour_key = (
-            datetime.datetime.fromtimestamp(hour_unix)
-            .astimezone()
-            .isoformat(timespec="hours")
+            datetime.datetime.fromtimestamp(hour_unix).astimezone().isoformat(timespec="hours")
         )
         bucket = by_hour.get(hour_key)
         if bucket is None:

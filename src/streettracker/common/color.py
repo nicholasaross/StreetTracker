@@ -26,15 +26,15 @@ if TYPE_CHECKING:
 # (low, high, name) — HSV ranges. Order matters only for readability; the
 # vote loop sums hits across ranges that share a name (e.g. red wraps 0).
 COLOR_RANGES: list[tuple[tuple[int, int, int], tuple[int, int, int], str]] = [
-    ((0, 0, 200),   (180, 30, 255),  "white"),
-    ((0, 0, 0),     (180, 40, 40),   "black"),
-    ((0, 0, 40),    (180, 40, 200),  "grey"),
-    ((0, 60, 50),   (10, 255, 255),  "red"),
+    ((0, 0, 200), (180, 30, 255), "white"),
+    ((0, 0, 0), (180, 40, 40), "black"),
+    ((0, 0, 40), (180, 40, 200), "grey"),
+    ((0, 60, 50), (10, 255, 255), "red"),
     ((170, 60, 50), (180, 255, 255), "red"),
     ((100, 80, 50), (130, 255, 255), "blue"),
-    ((36, 80, 50),  (85, 255, 255),  "green"),
-    ((20, 50, 180), (30, 150, 255),  "silver"),
-    ((20, 80, 80),  (35, 255, 255),  "yellow"),
+    ((36, 80, 50), (85, 255, 255), "green"),
+    ((20, 50, 180), (30, 150, 255), "silver"),
+    ((20, 80, 80), (35, 255, 255), "yellow"),
 ]
 
 ACHROMATIC: frozenset[str] = frozenset(("white", "black", "grey", "silver"))
@@ -93,10 +93,7 @@ def vote_color(crop: np.ndarray | None, pad_frac: float = DEFAULT_PAD_FRAC) -> s
     # White/black plurality wins outright over any chromatic.
     if achromatic:
         best_ach_name = max(achromatic, key=lambda k: achromatic[k])
-        if (
-            best_ach_name in ("white", "black")
-            and achromatic[best_ach_name] > best_chrom_count
-        ):
+        if best_ach_name in ("white", "black") and achromatic[best_ach_name] > best_chrom_count:
             return best_ach_name
 
     # Grey/silver plurality: defer to dominant chromatic if substantive.

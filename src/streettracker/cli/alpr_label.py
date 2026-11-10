@@ -55,8 +55,7 @@ def main(argv: list[str] | None = None) -> int:
         cands = list(session_dir.glob("*_alpr.json"))
         if not cands:
             print(
-                f"no *_alpr.json in {session_dir}; "
-                f"run `streettracker alpr-run` first",
+                f"no *_alpr.json in {session_dir}; run `streettracker alpr-run` first",
                 file=sys.stderr,
             )
             return 1

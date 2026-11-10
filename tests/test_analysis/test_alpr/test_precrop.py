@@ -130,6 +130,7 @@ def test_pre_crop_iterates_vehicles_largest_first() -> None:
     """If the largest vehicle's crop yields no plate, the next-largest
     is tried. Lets the wrapper recover frames where a tracked car is
     partly off-screen but a parked car alongside it has a clean plate."""
+
     # Configure the plate detector to miss on the first call, hit on the second.
     class _ToggleDetector:
         name = "toggle"
@@ -157,10 +158,12 @@ def test_pre_crop_iterates_vehicles_largest_first() -> None:
     # and a smaller one at (100,100)-(300,200) area=20k.
     _inject_fake_yolo(
         pre,
-        np.array([
-            [100.0, 100.0, 300.0, 200.0],
-            [1000.0, 800.0, 2500.0, 1800.0],
-        ]),
+        np.array(
+            [
+                [100.0, 100.0, 300.0, 200.0],
+                [1000.0, 800.0, 2500.0, 1800.0],
+            ]
+        ),
     )
 
     out = pre.detect(_make_image())
@@ -179,9 +182,7 @@ def test_pre_crop_padding_adds_margin_around_bbox() -> None:
     """pad_frac=0.10 on a 1000x800 vehicle bbox should expand to
     1200x960 (100 px on each side x, 80 px y) before the crop. The
     cap is set high to isolate fractional behaviour from the cap."""
-    plate = _FakePlateDetector(
-        detection=PlateDetection(bbox=(0, 0, 50, 20), det_confidence=0.5)
-    )
+    plate = _FakePlateDetector(detection=PlateDetection(bbox=(0, 0, 50, 20), det_confidence=0.5))
     pre = PreCropDetector(plate_detector=plate, pad_frac=0.10, pad_max_px=999)
     _inject_fake_yolo(pre, np.array([[1000.0, 800.0, 2000.0, 1600.0]]))
 
@@ -198,9 +199,7 @@ def test_pre_crop_padding_capped_for_wide_bboxes() -> None:
     but with pad_max_px=30 the actual padding is 30 px each side.
     This prevents wide BotSORT bboxes from spilling into neighbouring
     cars (Step 10 of CLAUDE.md ANPR tuning loop)."""
-    plate = _FakePlateDetector(
-        detection=PlateDetection(bbox=(0, 0, 50, 20), det_confidence=0.5)
-    )
+    plate = _FakePlateDetector(detection=PlateDetection(bbox=(0, 0, 50, 20), det_confidence=0.5))
     pre = PreCropDetector(plate_detector=plate, pad_frac=0.15, pad_max_px=30)
     _inject_fake_yolo(pre, np.array([[1000.0, 800.0, 2000.0, 1600.0]]))
 
@@ -213,9 +212,7 @@ def test_pre_crop_padding_capped_for_wide_bboxes() -> None:
 def test_pre_crop_clamps_padded_crop_to_image_bounds() -> None:
     """Padding past the image edge must clamp rather than producing
     negative indices."""
-    plate = _FakePlateDetector(
-        detection=PlateDetection(bbox=(0, 0, 50, 20), det_confidence=0.5)
-    )
+    plate = _FakePlateDetector(detection=PlateDetection(bbox=(0, 0, 50, 20), det_confidence=0.5))
     pre = PreCropDetector(plate_detector=plate, pad_frac=0.50, pad_max_px=999)
     # Vehicle bbox right at the top-left corner -- padding would push
     # the crop to negative coords without the clamp.
@@ -248,9 +245,7 @@ def test_pre_crop_with_hint_skips_yolo_entirely() -> None:
     TrackRecord's main_snap_bboxes), the YOLO vehicle-detection step
     is bypassed and the plate detector runs directly on the hinted
     crop. This is the path that eliminates parked-car aliasing."""
-    plate = _FakePlateDetector(
-        detection=PlateDetection(bbox=(50, 30, 150, 70), det_confidence=0.9)
-    )
+    plate = _FakePlateDetector(detection=PlateDetection(bbox=(50, 30, 150, 70), det_confidence=0.9))
     pre = PreCropDetector(plate_detector=plate, pad_frac=0.0)
     # Deliberately DO NOT inject a fake YOLO -- if the wrapper tried
     # to load ultralytics here the test would either ImportError or
@@ -258,7 +253,8 @@ def test_pre_crop_with_hint_skips_yolo_entirely() -> None:
     # _ensure_loaded entirely.
 
     out = pre.detect(
-        _make_image(), bbox_hint=(1000, 800, 2000, 1600),
+        _make_image(),
+        bbox_hint=(1000, 800, 2000, 1600),
     )
 
     assert out is not None
@@ -273,9 +269,7 @@ def test_pre_crop_hint_applies_padding() -> None:
     """The bbox_hint path applies the same pad_frac padding as the
     YOLO path so both routes feed the plate detector consistent
     crop margins."""
-    plate = _FakePlateDetector(
-        detection=PlateDetection(bbox=(0, 0, 30, 10), det_confidence=0.5)
-    )
+    plate = _FakePlateDetector(detection=PlateDetection(bbox=(0, 0, 30, 10), det_confidence=0.5))
     pre = PreCropDetector(plate_detector=plate, pad_frac=0.10, pad_max_px=999)
 
     pre.detect(_make_image(), bbox_hint=(1000, 800, 2000, 1600))
@@ -287,9 +281,7 @@ def test_pre_crop_hint_applies_padding() -> None:
 def test_pre_crop_hint_clamps_to_image_bounds() -> None:
     """A hint near the image edge with padding overflowing the frame
     is clamped, not skipped."""
-    plate = _FakePlateDetector(
-        detection=PlateDetection(bbox=(0, 0, 30, 10), det_confidence=0.5)
-    )
+    plate = _FakePlateDetector(detection=PlateDetection(bbox=(0, 0, 30, 10), det_confidence=0.5))
     pre = PreCropDetector(plate_detector=plate, pad_frac=0.50, pad_max_px=999)
 
     pre.detect(_make_image(h=500, w=500), bbox_hint=(0, 0, 100, 100))
@@ -303,9 +295,7 @@ def test_pre_crop_degenerate_hint_falls_back_to_full_image() -> None:
     image edge) is treated as missing and the plate detector runs on
     the original image. Defensive against sub-stream bboxes that
     drifted off-frame before fire-time."""
-    plate = _FakePlateDetector(
-        detection=PlateDetection(bbox=(1, 1, 5, 3), det_confidence=0.3)
-    )
+    plate = _FakePlateDetector(detection=PlateDetection(bbox=(1, 1, 5, 3), det_confidence=0.3))
     pre = PreCropDetector(plate_detector=plate, pad_frac=0.0)
 
     out = pre.detect(_make_image(h=500, w=500), bbox_hint=(600, 600, 700, 700))
@@ -331,12 +321,8 @@ def test_window_hint_vehicle_stage_projects_through_both_offsets() -> None:
     detected first and the plate detector runs on the TIGHT vehicle crop
     (restoring plate pixels); the plate bbox projects back through the
     vehicle-crop offset AND the window offset."""
-    plate = _FakePlateDetector(
-        detection=PlateDetection(bbox=(10, 20, 90, 50), det_confidence=0.7)
-    )
-    pre = PreCropDetector(
-        plate_detector=plate, pad_frac=0.0, vehicle_stage_in_hint=True
-    )
+    plate = _FakePlateDetector(detection=PlateDetection(bbox=(10, 20, 90, 50), det_confidence=0.7))
+    pre = PreCropDetector(plate_detector=plate, pad_frac=0.0, vehicle_stage_in_hint=True)
     # Vehicle found at (300,100)-(700,300) RELATIVE to the window crop.
     _inject_fake_yolo(pre, np.array([[300.0, 100.0, 700.0, 300.0]]))
 
@@ -352,12 +338,8 @@ def test_window_hint_vehicle_stage_projects_through_both_offsets() -> None:
 def test_window_hint_vehicle_stage_falls_back_to_window_when_no_vehicle() -> None:
     """COCO vehicle detector finding nothing inside the window must not
     lose the read entirely -- fall back to plate-detecting the window."""
-    plate = _FakePlateDetector(
-        detection=PlateDetection(bbox=(5, 5, 50, 25), det_confidence=0.4)
-    )
-    pre = PreCropDetector(
-        plate_detector=plate, pad_frac=0.0, vehicle_stage_in_hint=True
-    )
+    plate = _FakePlateDetector(detection=PlateDetection(bbox=(5, 5, 50, 25), det_confidence=0.4))
+    pre = PreCropDetector(plate_detector=plate, pad_frac=0.0, vehicle_stage_in_hint=True)
     _inject_fake_yolo(pre, np.empty((0, 4)))
 
     out = pre.detect(_make_image(), bbox_hint=(1000, 500, 3000, 900))
@@ -371,9 +353,7 @@ def test_window_hint_vehicle_stage_falls_back_to_window_when_no_vehicle() -> Non
 def test_legacy_hint_path_unchanged_without_flag() -> None:
     """Default construction (flag off) keeps the v1 behaviour: plate
     detector runs directly on the hinted crop, no vehicle stage."""
-    plate = _FakePlateDetector(
-        detection=PlateDetection(bbox=(1, 1, 9, 5), det_confidence=0.9)
-    )
+    plate = _FakePlateDetector(detection=PlateDetection(bbox=(1, 1, 9, 5), det_confidence=0.9))
     pre = PreCropDetector(plate_detector=plate, pad_frac=0.0)
     # No fake YOLO injected: the vehicle stage would crash if invoked.
 

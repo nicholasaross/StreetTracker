@@ -16,8 +16,10 @@ if _sys.platform == "win32":
     # torch's lib dir before any analysis module triggers an ORT session
     # so the CUDA EP loads instead of falling back to CPU.
     import os as _os
+
     try:
         import torch as _torch
+
         _torch_lib = _os.path.join(_os.path.dirname(_torch.__file__), "lib")
         if _os.path.isdir(_torch_lib):
             _os.add_dll_directory(_torch_lib)
