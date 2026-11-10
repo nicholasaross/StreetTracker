@@ -447,7 +447,7 @@ def _load_ghost_mask(
         print(f"[alpr] --ghost-mask {path}: not found, ignoring", file=sys.stderr)
         return [], None
     try:
-        spec = json.loads(path.read_text())
+        spec = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
         print(f"[alpr] --ghost-mask {path}: parse error ({e}), ignoring", file=sys.stderr)
         return [], None

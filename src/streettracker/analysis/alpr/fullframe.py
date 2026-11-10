@@ -109,7 +109,7 @@ def load_road_polygon(
             )
         return None
     try:
-        spec = json.loads(path.read_text())
+        spec = json.loads(path.read_text(encoding="utf-8"))
         verts = spec.get("vertices_frac") or []
         out = [(float(x), float(y)) for x, y in verts]
         return out if len(out) >= 3 else None

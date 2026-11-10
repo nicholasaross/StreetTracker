@@ -140,7 +140,7 @@ def _colour_group(colour: str) -> str:
 
 
 def _manifest(corpus_dir: Path) -> dict[str, Any]:
-    return json.loads((corpus_dir / "manifest.json").read_text())
+    return json.loads((corpus_dir / "manifest.json").read_text(encoding="utf-8"))
 
 
 def corpus_cars(corpus_dir: Path) -> set[str]:
@@ -368,7 +368,9 @@ def _production_corpus(production: Path, runs_dir: Path) -> Path | None:
     """Production's training corpus dir, from the promotion sidecar."""
     sidecar = production.with_suffix(".meta.json")
     try:
-        name = (json.loads(sidecar.read_text()).get("trained_corpus") or {}).get("name")
+        name = (json.loads(sidecar.read_text(encoding="utf-8")).get("trained_corpus") or {}).get(
+            "name"
+        )
     except (OSError, json.JSONDecodeError):
         return None
     if not name:

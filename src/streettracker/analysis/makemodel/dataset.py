@@ -185,7 +185,7 @@ class CompCarsSurveillance(Dataset):
 
         n_models = self.labels.n_models
         samples: list[_Sample] = []
-        for line in (root / _SPLIT_FILES[split]).read_text().splitlines():
+        for line in (root / _SPLIT_FILES[split]).read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line:
                 continue
