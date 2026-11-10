@@ -18,7 +18,11 @@ with wall-clock times), which makes the stall visible after the fact:
 
 Read-only. Usage:
 
-    uv run --no-sync python .claude/loop_stall_check.py [output_root]
+    uv run --no-sync python .claude/loop_stall_check.py [output_root] [session ...]
+
+With no session names every session that has a trajectory log is pooled.
+Name one or more sessions to look at those alone, e.g. the first session
+recorded after a fix.
 
 After the runtime is fixed, sessions recorded with the fix should show no pile
 of ends at T and a stall equal to the control (one logging interval, ~0.34 s).
@@ -63,13 +67,21 @@ def bars(counts: list[int], lo: float, step: float) -> None:
 
 def main() -> int:  # noqa: C901 - one linear measurement script
     root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("output")
-    sessions = sorted(d for d in root.glob("session_*") if SessionFiles(d).trajectories.is_file())
+    only = set(sys.argv[2:])
+    sessions = sorted(
+        d
+        for d in root.glob("session_*")
+        if SessionFiles(d).trajectories.is_file() and (not only or d.name in only)
+    )
+    # The end/start pictures pool the late part of long sessions, where the
+    # stall was longest. For named sessions show everything they have.
+    hist_min_records = 0 if only else 4000
     if not sessions:
         print(f"no sessions with a trajectory log under {root}")
         return 1
 
     tot: Counter[str] = Counter()
-    ends_rel: list[float] = []  # track ends relative to T, sessions holding >= 4000 records
+    ends_rel: list[float] = []  # track ends relative to T (see hist_min_records)
     starts_rel: list[float] = []
     stall: list[tuple[int, float]] = []  # (records held, seconds)
     control: list[tuple[int, float]] = []
@@ -133,7 +145,7 @@ def main() -> int:  # noqa: C901 - one linear measurement script
             g = largest_gap(points, t - 3.0 + AT_WINDOW[0], t - 3.0 + AT_WINDOW[1])
             if g is not None and g < 30:
                 control.append((k, g))
-            if k >= 4000:
+            if k >= hist_min_records:
                 for arr, out in ((ends, ends_rel), (starts, starts_rel)):
                     lo, hi = bisect.bisect_left(arr, t - 3.0), bisect.bisect_right(arr, t + 6.0)
                     out.extend(x - t for x in arr[lo:hi])
@@ -155,7 +167,7 @@ def main() -> int:  # noqa: C901 - one linear measurement script
 
     print(f"\ntracks {tot['tracks']}, predicted regenerations {tot['regens']}")
 
-    print("\n[1] track ENDS relative to the predicted instant (sessions holding >= 4000 records, 0.25 s bins)")
+    print(f"\n[1] track ENDS relative to the predicted instant (records held >= {hist_min_records}, 0.25 s bins)")
     print("    (no ends before -1.5 s by construction: an instant needs a quiet spell first)")
     b = [0] * 24
     for d in ends_rel:

@@ -286,12 +286,15 @@ Anything that reads session data runs on the dev box, and the operator
 pastes the output back.
 
 **Live on the Orin** (#63 runtime bundle deployed 2026-06-13; code updated to
-`5f4ceb4` on 2026-10-04 for E1.5(c), see step 6.2 above; **now `6707789`**,
-pulled on 2026-10-26 and started by a panel roll at 13:43 GMT; service
-active, NRestarts=0). Its runtime changes over `5f4ceb4` are the startup wait
-for the boot's first NTP sync (PR #136, see
-[Device runtime notes](#device-runtime-notes-orin-nano-8gb-super)) and
-`YOLO_AUTOINSTALL=false` (#137). Rollback: `git checkout 5f4ceb4` + restart.
+`5f4ceb4` on 2026-10-04 for E1.5(c), see step 6.2 above; `6707789` on
+2026-10-26 for the startup wait for the boot's first NTP sync (PR #136) and
+`YOLO_AUTOINSTALL=false` (#137); **now `0b817b7`**, pulled on 2026-11-10 and
+started by a panel roll at 17:18 GMT; service active, NRestarts=0). Its one
+behaviour change over `6707789` is the summary-page stall fix (PR #145, see
+[Device runtime notes](#device-runtime-notes-orin-nano-8gb-super)); it also
+carries the shared file helpers (#144, imports only on the device) and
+formatting / type annotations (#143). `session_20261110_171836` is the first
+session recorded with the fix. Rollback: `git checkout 6707789` + restart.
 Still live from earlier deploys:
 
 - **per-direction pipeline bands** `pipeline_t_usable_by_direction =
@@ -580,7 +583,8 @@ still write in place.
   before naming the session; `--clock-sync-timeout-s` (0 = off). A restart
   on a synced device doesn't wait. Fitting an RTC backup battery would avoid
   the wait.
-- **Summary-page stall: found and fixed in code 2026-11-10, NOT YET DEPLOYED.**
+- **Summary-page stall: found, fixed and deployed 2026-11-10 (live from
+  `session_20261110_171836`; not yet confirmed from a full session's logs).**
   The runtime rebuilt the summary page inline in `process_frame`, 11.76 s
   after each kept track ended (10 s idle + the 16 frames a track takes to
   expire), converting every record the session held. On the Orin that took
@@ -594,11 +598,16 @@ still write in place.
   (`common.summary.SummaryRows`, one row serialised per kept track at
   finalise) and writes the files from a worker thread
   (`runtime.start_html_write`); the on-loop cost of a rebuild at 8,000 records
-  drops from ~1.4 s to ~3 ms on the dev box. Code-only deploy, no config or
-  schema change. After deploying, run the script on the first new session:
-  the pile of track ends at the predicted instant should be gone and the
-  stall should equal the control (~0.34 s). Sessions recorded before the
-  deploy keep their splits.
+  drops from ~1.4 s to ~3 ms on the dev box. Timed on the Orin itself before
+  the restart, on the then-live session's 6,838 records: the old page
+  generation took 1,254 ms, the new render 4.9 ms (plus a 14 ms file write in
+  the worker thread), with identical output. **Still to do:** once
+  `session_20261110_171836` has been rolled and pulled, run
+  `uv run --no-sync python .claude/loop_stall_check.py output session_20261110_171836`.
+  Tracks ending at a rebuild instant should be down to the chance level (a
+  pre-fix session shows about 13 times chance, e.g. 479 against 36), with no
+  pile of ends at the instant. Sessions recorded before the deploy keep their
+  splits.
 
 ## Output schema (preserved from NanoTracker)
 
