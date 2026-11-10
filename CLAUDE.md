@@ -580,6 +580,25 @@ still write in place.
   before naming the session; `--clock-sync-timeout-s` (0 = off). A restart
   on a synced device doesn't wait. Fitting an RTC backup battery would avoid
   the wait.
+- **Summary-page stall: found and fixed in code 2026-11-10, NOT YET DEPLOYED.**
+  The runtime rebuilt the summary page inline in `process_frame`, 11.76 s
+  after each kept track ended (10 s idle + the 16 frames a track takes to
+  expire), converting every record the session held. On the Orin that took
+  **0.5 s + 0.24 ms per record** (0.75 s at 1,000 records, 2.4 s at 8,000),
+  and no frame was processed meanwhile. Measured on the seven sessions with
+  trajectory logs (`.claude/loop_stall_check.py`, 46,376 tracks): **5.5 % of
+  kept tracks end at a rebuild**, about 2.2 % are one pass recorded as two
+  tracks, and 4K snaps in flight at a rebuild get a late completion time. So
+  some "BotSORT splits" were self-inflicted, and data late in a long session
+  is worse than early. The fix keeps the page's rows ready
+  (`common.summary.SummaryRows`, one row serialised per kept track at
+  finalise) and writes the files from a worker thread
+  (`runtime.start_html_write`); the on-loop cost of a rebuild at 8,000 records
+  drops from ~1.4 s to ~3 ms on the dev box. Code-only deploy, no config or
+  schema change. After deploying, run the script on the first new session:
+  the pile of track ends at the predicted instant should be gone and the
+  stall should equal the control (~0.34 s). Sessions recorded before the
+  deploy keep their splits.
 
 ## Output schema (preserved from NanoTracker)
 

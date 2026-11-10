@@ -22,9 +22,12 @@ from __future__ import annotations
 
 import html as html_mod
 import json
+from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from streettracker.common.fileio import atomic_write_text
 from streettracker.common.schema import TrackRecord
 
 # Inline ST26 TRK number-plate brand mark — the project logo, shared with the
@@ -53,8 +56,99 @@ ST26_FAVICON_LINK = (
 )
 
 
+def summary_row(record: TrackRecord | dict[str, Any]) -> dict[str, Any]:
+    """The fields the summary page shows for one track, in the order the
+    page's row payload has always carried them."""
+    if isinstance(record, TrackRecord):
+        # Read the attributes directly. ``to_json_dict`` deep-copies the whole
+        # record, bbox lists included, to pick out a dozen scalars.
+        return {
+            "track_id": record.track_id,
+            "class_name": record.class_name,
+            "color": record.color,
+            "time_start": record.time_start,
+            "time_start_unix": record.time_start_unix,
+            "duration_visible": record.duration_visible,
+            "direction": record.direction,
+            "speed_px_s": record.speed_px_s,
+            "lane": record.lane,
+            "avg_confidence": record.avg_confidence,
+            "asset_prefix": record.asset_prefix,
+            "main_snaps": list(record.main_snaps),
+        }
+    v = record
+    return {
+        "track_id": v["track_id"],
+        "class_name": v["class_name"],
+        "color": v["color"],
+        "time_start": v["time_start"],
+        "time_start_unix": v["time_start_unix"],
+        "duration_visible": v["duration_visible"],
+        "direction": v["direction"],
+        "speed_px_s": v["speed_px_s"],
+        "lane": v["lane"],
+        "avg_confidence": v["avg_confidence"],
+        "asset_prefix": v.get("asset_prefix", "vehicle"),
+        "main_snaps": list(v.get("main_snaps", [])),
+    }
+
+
+class SummaryRows:
+    """The summary page's rows, built up one finalised track at a time.
+
+    Each row is serialised once, when it is added, so producing the page's
+    payload is a string join whatever the session's length. The live runtime
+    rebuilds the page every time the street goes quiet; when it re-derived
+    every row from every record on each rebuild, that took 0.5 s plus 0.24 ms
+    per record on the Orin, on the event loop, and no frame was processed
+    meanwhile (``.claude/loop_stall_check.py``, 2026-11-10).
+
+    A finalised record never changes, so a row never needs rewriting.
+    """
+
+    __slots__ = ("_encoded", "class_counts")
+
+    def __init__(self, records: Iterable[TrackRecord | dict[str, Any]] = ()) -> None:
+        self._encoded: list[str] = []
+        self.class_counts: dict[str, int] = {}
+        for record in records:
+            self.add(record)
+
+    def add(self, record: TrackRecord | dict[str, Any]) -> None:
+        row = summary_row(record)
+        self._encoded.append(json.dumps(row, separators=(",", ":")))
+        name = row["class_name"]
+        self.class_counts[name] = self.class_counts.get(name, 0) + 1
+
+    def __len__(self) -> int:
+        return len(self._encoded)
+
+    def to_json(self) -> str:
+        """The rows as one JSON array: what ``vehicles.json`` holds and the
+        page embeds."""
+        return "[" + ",".join(self._encoded) + "]"
+
+    def summary_text(self) -> str:
+        n = len(self._encoded)
+        if not n:
+            return "No detections yet"
+        parts = [
+            f"{c} {name}{'s' if c != 1 else ''}" for name, c in sorted(self.class_counts.items())
+        ]
+        return f"{n} entr{'ies' if n != 1 else 'y'}: {', '.join(parts)}"
+
+
+@dataclass(frozen=True, slots=True)
+class SummarySnapshot:
+    """One rendering of the summary, as immutable strings: safe to hand to
+    another thread to write while the runtime carries on."""
+
+    data_json: str  # -> vehicles.json
+    page: str  # -> <session>_summary.html
+
+
 def generate_html(
-    records: list[TrackRecord | dict[str, Any]],
+    records: Iterable[TrackRecord | dict[str, Any]],
     output_dir: Path,
     html_path: Path,
     session_label: str,
@@ -62,46 +156,46 @@ def generate_html(
     refresh_seconds: int = 15,
 ) -> None:
     """Render the session dashboard to ``html_path`` and the row payload
-    to ``output_dir / "vehicles.json"``.
+    to ``output_dir / "vehicles.json"``, from a complete list of records.
 
     Also writes / updates an ``index.html`` redirector so the dashboard
-    is reachable at the directory root.
+    is reachable at the directory root. The live runtime keeps a
+    :class:`SummaryRows` instead and calls :func:`render_summary` +
+    :func:`write_summary` itself.
     """
-    rows = [r.to_json_dict() if isinstance(r, TrackRecord) else r for r in records]
+    snapshot = render_summary(SummaryRows(records), session_label, meta, refresh_seconds)
+    write_summary(snapshot, output_dir, html_path)
 
-    class_counts: dict[str, int] = {}
-    for v in rows:
-        class_counts[v["class_name"]] = class_counts.get(v["class_name"], 0) + 1
-    parts = [f"{c} {n}{'s' if c != 1 else ''}" for n, c in sorted(class_counts.items())]
-    summary_text = (
-        f"{len(rows)} entr{'ies' if len(rows) != 1 else 'y'}: {', '.join(parts)}"
-        if rows
-        else "No detections yet"
-    )
 
-    meta_kv = " · ".join(f"{k}: {v}" for k, v in sorted(meta.items()))
-
-    rows_payload = [
-        {
-            "track_id": v["track_id"],
-            "class_name": v["class_name"],
-            "color": v["color"],
-            "time_start": v["time_start"],
-            "time_start_unix": v["time_start_unix"],
-            "duration_visible": v["duration_visible"],
-            "direction": v["direction"],
-            "speed_px_s": v["speed_px_s"],
-            "lane": v["lane"],
-            "avg_confidence": v["avg_confidence"],
-            "asset_prefix": v.get("asset_prefix", "vehicle"),
-            "main_snaps": list(v.get("main_snaps", [])),
-        }
-        for v in rows
-    ]
-    data_json = json.dumps(rows_payload, separators=(",", ":"))
-
+def write_summary(snapshot: SummarySnapshot, output_dir: Path, html_path: Path) -> None:
+    """Write one rendering to disk. Each file is replaced in one step, so the
+    dashboard's server and a browser polling ``vehicles.json`` never read a
+    half-written file. Blocking; the runtime calls it from a worker thread."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "vehicles.json").write_text(data_json, encoding="utf-8")
+    atomic_write_text(output_dir / "vehicles.json", snapshot.data_json)
+    atomic_write_text(html_path, snapshot.page)
+
+    # Index redirector so http://<host>:<port>/ lands on the latest summary
+    # without needing to know the timestamped filename.
+    index_path = output_dir / "index.html"
+    if not index_path.exists() or index_path.stat().st_mtime < html_path.stat().st_mtime - 1:
+        atomic_write_text(
+            index_path,
+            f'<!DOCTYPE html><meta http-equiv="refresh" content="0; url={html_path.name}">',
+        )
+
+
+def render_summary(
+    rows: SummaryRows,
+    session_label: str,
+    meta: dict[str, Any],
+    refresh_seconds: int = 15,
+) -> SummarySnapshot:
+    """Build the page and its row payload from the accumulated rows. Cheap:
+    no per-row work beyond joining strings already serialised."""
+    summary_text = rows.summary_text()
+    meta_kv = " · ".join(f"{k}: {v}" for k, v in sorted(meta.items()))
+    data_json = rows.to_json()
 
     poll_ms = int(max(refresh_seconds, 0)) * 1000
     page = (
@@ -277,13 +371,4 @@ def generate_html(
         + "</script>"
         + "</body></html>"
     )
-    html_path.write_text(page, encoding="utf-8")
-
-    # Index redirector so http://<host>:<port>/ lands on the latest summary
-    # without needing to know the timestamped filename.
-    index_path = output_dir / "index.html"
-    if not index_path.exists() or index_path.stat().st_mtime < html_path.stat().st_mtime - 1:
-        index_path.write_text(
-            f'<!DOCTYPE html><meta http-equiv="refresh" content="0; url={html_path.name}">',
-            encoding="utf-8",
-        )
+    return SummarySnapshot(data_json=data_json, page=page)
