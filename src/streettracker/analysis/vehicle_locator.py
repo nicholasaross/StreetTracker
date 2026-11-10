@@ -36,13 +36,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from streettracker.analysis.alpr.base import atomic_write_text
 from streettracker.analysis.alpr.fullframe import (
     DEFAULT_MIN_VEHICLE_H_PX,
     DEFAULT_VEHICLE_IMGSZ,
     rank_vehicle_candidates,
 )
 from streettracker.analysis.snap_assets import load_bbox_index, resolve_bbox_hint
+from streettracker.common.fileio import atomic_write_text
 
 if TYPE_CHECKING:
     import numpy as np

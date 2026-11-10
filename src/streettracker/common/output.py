@@ -12,9 +12,11 @@ import datetime
 import json
 import logging
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from streettracker.common.fileio import iter_jsonl
 from streettracker.common.schema import SessionMeta, TrackRecord
 
 logger = logging.getLogger(__name__)
@@ -108,18 +110,19 @@ def read_events_jsonl(path: Path) -> list[TrackRecord]:
       it is intact and must remain readable so the operator can recover
       crashed-session data.
     """
-    out: list[TrackRecord] = []
-    for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError as exc:
-            logger.warning("[output] skipping torn line %d in %s: %s", n, path, exc)
-            continue
-        out.append(TrackRecord.from_json_dict(payload))
-    return out
+    return [
+        TrackRecord.from_json_dict(payload)
+        for payload in iter_jsonl(path, on_torn=_warn_torn("line", path))
+    ]
+
+
+def _warn_torn(what: str, path: Path) -> Callable[[int, ValueError], None]:
+    """An ``iter_jsonl`` callback that logs a skipped line from this module."""
+
+    def warn(line_number: int, exc: ValueError) -> None:
+        logger.warning("[output] skipping torn %s %d in %s: %s", what, line_number, path, exc)
+
+    return warn
 
 
 # ----------------------------------------------------------------------
@@ -195,16 +198,7 @@ def read_trajectories_jsonl(path: Path) -> list[dict[str, Any]]:
     tolerance as :func:`read_events_jsonl`; sessions recorded before
     2026-10-04 have no such file.
     """
-    out: list[dict[str, Any]] = []
-    for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            out.append(json.loads(line))
-        except json.JSONDecodeError as exc:
-            logger.warning("[output] skipping torn trajectory line %d in %s: %s", n, path, exc)
-    return out
+    return list(iter_jsonl(path, on_torn=_warn_torn("trajectory line", path)))
 
 
 def read_ir_events_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -214,13 +208,4 @@ def read_ir_events_jsonl(path: Path) -> list[dict[str, Any]]:
     events in file order; an odd-length result (trailing unmatched
     "start") indicates an unfinished IR period at crash time.
     """
-    out: list[dict[str, Any]] = []
-    for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            out.append(json.loads(line))
-        except json.JSONDecodeError as exc:
-            logger.warning("[output] skipping torn IR-event line %d in %s: %s", n, path, exc)
-    return out
+    return list(iter_jsonl(path, on_torn=_warn_torn("IR-event line", path)))

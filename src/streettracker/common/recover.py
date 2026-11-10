@@ -26,13 +26,12 @@ from __future__ import annotations
 import ast
 import datetime
 import html
-import json
-import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from streettracker.common.fileio import atomic_write_json, iter_jsonl
 from streettracker.common.hourly import build_hourly_rollup
 from streettracker.common.output import format_wall
 
@@ -146,20 +145,10 @@ def ir_periods_from_events(
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     """Raw dict per line, skipping blank and torn lines (the crash can tear
     the last one)."""
-    out: list[dict[str, Any]] = []
     if not path.is_file():
-        return out
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(row, dict):
-            out.append(row)
-    return out
+        return []
+    rows = iter_jsonl(path, on_torn=lambda _line_number, _exc: None)
+    return [row for row in rows if isinstance(row, dict)]
 
 
 def _label_start_unix(label: str) -> float | None:
@@ -168,12 +157,6 @@ def _label_start_unix(label: str) -> float | None:
     except ValueError:
         return None
     return stamp.timestamp()
-
-
-def _write_atomic(path: Path, payload: Any) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
 
 
 def recover_session(session_dir: Path) -> RecoveryResult:
@@ -250,12 +233,12 @@ def recover_session(session_dir: Path) -> RecoveryResult:
     meta_path = session_dir / f"{label}_meta.json"
     written: list[Path] = []
     if not hourly_path.exists():
-        _write_atomic(hourly_path, build_hourly_rollup(list(records), meta["ir_periods"]))
+        atomic_write_json(hourly_path, build_hourly_rollup(list(records), meta["ir_periods"]))
         written.append(hourly_path)
     if not meta_path.exists():
-        _write_atomic(meta_path, meta)
+        atomic_write_json(meta_path, meta)
         written.append(meta_path)
-    _write_atomic(data_path, records)
+    atomic_write_json(data_path, records)
     written.append(data_path)
 
     frame_size = meta.get("frame_size")

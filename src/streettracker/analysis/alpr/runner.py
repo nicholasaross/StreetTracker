@@ -18,9 +18,9 @@ from streettracker.analysis.alpr.base import (
     PlateRead,
     PlateResult,
     Timer,
-    atomic_write_bytes,
     crop_with_padding,
 )
+from streettracker.common.fileio import atomic_write_bytes
 
 if TYPE_CHECKING:
     import numpy as np

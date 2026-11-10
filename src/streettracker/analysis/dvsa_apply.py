@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from streettracker.common.fileio import atomic_write_text
+
 
 @dataclass(slots=True)
 class ApplyStats:
@@ -40,12 +42,6 @@ class ApplyStats:
     cars_labelled: int = 0
     cars_cleared: int = 0
     track_ids_available: int = 0
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(content, encoding="utf-8")
-    tmp.replace(path)
 
 
 def _track_label_map(payload: dict[str, Any]) -> dict[int, dict[str, Any]]:
@@ -119,9 +115,9 @@ def apply_dvsa_labels(session_dir: Path) -> ApplyStats:
         stats.cars_labelled += 1
 
     lines = [json.dumps(r, separators=(",", ":")) for r in records]
-    _atomic_write(jsonl_path, "\n".join(lines) + ("\n" if lines else ""))
+    atomic_write_text(jsonl_path, "\n".join(lines) + ("\n" if lines else ""))
     if data_paths:
-        _atomic_write(data_paths[0], json.dumps(records, indent=2))
+        atomic_write_text(data_paths[0], json.dumps(records, indent=2))
     return stats
 
 

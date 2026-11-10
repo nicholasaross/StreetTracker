@@ -11,14 +11,12 @@ This is the *only* writable state the website owns; everything else
 
 from __future__ import annotations
 
-import contextlib
-import json
-import os
-import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from streettracker.common.fileio import atomic_write_json, read_json
 
 # User-editable keys. Anything else in a submitted payload is ignored.
 # ``make_override`` / ``make_hidden`` let an operator correct a wrong make
@@ -81,12 +79,7 @@ class MetadataStore:
 
     def load(self) -> dict[str, dict[str, Any]]:
         """Return the whole store, or ``{}`` if absent / unreadable."""
-        if not self.path.exists():
-            return {}
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
+        data = read_json(self.path)
         return data if isinstance(data, dict) else {}
 
     def get(self, plate: str) -> dict[str, Any]:
@@ -109,17 +102,7 @@ class MetadataStore:
 
     def _save(self, store: dict[str, dict[str, Any]]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(
-            dir=str(self.path.parent), prefix=".showcase_meta_", suffix=".tmp"
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(store, f, indent=2, ensure_ascii=False)
-            os.replace(tmp, self.path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp)
-            raise
+        atomic_write_json(self.path, store, ensure_ascii=False)
 
 
 def _clean(fields: dict[str, Any]) -> dict[str, Any]:

@@ -34,6 +34,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from streettracker.common.fileio import atomic_write_json, read_json
 from streettracker.control.orin import parse_session_start
 
 # ----------------------------------------------------------------------
@@ -117,10 +118,7 @@ def load_cache(output_root: Path) -> int:
     """
     global _CACHE_PATH, _CACHE_DIRTY
     _CACHE_PATH = output_root / _CACHE_FILE
-    try:
-        raw = json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return 0
+    raw = read_json(_CACHE_PATH)
     if not isinstance(raw, list):
         return 0
 
@@ -165,9 +163,7 @@ def save_cache() -> int:
 
     try:
         _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        tmp = _CACHE_PATH.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(rows), encoding="utf-8")
-        tmp.replace(_CACHE_PATH)
+        atomic_write_json(_CACHE_PATH, rows, indent=None)
     except OSError:
         return 0  # a cache we can't write is not worth failing a poll over
 
@@ -176,10 +172,7 @@ def save_cache() -> int:
 
 
 def _read_json(path: Path) -> Any:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    return read_json(path)
 
 
 # ----------------------------------------------------------------------

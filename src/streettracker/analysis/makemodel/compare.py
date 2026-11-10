@@ -56,7 +56,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from streettracker.analysis.alpr.base import atomic_write_text
+from streettracker.common.fileio import atomic_write_text
 
 _SAMPLE_NAME_RE = re.compile(
     r"^(?P<car>.+)_(?P<session>session_\d{8}_\d{6})_(?P<tid>\d+)_(?P<n>\d+)\.jpg$"

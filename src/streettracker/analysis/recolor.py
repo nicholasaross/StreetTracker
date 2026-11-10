@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from streettracker.common.color import vote_color
+from streettracker.common.fileio import atomic_write_text
 from streettracker.common.hourly import build_hourly_rollup
 
 # Suffixes searched for the color-reference crop, in priority order.
@@ -60,12 +61,6 @@ def find_color_crop(session_dir: Path, track_id: int) -> Path | None:
             if p.exists():
                 return p
     return None
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(content, encoding="utf-8")
-    tmp.replace(path)
 
 
 _EMBEDDED_JSON_RE = re.compile(
@@ -137,18 +132,18 @@ def recolor_session(session_dir: Path) -> RecolorStats:
 
     # Rewrite events.jsonl
     lines = [json.dumps(r, separators=(",", ":")) for r in records]
-    _atomic_write(jsonl_path, "\n".join(lines) + ("\n" if lines else ""))
+    atomic_write_text(jsonl_path, "\n".join(lines) + ("\n" if lines else ""))
 
     # Rewrite data.json
     if data_paths:
-        _atomic_write(data_paths[0], json.dumps(records, indent=2))
+        atomic_write_text(data_paths[0], json.dumps(records, indent=2))
 
     # Rewrite hourly.json — preserve existing ir_periods, recompute breakdowns.
     if hourly_paths:
         existing = json.loads(hourly_paths[0].read_text(encoding="utf-8"))
         ir_periods = existing.get("ir_periods", [])
         rollup = build_hourly_rollup(records, ir_periods)
-        _atomic_write(hourly_paths[0], json.dumps(rollup, indent=2))
+        atomic_write_text(hourly_paths[0], json.dumps(rollup, indent=2))
 
     # Patch embedded JSON inside summary.html.
     if html_paths:
@@ -157,7 +152,7 @@ def recolor_session(session_dir: Path) -> RecolorStats:
         new_blob = json.dumps([_embedded_row(r) for r in records], separators=(",", ":"))
         new_html, n = _EMBEDDED_JSON_RE.subn(lambda m: m.group(1) + new_blob + m.group(3), html)
         if n == 1:
-            _atomic_write(html_path, new_html)
+            atomic_write_text(html_path, new_html)
         # else: leave HTML untouched; the summary will catch up on next
         # idle regen by the live runtime (or on the next recolor pass).
 
