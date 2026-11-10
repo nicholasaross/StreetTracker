@@ -61,11 +61,14 @@ class BespokeDetector:
         for r in results:
             if r.boxes is None or len(r.boxes) == 0:
                 continue
-            xyxy = r.boxes.xyxy.cpu().numpy()
-            confs = r.boxes.conf.cpu().numpy()
+            # predict() on a torch model returns Tensors here; the stubs also
+            # allow ndarray, which has no .cpu().
+            xyxy = r.boxes.xyxy.cpu().numpy()  # type: ignore[union-attr]
+            confs = r.boxes.conf.cpu().numpy()  # type: ignore[union-attr]
             idx = int(np.argmax(confs))
+            x1, y1, x2, y2 = (int(v) for v in xyxy[idx])
             candidate = PlateDetection(
-                bbox=tuple(int(v) for v in xyxy[idx]),
+                bbox=(x1, y1, x2, y2),
                 det_confidence=float(confs[idx]),
             )
             if best is None or candidate.det_confidence > best.det_confidence:

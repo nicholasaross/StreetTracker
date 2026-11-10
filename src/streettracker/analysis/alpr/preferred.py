@@ -51,8 +51,11 @@ class OpenImageModelsDetector:
     ) -> None:
         from open_image_models import LicensePlateDetector
 
+        # The library types the model name as a Literal of its hub names;
+        # ours arrives as a plain string from the CLI.
         self._detector = LicensePlateDetector(
-            detection_model=detector_model, providers=_gpu_first_providers()
+            detection_model=detector_model,  # type: ignore[arg-type]
+            providers=_gpu_first_providers(),
         )
         self._det_conf = det_conf
 
@@ -88,18 +91,19 @@ class FastPlateOcrRecognizer:
     ) -> None:
         # Class name shifted between versions; try the current name first, then legacy.
         try:
-            from fast_plate_ocr import (
-                LicensePlateRecognizer as _Recognizer,  # type: ignore[attr-defined]
-            )
+            from fast_plate_ocr import LicensePlateRecognizer as _Recognizer
         except ImportError:
-            from fast_plate_ocr import (
-                ONNXPlateRecognizer as _Recognizer,  # type: ignore[attr-defined,no-redef]
+            from fast_plate_ocr import (  # type: ignore[attr-defined,no-redef]
+                ONNXPlateRecognizer as _Recognizer,
             )
         # Pin providers (CUDA-first, no TensorRT) as for the detector.
         # fast-plate-ocr is pinned >=0.3, whose LicensePlateRecognizer
         # takes ``providers``; the legacy ONNXPlateRecognizer branch
         # above only trips on much older builds the pin excludes.
-        self._recognizer = _Recognizer(ocr_model, providers=_gpu_first_providers())
+        self._recognizer = _Recognizer(
+            ocr_model,  # type: ignore[arg-type]  # a hub-name Literal, as for the detector
+            providers=_gpu_first_providers(),
+        )
         # Fail at start-up, not hours into a run, if this fast-plate-ocr
         # build returns confidences in a shape _unpack_ocr_output can't
         # interpret (it raises rather than guessing).

@@ -190,7 +190,7 @@ def per_track_best_of_n(records: list[dict], labels: dict[str, dict]) -> dict[st
         if plate in SKIP_VALUES:
             continue
         _, tid, _ = parsed
-        track_truth[tid] = normalize_label_text(plate)
+        track_truth[tid] = normalize_label_text(plate or "")
 
     per_pipeline: dict[str, dict[int, list[str]]] = defaultdict(lambda: defaultdict(list))
     for r in records:

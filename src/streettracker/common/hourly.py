@@ -8,14 +8,15 @@ working.
 from __future__ import annotations
 
 import datetime
+from collections.abc import Sequence
 from typing import Any
 
 from streettracker.common.schema import IRPeriod, TrackRecord
 
 
 def build_hourly_rollup(
-    records: list[TrackRecord | dict[str, Any]],
-    ir_periods: list[IRPeriod | dict[str, Any]] | None = None,
+    records: Sequence[TrackRecord | dict[str, Any]],
+    ir_periods: Sequence[IRPeriod | dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Bucket records by wall-clock hour; summarise counts per hour.
 
