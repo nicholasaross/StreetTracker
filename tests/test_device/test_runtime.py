@@ -37,10 +37,12 @@ from typing import Any, cast
 import numpy as np
 import pytest
 
+from streettracker.common import summary as summary_mod
 from streettracker.common.config import StreetTrackerConfig
 from streettracker.common.output import EventLog, read_trajectories_jsonl
 from streettracker.common.schema import TrackRecord
 from streettracker.common.types import Detection
+from streettracker.device import runtime as runtime_mod
 from streettracker.device.ir_detector import IRDetector
 from streettracker.device.runtime import (
     SessionContext,
@@ -57,6 +59,9 @@ from streettracker.device.runtime import (
     make_session_label,
     process_frame,
     session_paths,
+    settle_html_write,
+    start_html_write,
+    write_html,
     write_session_outputs,
 )
 from streettracker.device.snap_planner import SnapPlanner, SnapPlannerConfig
@@ -1348,3 +1353,198 @@ async def test_run_session_disables_dashboard_when_disabled(tmp_path: Path) -> N
         assert rc == 0
     finally:
         holder.close()
+
+
+# ----------------------------------------------------------------------
+# Summary page regeneration must not hold up frame processing.
+#
+# Until 2026-11 the page was regenerated inline in process_frame, converting
+# every record held: 0.5 s + 0.24 ms per record on the Orin, with no frame
+# processed meanwhile (.claude/loop_stall_check.py).
+
+
+def _idle_ctx(tmp_path: Path, n_tracks: int = 1) -> SessionContext:
+    """A context with kept tracks and the idle timer already run out."""
+    ctx = _build_ctx(tmp_path)
+    ctx.frame_h = _FRAME_H
+    for i in range(n_tracks):
+        finalize_track(ctx, _moving_track_with_id(100 + i, class_id=2))
+    ctx.last_finalize_mono = time.monotonic() - 60.0
+    return ctx
+
+
+class _BlockedWrite:
+    """Stands in for write_summary: blocks until released, then really writes."""
+
+    def __init__(self) -> None:
+        self.release = threading.Event()
+        self.calls = 0
+        self._real = runtime_mod.write_summary
+
+    def __call__(self, snapshot: Any, output_dir: Path, html_path: Path) -> None:
+        self.calls += 1
+        assert self.release.wait(10.0), "test never released the page write"
+        self._real(snapshot, output_dir, html_path)
+
+
+def _row_ids(ctx: SessionContext) -> list[int]:
+    rows = json.loads((ctx.output_dir / "vehicles.json").read_text(encoding="utf-8"))
+    return [r["track_id"] for r in rows]
+
+
+def test_finalize_track_adds_one_summary_row_per_kept_track(tmp_path: Path) -> None:
+    ctx = _build_ctx(tmp_path)
+    ctx.frame_h = _FRAME_H
+    finalize_track(ctx, _moving_track())
+    assert len(ctx.summary_rows) == len(ctx.records) == 1
+    # A dropped track adds no row.
+    short = BufferedTrack(id=1, class_id=2)
+    short.points.append(
+        MotionPoint(frame_idx=0, t=0.0, cx=100, cy=100, x1=80, y1=80, x2=120, y2=120, score=0.9)
+    )
+    finalize_track(ctx, short)
+    assert len(ctx.summary_rows) == len(ctx.records) == 1
+
+
+async def test_idle_regen_does_not_wait_for_the_page_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _idle_ctx(tmp_path)
+    blocked = _BlockedWrite()
+    monkeypatch.setattr(runtime_mod, "write_summary", blocked)
+    html_path = session_paths(tmp_path, "session_test")["summary_html"]
+    try:
+        await process_frame(ctx, frame_idx=0, source_t=0.0, frame=_frame())
+        # The frame is finished although the page write is still blocked.
+        task = ctx.html_write_task
+        assert task is not None and not task.done()
+        assert ctx.html_dirty is False
+        assert ctx.html_writes == 0
+
+        # Frames keep being processed while it is blocked...
+        for i in range(1, 6):
+            await process_frame(ctx, frame_idx=i, source_t=float(i), frame=_frame())
+        assert ctx.frames_processed == 6
+        assert ctx.frames_inferred == 6
+        assert not html_path.exists()
+
+        # ...and a track finalised meanwhile does not start a second write on
+        # top of the first; the page just stays dirty.
+        finalize_track(ctx, _moving_track_with_id(200, class_id=2))
+        ctx.last_finalize_mono = time.monotonic() - 60.0
+        await process_frame(ctx, frame_idx=6, source_t=6.0, frame=_frame())
+        assert ctx.html_write_task is task
+        assert ctx.html_dirty is True
+    finally:
+        blocked.release.set()
+    await task
+    await asyncio.sleep(0)
+    assert blocked.calls == 1
+    assert ctx.html_writes == 1
+    assert _row_ids(ctx) == [100]
+
+    # Once the first write has landed, the next idle frame writes the rest.
+    await process_frame(ctx, frame_idx=7, source_t=7.0, frame=_frame())
+    second = ctx.html_write_task
+    assert second is not None and second is not task
+    await second
+    await asyncio.sleep(0)
+    assert ctx.html_writes == 2
+    assert ctx.html_dirty is False
+    assert _row_ids(ctx) == [100, 200]
+    assert html_path.exists()
+
+
+async def test_regeneration_does_no_per_record_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _idle_ctx(tmp_path, n_tracks=25)
+
+    def must_not_run(record: Any) -> dict[str, Any]:
+        raise AssertionError("a record was converted again during a regeneration")
+
+    # Rows were serialised at finalise. Regenerating the page must not go back
+    # to the records, or its cost grows with the session again.
+    monkeypatch.setattr(summary_mod, "summary_row", must_not_run)
+    for _ in range(3):
+        ctx.html_dirty = True
+        assert start_html_write(ctx) is True
+        task = ctx.html_write_task
+        assert task is not None
+        await task
+        await asyncio.sleep(0)
+    assert ctx.html_writes == 3
+    assert len(_row_ids(ctx)) == 25
+
+
+async def test_failed_page_write_is_logged_and_not_retried_every_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    ctx = _idle_ctx(tmp_path)
+    calls = {"n": 0}
+
+    def failing(snapshot: Any, output_dir: Path, html_path: Path) -> None:
+        calls["n"] += 1
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(runtime_mod, "write_summary", failing)
+    with caplog.at_level(logging.WARNING, logger="streettracker.device.runtime"):
+        await process_frame(ctx, frame_idx=0, source_t=0.0, frame=_frame())
+        task = ctx.html_write_task
+        assert task is not None
+        await asyncio.wait([task])
+        await asyncio.sleep(0)
+        for i in range(1, 4):
+            await process_frame(ctx, frame_idx=i, source_t=float(i), frame=_frame())
+    assert calls["n"] == 1
+    assert ctx.html_writes == 0
+    assert any("summary page write failed" in r.getMessage() for r in caplog.records)
+
+
+async def test_settle_html_write_waits_for_the_write_in_flight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _idle_ctx(tmp_path)
+    await settle_html_write(ctx)  # nothing in flight: returns at once
+
+    blocked = _BlockedWrite()
+    monkeypatch.setattr(runtime_mod, "write_summary", blocked)
+    assert start_html_write(ctx) is True
+    task = ctx.html_write_task
+    assert task is not None and not task.done()
+    asyncio.get_running_loop().call_later(0.05, blocked.release.set)
+    await settle_html_write(ctx)
+    assert task.done()
+    await asyncio.sleep(0)
+    assert ctx.html_writes == 1
+
+
+async def test_settle_html_write_gives_up_after_its_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _idle_ctx(tmp_path)
+    blocked = _BlockedWrite()
+    monkeypatch.setattr(runtime_mod, "write_summary", blocked)
+    start_html_write(ctx)
+    task = ctx.html_write_task
+    assert task is not None
+    try:
+        await settle_html_write(ctx, timeout_s=0.05)  # shutdown must not hang on a stuck disk
+        assert not task.done()
+    finally:
+        blocked.release.set()
+    await task
+
+
+def test_write_html_covers_records_added_behind_its_back(
+    tmp_path: Path, sample_track: TrackRecord
+) -> None:
+    # Tests (and anything else) may put records straight into ctx.records.
+    # The page must still show them.
+    ctx = _build_ctx(tmp_path)
+    ctx.records.append(sample_track)
+    assert len(ctx.summary_rows) == 0
+    write_html(ctx)
+    assert len(ctx.summary_rows) == 1
+    assert ctx.html_writes == 1
+    assert _row_ids(ctx) == [42]

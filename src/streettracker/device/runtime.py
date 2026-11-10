@@ -60,7 +60,12 @@ from streettracker.common.hourly import build_hourly_rollup
 from streettracker.common.output import EventLog, IREventLog, format_wall, save_json
 from streettracker.common.schema import IRPeriod, SessionMeta, TrackRecord
 from streettracker.common.session_files import SessionFiles
-from streettracker.common.summary import generate_html
+from streettracker.common.summary import (
+    SummaryRows,
+    SummarySnapshot,
+    render_summary,
+    write_summary,
+)
 from streettracker.device.dashboard import Dashboard, start_dashboard
 from streettracker.device.ir_detector import IRDetector
 from streettracker.device.snap_planner import (
@@ -104,6 +109,11 @@ _END_OF_FRAMES = None
 # 20% bbox padding for the center-sharpness probe used by the snap
 # planner's blur gate. Matches NanoTracker.
 _BLUR_GATE_INSET_FRAC = 0.2
+
+# Rendering the summary page happens on the event loop and should take a few
+# milliseconds. One frame is ~110 ms at the sub-stream's 9 fps; warn if a
+# render ever costs that much, because then frames are being held up again.
+_SLOW_SUMMARY_RENDER_MS = 100.0
 
 
 # ----------------------------------------------------------------------
@@ -161,6 +171,12 @@ class SessionContext:
     # Output accumulators -- written to disk at session end.
     records: list[TrackRecord] = field(default_factory=list)
     ir_periods: list[IRPeriod] = field(default_factory=list)
+    # The summary page's rows: one per kept record, serialised once when the
+    # track is finalised, so regenerating the page never walks ``records``.
+    summary_rows: SummaryRows = field(default_factory=SummaryRows)
+    # The background write of the summary page started by the last idle
+    # regeneration, if any (see start_html_write).
+    html_write_task: asyncio.Future[None] | None = None
 
     # Counters / housekeeping.
     frames_processed: int = 0
@@ -629,25 +645,98 @@ def finalize_track(ctx: SessionContext, track: BufferedTrack) -> None:
             }
         )
     ctx.records.append(record)
+    ctx.summary_rows.add(record)
     ctx.last_finalize_mono = time.monotonic()
     ctx.html_dirty = True
 
 
-def write_html(ctx: SessionContext) -> None:
-    """Regenerate the session's summary HTML + ``vehicles.json`` row payload."""
-    paths = session_paths(ctx.output_dir.parent, ctx.session_label)
-    meta = build_session_meta(ctx)
-    generate_html(
-        cast("list[TrackRecord | dict[str, Any]]", list(ctx.records)),
-        ctx.output_dir,
-        paths["summary_html"],
+def _summary_snapshot(ctx: SessionContext) -> SummarySnapshot:
+    """Render the summary page from the rows accumulated at finalise.
+
+    Cheap whatever the session's length: the rows are already serialised.
+    Marks the page clean, since the snapshot holds every record so far.
+    """
+    if len(ctx.summary_rows) != len(ctx.records):
+        # ``records`` was changed other than through finalize_track (tests
+        # build contexts that way). Rebuild the rows once to match.
+        ctx.summary_rows = SummaryRows(ctx.records)
+    snapshot = render_summary(
+        ctx.summary_rows,
         ctx.session_label,
-        meta.to_json_dict(),
+        build_session_meta(ctx).to_json_dict(),
         refresh_seconds=ctx.config.output.html_refresh_seconds,
     )
-    ctx.html_writes += 1
     ctx.html_dirty = False
+    return snapshot
+
+
+def _summary_html_path(ctx: SessionContext) -> Path:
+    return SessionFiles(ctx.output_dir).summary_html
+
+
+def write_html(ctx: SessionContext) -> None:
+    """Regenerate the session's summary HTML + ``vehicles.json`` row payload,
+    and wait for the files to be written. Used at session end; the per-frame
+    path is :func:`start_html_write`."""
+    write_summary(_summary_snapshot(ctx), ctx.output_dir, _summary_html_path(ctx))
+    ctx.html_writes += 1
     ctx.last_html_write_mono = time.monotonic()
+
+
+def start_html_write(ctx: SessionContext) -> bool:
+    """Regenerate the summary page without holding up frame processing.
+
+    The page is rendered here, on the event loop, which takes milliseconds
+    now that rows are kept ready (:class:`SummaryRows`); the file writes go to
+    a worker thread. Returns ``False`` and leaves the page marked dirty if the
+    previous write is still in flight, so the caller's idle check comes round
+    again on a later frame.
+
+    Until 2026-11 the whole regeneration ran inline in ``process_frame``. It
+    cost 0.5 s plus 0.24 ms per record held, during which no frame was
+    processed: 5.5 % of kept tracks were cut short at a regeneration
+    (``.claude/loop_stall_check.py``).
+    """
+    task = ctx.html_write_task
+    if task is not None and not task.done():
+        return False
+    started = time.monotonic()
+    snapshot = _summary_snapshot(ctx)
+    held_ms = (time.monotonic() - started) * 1000.0
+    if held_ms > _SLOW_SUMMARY_RENDER_MS:
+        logger.warning(
+            "[runtime] rendering the summary page held the loop for %.0f ms (%d rows)",
+            held_ms,
+            len(ctx.summary_rows),
+        )
+
+    def _done(t: asyncio.Future[None]) -> None:
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            # Not fatal, and not retried until the next kept track marks the
+            # page dirty again: a disk that can't take the write would
+            # otherwise be retried on every frame.
+            logger.warning("[runtime] summary page write failed: %s", exc)
+            return
+        ctx.html_writes += 1
+        ctx.last_html_write_mono = time.monotonic()
+
+    task = asyncio.get_running_loop().run_in_executor(
+        None, write_summary, snapshot, ctx.output_dir, _summary_html_path(ctx)
+    )
+    task.add_done_callback(_done)
+    ctx.html_write_task = task
+    return True
+
+
+async def settle_html_write(ctx: SessionContext, *, timeout_s: float = 10.0) -> None:
+    """Wait for an in-flight background page write, so the final write at
+    session end can't be overwritten by an older one finishing late."""
+    task = ctx.html_write_task
+    if task is not None and not task.done():
+        await asyncio.wait([task], timeout=timeout_s)
 
 
 def write_session_outputs(ctx: SessionContext, *, no_html: bool, no_json: bool) -> None:
@@ -830,11 +919,11 @@ async def process_frame(  # noqa: C901
             logger.info("[snap] track %d door fire %d", tr.id, door_dec.snap_index)
             _fire_snap(ctx, tr, door_dec.snap_index)
 
-    # Idle HTML regen.
+    # Idle HTML regen. Rendered here (cheap), written by a worker thread.
     now = time.monotonic()
     idle = ctx.config.output.html_idle_seconds
     if ctx.html_dirty and (now - ctx.last_finalize_mono) >= idle:
-        write_html(ctx)
+        start_html_write(ctx)
 
 
 # ----------------------------------------------------------------------
@@ -1099,6 +1188,9 @@ async def run_session(
                 )
             # Close any open IR period so meta reflects a complete history.
             _close_open_ir_period(ctx)
+            # Let a background page write finish first, so it can't land
+            # after (and overwrite) the final page written below.
+            await settle_html_write(ctx)
             # Final outputs (idempotent; safe even with empty record list).
             write_session_outputs(ctx, no_html=no_html, no_json=no_json)
             ctx.event_log.close()
@@ -1210,6 +1302,8 @@ __all__ = [
     "process_frame",
     "run_session",
     "session_paths",
+    "settle_html_write",
+    "start_html_write",
     "write_html",
     "write_session_outputs",
 ]
