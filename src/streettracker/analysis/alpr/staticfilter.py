@@ -110,7 +110,7 @@ def _predicted_motion(
     return (px - det_c[0], py - det_c[1])
 
 
-def find_static_spots(
+def find_static_spots(  # noqa: C901
     records: list[dict],
     car_index: dict[tuple[int, int], tuple[int, int, int, int]] | None = None,
     sub_size: tuple[int, int] | None = None,

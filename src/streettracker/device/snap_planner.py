@@ -486,7 +486,7 @@ class RoadGate:
     pipeline_band_reverse: tuple[float, float] | None = None
 
     @classmethod
-    def from_config(cls, cfg: RoadGateConfig, frame_w: int, frame_h: int) -> RoadGate:
+    def from_config(cls, cfg: RoadGateConfig, frame_w: int, frame_h: int) -> RoadGate:  # noqa: C901
         if len(cfg.polygon_frac) < 3:
             raise ValueError("road polygon needs at least 3 vertices")
         if not cfg.trigger_t_prime:
@@ -724,7 +724,7 @@ class SnapPlanner:
     def road_gate(self) -> RoadGate | None:
         return self._road_gate
 
-    def consider(
+    def consider(  # noqa: C901
         self,
         track_id: int,
         bbox: tuple[float, float, float, float],

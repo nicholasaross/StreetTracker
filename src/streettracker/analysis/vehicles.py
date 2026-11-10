@@ -462,7 +462,7 @@ def _attach_cnn_makes(
     return n
 
 
-def build_vehicles(
+def build_vehicles(  # noqa: C901
     session_dir: Path,
     *,
     conf_threshold: float | None = None,
@@ -765,7 +765,7 @@ def _attach_parked_episodes(
             target.parked_episodes.append(ep.to_json_dict())
 
 
-def build_cross_session(
+def build_cross_session(  # noqa: C901
     session_dirs: list[Path],
     *,
     conf_threshold: float | None = None,

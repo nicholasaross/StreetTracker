@@ -79,7 +79,7 @@ def _print_help() -> None:
     print(_HELP, end="")
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:  # noqa: C901
     if argv is None:
         argv = sys.argv[1:]
 

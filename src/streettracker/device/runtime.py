@@ -675,7 +675,7 @@ def write_session_outputs(ctx: SessionContext, *, no_html: bool, no_json: bool) 
 # Per-frame body.
 
 
-async def process_frame(
+async def process_frame(  # noqa: C901
     ctx: SessionContext, frame_idx: int, source_t: float, frame: np.ndarray
 ) -> None:
     """One frame's worth of work; mutates ``ctx`` in place.

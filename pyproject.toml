@@ -121,7 +121,14 @@ line-length = 100
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "SIM", "C4"]
+select = ["E", "F", "I", "B", "UP", "SIM", "C4", "C901"]
+
+[tool.ruff.lint.mccabe]
+# A ratchet, not a target. The functions already over this limit on
+# 2026-11-10 carry a `# noqa: C901` at their definition; anything new, or
+# anything that grows past the limit, fails lint. When you split one of the
+# marked functions, drop its noqa.
+max-complexity = 15
 
 [tool.ruff.lint.per-file-ignores]
 # summary.py is a port of NanoTracker's HTML generator: long JavaScript
@@ -131,6 +138,18 @@ select = ["E", "F", "I", "B", "UP", "SIM", "C4"]
 # alpr/report.py embeds a Jinja2 HTML template (CSS + script) as a string
 # literal — same inline-template trade-off as summary.py above.
 "src/streettracker/analysis/alpr/report.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src"]
+mypy_path = "src"
+# The heavy ML stacks are optional per machine: CI installs neither torch nor
+# the alpr extra, the Orin has no alpr extra, and some packages (easyocr) ship
+# no type information. A module mypy can't see is treated as Any, so the same
+# code type-checks wherever it runs. For the same reason warn_unused_ignores
+# stays off: an ignore needed where a library is installed is unused where it
+# isn't.
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

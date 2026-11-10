@@ -263,7 +263,7 @@ def _band(score: float) -> str:
     return "low"
 
 
-def classify_vehicle(
+def classify_vehicle(  # noqa: C901
     trips: list[Trip],
     *,
     parked_episodes: list[dict[str, Any]] | tuple[Any, ...] = (),

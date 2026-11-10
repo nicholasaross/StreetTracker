@@ -476,7 +476,7 @@ def _empty_stats(unit: str) -> Stats:
     )
 
 
-def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
+def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:  # noqa: C901
     """Aggregate traffic stats across all sessions under ``output_root``."""
     factor = _speed_factor(m_per_px)
     unit = "mph" if factor is not None else "px/s"

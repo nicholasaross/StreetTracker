@@ -401,7 +401,7 @@ def excluded_cars(
     return exclude
 
 
-def compare(
+def compare(  # noqa: C901
     corpus_dir: Path,
     candidate: Path,
     production: Path,

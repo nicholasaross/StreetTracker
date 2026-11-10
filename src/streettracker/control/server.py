@@ -287,7 +287,7 @@ async def _api_playbook(request: web.Request) -> web.Response:
     return web.json_response(runner.snapshot(pb))
 
 
-async def _api_submit_playbook(request: web.Request) -> web.Response:
+async def _api_submit_playbook(request: web.Request) -> web.Response:  # noqa: C901
     """Launch a multi-step playbook (localhost-only; destructive ones need confirm)."""
     _require_local(request)
     try:
