@@ -539,7 +539,9 @@ src/streettracker/
 │   ├── config.py           # frozen-dataclass strict JSON loader
 │   ├── summary.py          # HTML dashboard generation
 │   ├── hourly.py           # build_hourly_rollup()
-│   └── output.py           # EventLog, save_json, file-path helpers
+│   ├── output.py           # EventLog, save_json, JSONL readers
+│   ├── fileio.py           # atomic_write_json/text/bytes, read_json, iter_jsonl
+│   └── session_files.py    # SessionFiles(session_dir): every per-session file path
 ├── inference/              # YOLO + BotSORT via Ultralytics
 ├── sources/                # RTSP (FFmpeg), file (NVDEC on Orin)
 ├── device/                 # Orin-only: live runtime, snapshotter, dashboard, IR
@@ -548,6 +550,16 @@ src/streettracker/
 ```
 
 Single import root: `from streettracker.common.schema import TrackRecord`.
+
+**Session files (2026-11-10).** Write any file that outlives the command with
+`common.fileio.atomic_write_json` / `atomic_write_text` (temp file, then
+rename; on Windows the rename retries while the showcase or panel has the
+target open), not a plain `write_text`. Build per-session paths with
+`SessionFiles(session_dir).<name>` (`common/session_files.py`) instead of an
+`f"{label}_<suffix>"` literal; a new per-session file gets a property there
+and a line in `tests/test_common/test_session_files.py`. The device-side
+writers (`common/output.py` `save_*`, `common/summary.py`, `device/runtime.py`)
+still write in place.
 
 ### Device runtime notes (Orin Nano 8GB Super)
 

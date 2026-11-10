@@ -36,13 +36,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from streettracker.analysis.alpr.base import atomic_write_text
 from streettracker.analysis.alpr.fullframe import (
     DEFAULT_MIN_VEHICLE_H_PX,
     DEFAULT_VEHICLE_IMGSZ,
     rank_vehicle_candidates,
 )
 from streettracker.analysis.snap_assets import load_bbox_index, resolve_bbox_hint
+from streettracker.common.fileio import atomic_write_text
 
 if TYPE_CHECKING:
     import numpy as np
@@ -92,7 +92,7 @@ def load_alpr_reads(session_dir: Path) -> dict[tuple[int, int], list[dict[str, A
     if not path.exists():
         return out
     try:
-        records = json.loads(path.read_text())
+        records = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return out
     for r in records:
@@ -199,7 +199,7 @@ class VehicleBoxCache:
         self.n_detected = 0
         if self.path.exists():
             try:
-                data = json.loads(self.path.read_text())
+                data = json.loads(self.path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 data = {}
             if data.get("params") == self._params:

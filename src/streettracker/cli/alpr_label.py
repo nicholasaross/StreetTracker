@@ -26,8 +26,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from streettracker.analysis.alpr.base import atomic_write_text
 from streettracker.analysis.alpr.metrics import NO_PLATE, UNREADABLE
+from streettracker.common.fileio import atomic_write_text
 
 
 def main(argv: list[str] | None = None) -> int:

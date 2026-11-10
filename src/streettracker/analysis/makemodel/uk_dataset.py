@@ -72,6 +72,7 @@ from streettracker.analysis.vehicle_locator import (
     load_alpr_reads,
     plate_anchored_box,
 )
+from streettracker.common.fileio import atomic_write_json
 
 __all__ = [
     "BODY_TYPES",
@@ -97,7 +98,7 @@ def _load_session_labels(session_dir: Path) -> dict[str, dict[str, Any]]:
     if not matches:
         return {}
     try:
-        return json.loads(matches[0].read_text()).get("labels", {})
+        return json.loads(matches[0].read_text(encoding="utf-8")).get("labels", {})
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -307,7 +308,7 @@ def extract_crops(  # noqa: C901
         "output_size": output_size,
         "samples": samples,
     }
-    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    atomic_write_json(out_dir / "manifest.json", manifest)
     kept_cars = [c for c in car_make if car_make[c] in kept]
     return {
         "n_makes": len(kept),
@@ -394,7 +395,7 @@ class UKMakeDataset(Dataset):
             raise ValueError(f"split must be 'train' or 'val', got {split!r}")
         self._root = Path(dataset_dir)
         self._label_field = label_field
-        manifest = json.loads((self._root / "manifest.json").read_text())
+        manifest = json.loads((self._root / "manifest.json").read_text(encoding="utf-8"))
 
         names = class_names if class_names is not None else make_names
         if names is None:
@@ -485,7 +486,7 @@ def train_uk_make(
     # Record how the corpus was cropped so inference can reproduce it
     # (vehicle_locator.resolve_crop_settings). Legacy corpora carry neither
     # key, which keeps their checkpoint metadata byte-identical.
-    manifest = json.loads((Path(dataset_dir) / "manifest.json").read_text())
+    manifest = json.loads((Path(dataset_dir) / "manifest.json").read_text(encoding="utf-8"))
     crop_meta = {
         k_out: manifest[k_in]
         for k_in, k_out in (("crop_mode", "crop_mode"), ("pad_frac", "crop_pad_frac"))
@@ -595,7 +596,7 @@ def train_uk_make(
         "crop_pad_frac": crop_meta.get("crop_pad_frac"),
         "seed": config.seed,
     }
-    (out_path / "history.json").write_text(json.dumps(summary, indent=2))
+    atomic_write_json(out_path / "history.json", summary)
     print(
         f"[makemodel-uk] done: best {target}@1={best:.3f} (epoch {best_epoch}) -> {ckpt_path}",
         flush=True,
@@ -763,9 +764,9 @@ def train_main(argv: list[str] | None = None) -> int:
         force_cpu=args.cpu,
     )
     manifest_key = _TARGET_MANIFEST_KEY.get(args.target)
-    if manifest_key and not json.loads((args.crops_dir / "manifest.json").read_text()).get(
-        manifest_key
-    ):
+    if manifest_key and not json.loads(
+        (args.crops_dir / "manifest.json").read_text(encoding="utf-8")
+    ).get(manifest_key):
         print(
             f"[makemodel-train-uk] this corpus has no {args.target} labels "
             f"-- rebuild with makemodel-build-uk to add them"

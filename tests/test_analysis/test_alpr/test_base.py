@@ -97,20 +97,6 @@ class TestCropWithPadding:
         assert crop.shape[2] == 3  # didn't crash; returned a (possibly empty) 3-ch crop
 
 
-class TestAtomicWrites:
-    def test_atomic_write_text(self, tmp_path) -> None:
-        p = tmp_path / "x.json"
-        base.atomic_write_text(p, '{"a": 1}')
-        assert p.read_text() == '{"a": 1}'
-        # No leftover .tmp file
-        assert list(tmp_path.iterdir()) == [p]
-
-    def test_atomic_write_bytes(self, tmp_path) -> None:
-        p = tmp_path / "x.jpg"
-        base.atomic_write_bytes(p, b"\xff\xd8\xff")
-        assert p.read_bytes() == b"\xff\xd8\xff"
-
-
 class TestTimer:
     def test_records_elapsed_ms(self) -> None:
         import time

@@ -264,20 +264,6 @@ def crop_with_padding(
     return image[cy1:cy2, cx1:cx2]
 
 
-def atomic_write_text(path: Path, content: str) -> None:
-    """Write text via temp-file + replace. Matches the pattern in
-    ``streettracker.analysis.recolor`` and ``common/output``."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(content, encoding="utf-8")
-    tmp.replace(path)
-
-
-def atomic_write_bytes(path: Path, content: bytes) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_bytes(content)
-    tmp.replace(path)
-
-
 class Timer:
     """Wallclock context manager. ``with Timer() as t: ...; t.ms``."""
 

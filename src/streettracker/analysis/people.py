@@ -99,6 +99,7 @@ from streettracker.analysis.walks import (
     door_origin_for_records,
     is_own_trip,
 )
+from streettracker.common.fileio import atomic_write_json
 
 # Walker/jogger boundary, m/s. Empirical: the pooled five-soak person
 # speed histogram (13,350 tracks) shows the walking mass ending ~2.0-2.5
@@ -692,26 +693,23 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     out_path = args.out or (session_dir / f"{session}_people.json")
-    out_path.write_text(
-        json.dumps(
-            {
-                "session": session,
-                "params": {
-                    "m_per_px": m_per_px,
-                    "jogger_min_m_s": args.jogger_min_ms,
-                    "min_overlap_s": args.min_overlap_s,
-                    "overlap_frac": args.overlap_frac,
-                    "walk_gap_s": args.walk_gap_s,
-                    "rt_min_gap_s": args.rt_min_gap_s,
-                    "rt_max_gap_s": args.rt_max_gap_s,
-                    "door_zone": str(args.door_zone) if door_zone else None,
-                },
-                "summary": summary,
-                "people": [p.to_json_dict() for p in people],
+    atomic_write_json(
+        out_path,
+        {
+            "session": session,
+            "params": {
+                "m_per_px": m_per_px,
+                "jogger_min_m_s": args.jogger_min_ms,
+                "min_overlap_s": args.min_overlap_s,
+                "overlap_frac": args.overlap_frac,
+                "walk_gap_s": args.walk_gap_s,
+                "rt_min_gap_s": args.rt_min_gap_s,
+                "rt_max_gap_s": args.rt_max_gap_s,
+                "door_zone": str(args.door_zone) if door_zone else None,
             },
-            indent=2,
-        ),
-        encoding="utf-8",
+            "summary": summary,
+            "people": [p.to_json_dict() for p in people],
+        },
     )
     print(
         f"[people] wrote {out_path}  ({summary['n_person_tracks']} person tracks, "

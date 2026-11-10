@@ -21,9 +21,9 @@ import json
 import sys
 from pathlib import Path
 
-from streettracker.analysis.alpr.base import atomic_write_text
 from streettracker.analysis.alpr.plate_colour import PLATE_COLOUR_METHOD, mark_colour_suspects
 from streettracker.cli.alpr_run import _direction_by_track, _rollup_by_track, _stamp
+from streettracker.common.fileio import atomic_write_text
 
 
 def _build_parser() -> argparse.ArgumentParser:

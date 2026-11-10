@@ -14,8 +14,8 @@ import json
 import sys
 from pathlib import Path
 
-from streettracker.analysis.alpr.base import atomic_write_text
 from streettracker.analysis.alpr.report import render_html
+from streettracker.common.fileio import atomic_write_text
 
 
 def main(argv: list[str] | None = None) -> int:

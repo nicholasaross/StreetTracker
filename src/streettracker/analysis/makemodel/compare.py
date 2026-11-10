@@ -56,7 +56,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from streettracker.analysis.alpr.base import atomic_write_text
+from streettracker.common.fileio import atomic_write_text
 
 _SAMPLE_NAME_RE = re.compile(
     r"^(?P<car>.+)_(?P<session>session_\d{8}_\d{6})_(?P<tid>\d+)_(?P<n>\d+)\.jpg$"
@@ -140,7 +140,7 @@ def _colour_group(colour: str) -> str:
 
 
 def _manifest(corpus_dir: Path) -> dict[str, Any]:
-    return json.loads((corpus_dir / "manifest.json").read_text())
+    return json.loads((corpus_dir / "manifest.json").read_text(encoding="utf-8"))
 
 
 def corpus_cars(corpus_dir: Path) -> set[str]:
@@ -368,7 +368,9 @@ def _production_corpus(production: Path, runs_dir: Path) -> Path | None:
     """Production's training corpus dir, from the promotion sidecar."""
     sidecar = production.with_suffix(".meta.json")
     try:
-        name = (json.loads(sidecar.read_text()).get("trained_corpus") or {}).get("name")
+        name = (json.loads(sidecar.read_text(encoding="utf-8")).get("trained_corpus") or {}).get(
+            "name"
+        )
     except (OSError, json.JSONDecodeError):
         return None
     if not name:

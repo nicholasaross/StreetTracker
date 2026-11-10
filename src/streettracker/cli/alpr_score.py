@@ -14,7 +14,6 @@ import json
 import sys
 from pathlib import Path
 
-from streettracker.analysis.alpr.base import atomic_write_text
 from streettracker.analysis.alpr.metrics import (
     char_confusion_table,
     cross_pipeline_agreement,
@@ -23,6 +22,7 @@ from streettracker.analysis.alpr.metrics import (
     per_pipeline_read_rate,
     per_track_best_of_n,
 )
+from streettracker.common.fileio import atomic_write_text
 
 
 def main(argv: list[str] | None = None) -> int:

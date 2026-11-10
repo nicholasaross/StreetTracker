@@ -71,7 +71,7 @@ def load_bbox_index(
     bbox_index: dict[tuple[int, int], tuple[int, int, int, int]] = {}
     if data_path.exists():
         try:
-            records = json.loads(data_path.read_text())
+            records = json.loads(data_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             records = []
         for r in records:
@@ -95,7 +95,7 @@ def load_bbox_index(
     sub_size: tuple[int, int] | None = None
     if meta_path.exists():
         try:
-            meta = json.loads(meta_path.read_text())
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             meta = {}
         fs = meta.get("frame_size")
@@ -121,7 +121,7 @@ def load_done_bbox_index(
     if not data_path.exists():
         return out
     try:
-        records = json.loads(data_path.read_text())
+        records = json.loads(data_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return out
     for r in records:

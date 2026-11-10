@@ -79,6 +79,8 @@ from streettracker.analysis.parked import (
     merge_episodes,
     normalize_plate,
 )
+from streettracker.common.fileio import atomic_write_json
+from streettracker.common.session_files import SessionFiles
 
 # Minimum confidence-weighted vote share for a track's CNN make
 # prediction (``<session>_makemodel_by_track.json``) to fill a vehicle's
@@ -547,13 +549,11 @@ def build_vehicles(  # noqa: C901
 
     Vehicles are returned sorted by ``first_seen`` ascending.
     """
-    session = session_dir.name
-    data_path = session_dir / f"{session}_data.json"
-    alpr_by_track_path = session_dir / f"{session}_alpr_by_track.json"
+    files = SessionFiles(session_dir)
 
-    data = json.loads(data_path.read_text())
-    if alpr_by_track_path.exists():
-        alpr_rollup = json.loads(alpr_by_track_path.read_text())
+    data = json.loads(files.data.read_text(encoding="utf-8"))
+    if files.alpr_by_track.exists():
+        alpr_rollup = json.loads(files.alpr_by_track.read_text(encoding="utf-8"))
     else:
         alpr_rollup = {"tracks": []}
 
@@ -662,11 +662,7 @@ def build_vehicles(  # noqa: C901
     # driving R→L, one second apart. Rejecting that merge produced
     # a false negative more often than the temporal-overlap heuristic
     # caught a true positive, so the rejection is gone.
-    dvsa_labels_file = (
-        dvsa_labels_path
-        if dvsa_labels_path is not None
-        else session_dir / f"{session}_dvsa_labels.json"
-    )
+    dvsa_labels_file = dvsa_labels_path if dvsa_labels_path is not None else files.dvsa_labels
     dvsa_rows = _load_dvsa_labels(dvsa_labels_file)
 
     if fuzzy_ratio is not None:
@@ -726,7 +722,7 @@ def build_vehicles(  # noqa: C901
     if cnn_make:
         _attach_cnn_makes(
             out,
-            _load_cnn_by_track(session_dir / f"{session}_makemodel_by_track.json"),
+            _load_cnn_by_track(files.makemodel_by_track),
         )
 
     if detection.episodes:
@@ -822,7 +818,7 @@ def build_cross_session(  # noqa: C901
         # + each spelling's observed colours pooled across its sessions.
         labels_pool: dict[str, dict[str, Any]] = {}
         for d in session_dirs:
-            for plate, row in _load_dvsa_labels(d / f"{d.name}_dvsa_labels.json").items():
+            for plate, row in _load_dvsa_labels(SessionFiles(d).dvsa_labels).items():
                 labels_pool.setdefault(plate, row)
         colours_pool: dict[str, Counter] = {}
         for _sname, v in plated:
@@ -1090,7 +1086,7 @@ def _run_cross(args: argparse.Namespace) -> int:
         suppress_parked=not args.no_parked_suppression,
     )
     out_path = args.out or (args.session_dir.parent / "cross_session_repeats.json")
-    out_path.write_text(json.dumps([c.to_json_dict() for c in cross], indent=2))
+    atomic_write_json(out_path, [c.to_json_dict() for c in cross])
     _print_cross_summary(cross, dirs, out_path)
     return 0
 
@@ -1156,9 +1152,8 @@ def main(argv: list[str] | None = None) -> int:
         cnn_make=not args.no_cnn_make,
     )
 
-    session = session_dir.name
-    out_path = session_dir / f"{session}_vehicles.json"
-    out_path.write_text(json.dumps([v.to_json_dict() for v in vehicles], indent=2))
+    out_path = SessionFiles(session_dir).vehicles
+    atomic_write_json(out_path, [v.to_json_dict() for v in vehicles])
     print(f"[vehicles] wrote {out_path}  ({len(vehicles)} vehicles)")
 
     # Headline numbers.

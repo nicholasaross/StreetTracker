@@ -35,13 +35,13 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from streettracker.analysis.alpr.base import atomic_write_text
 from streettracker.analysis.alpr.fullframe import load_road_polygon
 from streettracker.analysis.makemodel.cropper import VehicleCropper
 from streettracker.analysis.makemodel.dataset import IMAGENET_MEAN, IMAGENET_STD
 from streettracker.analysis.makemodel.model import load_checkpoint
 from streettracker.analysis.snap_assets import discover_vehicle_snaps, read_image
 from streettracker.analysis.vehicle_locator import SnapVehicleLocator, resolve_crop_settings
+from streettracker.common.fileio import atomic_write_text
 
 if TYPE_CHECKING:
     import numpy as np

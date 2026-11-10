@@ -11,12 +11,11 @@ panel down.
 from __future__ import annotations
 
 import contextlib
-import json
-import os
-import tempfile
 import time
 from pathlib import Path
 from typing import Any
+
+from streettracker.common.fileio import atomic_write_json, read_json
 
 DEFAULT_CAP = 200  # most recent N terminal snapshots kept on disk
 MAX_AGE_S = 60 * 3600  # snapshots older than this are dropped (the UI also minimises old runs)
@@ -26,10 +25,7 @@ def load(path: Path | None) -> list[dict[str, Any]]:
     """Return the persisted snapshots (oldest-first), or ``[]`` if absent/corrupt."""
     if path is None:
         return []
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
+    data = read_json(path)
     return data if isinstance(data, list) else []
 
 
@@ -75,11 +71,6 @@ def append(
 
 def _atomic_write(path: Path, items: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(items, f, indent=2)
-        os.replace(tmp, path)
-    except OSError:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
+    # History is a convenience: a write that fails must not take the panel down.
+    with contextlib.suppress(OSError):
+        atomic_write_json(path, items)

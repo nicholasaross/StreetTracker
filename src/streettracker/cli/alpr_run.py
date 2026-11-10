@@ -23,7 +23,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from streettracker.analysis.alpr.base import OCR_CONF_METHOD, atomic_write_text
+from streettracker.analysis.alpr.base import OCR_CONF_METHOD
 from streettracker.analysis.alpr.plate_colour import PLATE_COLOUR_METHOD, mark_colour_suspects
 from streettracker.analysis.alpr.runner import PipelineRunner
 from streettracker.analysis.snap_assets import (
@@ -44,6 +44,7 @@ from streettracker.analysis.snap_assets import (
 from streettracker.analysis.snap_assets import (
     resolve_bbox_hint_window as _resolve_bbox_hint_window,
 )
+from streettracker.common.fileio import atomic_write_text
 
 # Default location for the bespoke detector weights. The repo's
 # top-level ``.gitignore`` carries ``*.pt`` so anything under here stays
@@ -446,7 +447,7 @@ def _load_ghost_mask(
         print(f"[alpr] --ghost-mask {path}: not found, ignoring", file=sys.stderr)
         return [], None
     try:
-        spec = json.loads(path.read_text())
+        spec = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
         print(f"[alpr] --ghost-mask {path}: parse error ({e}), ignoring", file=sys.stderr)
         return [], None

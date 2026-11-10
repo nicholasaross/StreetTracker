@@ -39,11 +39,11 @@ from typing import TYPE_CHECKING, Any
 from streettracker.analysis.alpr.base import (
     OCR_CONF_METHOD,
     PlateRead,
-    atomic_write_text,
     plate_conf_threshold,
     resolve_plate_conf_threshold,
 )
 from streettracker.cli.alpr_run import _rollup_by_track
+from streettracker.common.fileio import atomic_write_text
 
 if TYPE_CHECKING:
     import numpy as np
