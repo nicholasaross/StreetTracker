@@ -331,27 +331,39 @@ def _cluster_plates_by_similarity(
 
     Greedy seed-and-grow: process plates in seed order. For each plate,
     check if it matches any existing cluster's seed at >= ratio (with
-    same length); if yes, attach; otherwise start a new cluster.
+    same length); if yes, attach to the EARLIEST such seed; otherwise
+    start a new cluster.
+
+    Seeds are bucketed by length (only same-length pairs can merge) and
+    each plate is scored against its whole bucket in one rapidfuzz call,
+    so the pairwise comparisons run in C. The showcase clusters every
+    plate spelling across all sessions here; as a Python double loop
+    that was ~50 million iterations and a third of its rebuild time.
     """
     if not plates_with_conf or ratio is None:
         return {p: p for p, _c in plates_with_conf}
 
     # Lazy import so the module loads on Python without rapidfuzz.
-    from rapidfuzz import fuzz
+    from rapidfuzz import fuzz, process
 
     # Seed order: most-supported first (when support given), then highest
     # confidence, then alphabetical for determinism.
     sup = support or {}
     ordered = sorted(plates_with_conf, key=lambda x: (-sup.get(x[0], 0.0), -x[1], x[0]))
     canonical: dict[str, str] = {}  # plate -> canonical
-    seeds: list[str] = []  # cluster seeds (canonical plates)
+    # length -> cluster seeds (canonical plates) of that length, in the
+    # order they were created.
+    seeds_by_len: dict[int, list[str]] = {}
 
     for plate, _conf in ordered:
+        seeds = seeds_by_len.setdefault(len(plate), [])
         matched_seed: str | None = None
-        for seed in seeds:
-            if len(seed) != len(plate):
-                continue
-            if fuzz.ratio(seed, plate) >= ratio:
+        if seeds:
+            hits = process.extract(plate, seeds, scorer=fuzz.ratio, score_cutoff=ratio, limit=None)
+            # ``hits`` come back best-score first; the greedy rule is the
+            # earliest-created seed, so walk them in seed order.
+            for idx in sorted(h[2] for h in hits):
+                seed = seeds[idx]
                 if is_distinct is not None and is_distinct(seed, plate):
                     continue
                 matched_seed = seed

@@ -17,6 +17,8 @@ from streettracker.web.aggregate import (
     _new_pool_rec,
     build_showcase,
     discover_sessions,
+    list_session_images,
+    resolve_image_urls,
 )
 
 _FAKE_JPEG = b"\xff\xd8\xff\xe0X\xff\xd9"
@@ -403,3 +405,47 @@ def test_discover_sessions_skips_dirs_without_data(tmp_path: Path) -> None:
     (tmp_path / "loose_file.txt").write_text("x")
     found = discover_sessions(tmp_path)
     assert found == [good]
+
+
+def test_list_session_images_names_only_jpg_files(tmp_path: Path) -> None:
+    d = tmp_path / "session_x"
+    d.mkdir()
+    (d / "vehicle_1.jpg").write_bytes(_FAKE_JPEG)
+    (d / "vehicle_1_main_2.jpg").write_bytes(_FAKE_JPEG)
+    (d / "session_x_data.json").write_text("[]")
+    (d / "looks_like_a_snap.jpg").mkdir()  # a directory is not an image
+    assert list_session_images(d) == {"vehicle_1.jpg", "vehicle_1_main_2.jpg"}
+
+
+def test_list_session_images_missing_dir_is_empty(tmp_path: Path) -> None:
+    assert list_session_images(tmp_path / "never_pulled") == frozenset()
+
+
+def test_resolve_image_urls_listing_agrees_with_stat(tmp_path: Path) -> None:
+    # Track 1 has every image, track 2 only its 4K snap (an --only-main
+    # pull), track 3 nothing. The listing path must answer exactly as the
+    # per-file stat path does, for both crop preferences.
+    d = tmp_path / "session_x"
+    d.mkdir()
+    for name in ("vehicle_1.jpg", "vehicle_1_hq.jpg", "vehicle_1_main_1.jpg"):
+        (d / name).write_bytes(_FAKE_JPEG)
+    (d / "vehicle_2_main_4.jpg").write_bytes(_FAKE_JPEG)
+    on_disk = list_session_images(d)
+
+    cases = [(1, "vehicle_1_main_1.jpg"), (2, "vehicle_2_main_4.jpg"), (3, "vehicle_3_main_1.jpg")]
+    for tid, best in cases:
+        for prefer_hq in (False, True):
+            by_stat = resolve_image_urls(
+                tmp_path, "session_x", tid, best_image=best, prefer_hq=prefer_hq
+            )
+            by_listing = resolve_image_urls(
+                tmp_path, "session_x", tid, best_image=best, prefer_hq=prefer_hq, on_disk=on_disk
+            )
+            assert by_listing == by_stat
+
+    assert resolve_image_urls(tmp_path, "session_x", 1, on_disk=on_disk) == (
+        "/images/session_x/vehicle_1.jpg",  # thumb: the tile
+        "/images/session_x/vehicle_1_hq.jpg",  # full: largest without a 4K snap
+        True,
+    )
+    assert resolve_image_urls(tmp_path, "session_x", 3, on_disk=on_disk) == (None, None, False)
