@@ -958,8 +958,13 @@ complete** — both ancestor repos archived on GitHub 2026-07-07.
 | 6     | (opt) Nano archive role                                                 | not started                                                                                                            |
 | 7     | cutover: enable systemd on Orin + decommission Nano + archive old repos | **done** — Orin live since 2026-05-22; `VehicleTracker` + `NanoTracker` archived 2026-07-07 with superseded-by banners |
 
-Tests at HEAD: **1101 passing on Python 3.10 in the CI environment (8 torch-only
-modules skip there), ruff clean.** A `tests/conftest.py` autouse fixture points
+Tests at HEAD (2026-11-10): **about 1,300 passing on the dev box, on Python 3.10.**
+CI runs them in two jobs: `test` (no torch; the 8 torch-gated classifier modules
+skip there) and `test-torch` (those 8 modules, 92 tests, on CPU wheels). CI also
+enforces `ruff check`, `ruff format --check`, `mypy` (`[tool.mypy]` in
+`pyproject.toml`) and a complexity limit of 15: the functions already over it
+carry `# noqa: C901` on their definition, so drop the marker when you split one.
+A `tests/conftest.py` autouse fixture points
 the plate-gate config at a per-test path, so a calibrated `configs/alpr.json` on
 the dev box never changes what the tests see.
 
