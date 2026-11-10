@@ -79,6 +79,7 @@ from streettracker.analysis.parked import (
     merge_episodes,
     normalize_plate,
 )
+from streettracker.common.fileio import atomic_write_json
 
 # Minimum confidence-weighted vote share for a track's CNN make
 # prediction (``<session>_makemodel_by_track.json``) to fill a vehicle's
@@ -1090,7 +1091,7 @@ def _run_cross(args: argparse.Namespace) -> int:
         suppress_parked=not args.no_parked_suppression,
     )
     out_path = args.out or (args.session_dir.parent / "cross_session_repeats.json")
-    out_path.write_text(json.dumps([c.to_json_dict() for c in cross], indent=2))
+    atomic_write_json(out_path, [c.to_json_dict() for c in cross])
     _print_cross_summary(cross, dirs, out_path)
     return 0
 
@@ -1158,7 +1159,7 @@ def main(argv: list[str] | None = None) -> int:
 
     session = session_dir.name
     out_path = session_dir / f"{session}_vehicles.json"
-    out_path.write_text(json.dumps([v.to_json_dict() for v in vehicles], indent=2))
+    atomic_write_json(out_path, [v.to_json_dict() for v in vehicles])
     print(f"[vehicles] wrote {out_path}  ({len(vehicles)} vehicles)")
 
     # Headline numbers.

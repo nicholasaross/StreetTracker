@@ -59,6 +59,7 @@ from streettracker.analysis.parked import (
     detect_parked,
     load_alpr_entries,
 )
+from streettracker.common.fileio import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -278,7 +279,7 @@ def _write_output(
         "unknown": sorted(set(unknown)),
         "skipped_non_canonical": sorted(set(skipped_non_canonical)),
     }
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    atomic_write_json(path, payload)
 
 
 def main(argv: list[str] | None = None) -> int:  # noqa: C901

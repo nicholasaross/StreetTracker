@@ -72,6 +72,7 @@ from streettracker.analysis.vehicle_locator import (
     load_alpr_reads,
     plate_anchored_box,
 )
+from streettracker.common.fileio import atomic_write_json
 
 __all__ = [
     "BODY_TYPES",
@@ -307,7 +308,7 @@ def extract_crops(  # noqa: C901
         "output_size": output_size,
         "samples": samples,
     }
-    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    atomic_write_json(out_dir / "manifest.json", manifest)
     kept_cars = [c for c in car_make if car_make[c] in kept]
     return {
         "n_makes": len(kept),
@@ -595,7 +596,7 @@ def train_uk_make(
         "crop_pad_frac": crop_meta.get("crop_pad_frac"),
         "seed": config.seed,
     }
-    (out_path / "history.json").write_text(json.dumps(summary, indent=2))
+    atomic_write_json(out_path / "history.json", summary)
     print(
         f"[makemodel-uk] done: best {target}@1={best:.3f} (epoch {best_epoch}) -> {ckpt_path}",
         flush=True,

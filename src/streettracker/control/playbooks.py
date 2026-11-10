@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import shutil
 import time
@@ -47,6 +46,7 @@ from typing import Any
 
 import aiohttp
 
+from streettracker.common.fileio import atomic_write_json
 from streettracker.control import history, introspect, orin, prompts
 from streettracker.control.jobs import JobRunner, JobSpec
 
@@ -507,7 +507,7 @@ def promote_model(
             else None
         ),
     }
-    introspect.model_sidecar_path(model_path).write_text(json.dumps(sidecar, indent=2))
+    atomic_write_json(introspect.model_sidecar_path(model_path), sidecar)
     acc = f"{meta.val_make_top1:.3f}" if meta.val_make_top1 is not None else "?"
     msg = f"Promoted {run.name} (make@1 {acc}) -> {model_path.name}"
     if backup_name:

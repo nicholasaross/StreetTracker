@@ -28,7 +28,6 @@ never imported by the Orin runtime.
 from __future__ import annotations
 
 import dataclasses
-import json
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -38,6 +37,7 @@ from torch import nn
 
 from streettracker.analysis.makemodel.dataset import build_datasets
 from streettracker.analysis.makemodel.model import DEFAULT_ARCH, MakeModelNet, save_checkpoint
+from streettracker.common.fileio import atomic_write_json
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -314,7 +314,7 @@ def train(sv_root: str | Path, out_dir: str | Path, config: TrainConfig) -> dict
 
         # Rewrite the run summary every epoch so a long background run is
         # tail-able (history.json) rather than opaque until the end.
-        (out_path / "history.json").write_text(json.dumps(_summary(), indent=2))
+        atomic_write_json(out_path / "history.json", _summary())
 
         if epochs_since_best >= config.patience:
             print(
@@ -325,7 +325,7 @@ def train(sv_root: str | Path, out_dir: str | Path, config: TrainConfig) -> dict
             break
 
     summary = _summary()
-    (out_path / "history.json").write_text(json.dumps(summary, indent=2))
+    atomic_write_json(out_path / "history.json", summary)
     print(
         f"[makemodel-train] done: best epoch {best_epoch} model@1={best_top1:.3f} -> {ckpt_path}",
         flush=True,
