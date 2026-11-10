@@ -94,10 +94,17 @@ class PipelineRunner:
                 image = read_image(image_path)
                 if image is None:
                     return PlateResult(
-                        image_path=str(image_path), image_name=image_name,
-                        track_id=track_id, snap_index=snap_index, class_name=class_name,
-                        pipeline=self.name, detection=None, read=None, crop_path=None,
-                        pipeline_ms=0.0, error="imread_failed",
+                        image_path=str(image_path),
+                        image_name=image_name,
+                        track_id=track_id,
+                        snap_index=snap_index,
+                        class_name=class_name,
+                        pipeline=self.name,
+                        detection=None,
+                        read=None,
+                        crop_path=None,
+                        pipeline_ms=0.0,
+                        error="imread_failed",
                     )
 
                 # Zero out parked-car / no-go regions before any detection
@@ -126,30 +133,49 @@ class PipelineRunner:
                 detection = self._detector.detect(image, bbox_hint=bbox_hint)
                 if detection is None:
                     return PlateResult(
-                        image_path=str(image_path), image_name=image_name,
-                        track_id=track_id, snap_index=snap_index, class_name=class_name,
-                        pipeline=self.name, detection=None, read=None, crop_path=None,
-                        pipeline_ms=t.ms, error=None,
+                        image_path=str(image_path),
+                        image_name=image_name,
+                        track_id=track_id,
+                        snap_index=snap_index,
+                        class_name=class_name,
+                        pipeline=self.name,
+                        detection=None,
+                        read=None,
+                        crop_path=None,
+                        pipeline_ms=t.ms,
+                        error=None,
                     )
 
-                crop = crop_with_padding(
-                    image, detection.bbox, pad_frac=self._plate_pad_frac
-                )
+                crop = crop_with_padding(image, detection.bbox, pad_frac=self._plate_pad_frac)
                 crop_path = _save_crop(crop, crop_out_dir, image_name)
                 read = self._recognizer.recognize(crop)
             except Exception as e:  # noqa: BLE001 — surfaced into PlateResult.error
                 return PlateResult(
-                    image_path=str(image_path), image_name=image_name,
-                    track_id=track_id, snap_index=snap_index, class_name=class_name,
-                    pipeline=self.name, detection=None, read=None, crop_path=None,
-                    pipeline_ms=t.ms, error=f"{type(e).__name__}: {e}",
+                    image_path=str(image_path),
+                    image_name=image_name,
+                    track_id=track_id,
+                    snap_index=snap_index,
+                    class_name=class_name,
+                    pipeline=self.name,
+                    detection=None,
+                    read=None,
+                    crop_path=None,
+                    pipeline_ms=t.ms,
+                    error=f"{type(e).__name__}: {e}",
                 )
 
         return PlateResult(
-            image_path=str(image_path), image_name=image_name,
-            track_id=track_id, snap_index=snap_index, class_name=class_name,
-            pipeline=self.name, detection=detection, read=read, crop_path=crop_path,
-            pipeline_ms=t.ms, error=None,
+            image_path=str(image_path),
+            image_name=image_name,
+            track_id=track_id,
+            snap_index=snap_index,
+            class_name=class_name,
+            pipeline=self.name,
+            detection=detection,
+            read=read,
+            crop_path=crop_path,
+            pipeline_ms=t.ms,
+            error=None,
         )
 
 

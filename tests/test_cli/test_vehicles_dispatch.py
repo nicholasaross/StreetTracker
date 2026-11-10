@@ -37,19 +37,26 @@ def test_vehicles_cli_dispatch_writes_output_json(
     file lands and headline counts print."""
     session = tmp_path / "session_test"
     session.mkdir()
-    (session / "session_test_data.json").write_text(
-        json.dumps([asdict(sample_track)])
+    (session / "session_test_data.json").write_text(json.dumps([asdict(sample_track)]))
+    (session / "session_test_alpr_by_track.json").write_text(
+        json.dumps(
+            {
+                "tracks": [
+                    {
+                        "track_id": 42,
+                        "best_preferred": {
+                            "track_id": 42,
+                            "snap_index": 1,
+                            "image": "vehicle_42_main_1.jpg",
+                            "ocr_text": "AB12CDE",
+                            "ocr_conf": 0.98,
+                            "det_conf": 0.85,
+                        },
+                    }
+                ],
+            }
+        )
     )
-    (session / "session_test_alpr_by_track.json").write_text(json.dumps({
-        "tracks": [{
-            "track_id": 42,
-            "best_preferred": {
-                "track_id": 42, "snap_index": 1,
-                "image": "vehicle_42_main_1.jpg",
-                "ocr_text": "AB12CDE", "ocr_conf": 0.98, "det_conf": 0.85,
-            },
-        }],
-    }))
 
     rc = cli_main(["vehicles", str(session)])
     assert rc == 0

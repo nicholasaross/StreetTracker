@@ -486,7 +486,7 @@ class RoadGate:
     pipeline_band_reverse: tuple[float, float] | None = None
 
     @classmethod
-    def from_config(cls, cfg: RoadGateConfig, frame_w: int, frame_h: int) -> RoadGate:
+    def from_config(cls, cfg: RoadGateConfig, frame_w: int, frame_h: int) -> RoadGate:  # noqa: C901
         if len(cfg.polygon_frac) < 3:
             raise ValueError("road polygon needs at least 3 vertices")
         if not cfg.trigger_t_prime:
@@ -724,7 +724,7 @@ class SnapPlanner:
     def road_gate(self) -> RoadGate | None:
         return self._road_gate
 
-    def consider(
+    def consider(  # noqa: C901
         self,
         track_id: int,
         bbox: tuple[float, float, float, float],
@@ -1003,10 +1003,7 @@ class SnapPlanner:
             if st.door_approach_fires >= self.door_approach_max_per_track:
                 return SnapDecision(False, "door_budget_exhausted", 0.0)
             elapsed = wall_ms - st.last_door_approach_wall_ms
-            if (
-                st.last_door_approach_wall_ms > 0.0
-                and elapsed < self.door_approach_interval_ms
-            ):
+            if st.last_door_approach_wall_ms > 0.0 and elapsed < self.door_approach_interval_ms:
                 return SnapDecision(False, "door_throttled", 0.0)
             st.door_approach_fires += 1
             st.last_door_approach_wall_ms = wall_ms

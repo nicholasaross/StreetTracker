@@ -227,7 +227,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:  # noqa: C901
     args = _build_parser().parse_args(argv)
 
     session_dir: Path = args.session_dir

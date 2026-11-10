@@ -33,9 +33,9 @@ def _solid_bgr(h: int, w: int, bgr: tuple[int, int, int]) -> np.ndarray:
 @pytest.fixture
 def synthetic_session(tmp_path: Path, sample_track: TrackRecord) -> Path:
     """Build a closed session directory with:
-       - events.jsonl + data.json + hourly.json + summary.html
-       - vehicle_<id>_hq.jpg crops in actually-distinct colors
-       - records whose stored colors are wrong (so recolor has work to do)
+    - events.jsonl + data.json + hourly.json + summary.html
+    - vehicle_<id>_hq.jpg crops in actually-distinct colors
+    - records whose stored colors are wrong (so recolor has work to do)
     """
     session = tmp_path / "session_test"
     session.mkdir()
@@ -43,18 +43,17 @@ def synthetic_session(tmp_path: Path, sample_track: TrackRecord) -> Path:
     # Three tracks with different *actual* crop colors; their JSON says
     # "unknown" so recolor must change all three.
     track_red = replace(sample_track, track_id=1, color="unknown")
-    track_blue = replace(sample_track, track_id=2, color="unknown",
-                         time_start_unix=sample_track.time_start_unix + 10)
-    track_white = replace(sample_track, track_id=3, color="unknown",
-                          time_start_unix=sample_track.time_start_unix + 20)
+    track_blue = replace(
+        sample_track, track_id=2, color="unknown", time_start_unix=sample_track.time_start_unix + 10
+    )
+    track_white = replace(
+        sample_track, track_id=3, color="unknown", time_start_unix=sample_track.time_start_unix + 20
+    )
     tracks = [track_red, track_blue, track_white]
 
-    cv2.imwrite(str(session / "vehicle_1_hq.jpg"),
-                _solid_bgr(100, 100, (0, 0, 255)))     # red
-    cv2.imwrite(str(session / "vehicle_2_hq.jpg"),
-                _solid_bgr(100, 100, (255, 80, 0)))    # blue
-    cv2.imwrite(str(session / "vehicle_3_hq.jpg"),
-                _solid_bgr(100, 100, (255, 255, 255)))  # white
+    cv2.imwrite(str(session / "vehicle_1_hq.jpg"), _solid_bgr(100, 100, (0, 0, 255)))  # red
+    cv2.imwrite(str(session / "vehicle_2_hq.jpg"), _solid_bgr(100, 100, (255, 80, 0)))  # blue
+    cv2.imwrite(str(session / "vehicle_3_hq.jpg"), _solid_bgr(100, 100, (255, 255, 255)))  # white
 
     # events.jsonl
     with EventLog(session / "test_events.jsonl") as log:
@@ -105,7 +104,7 @@ def test_recolor_session_updates_records(synthetic_session: Path) -> None:
     stats = recolor_session(synthetic_session)
     assert isinstance(stats, RecolorStats)
     assert stats.records_total == 3
-    assert stats.records_changed == 3   # all started as "unknown"
+    assert stats.records_changed == 3  # all started as "unknown"
     assert stats.records_missing_crop == 0
     assert stats.distribution_before == {"unknown": 3}
     assert "red" in stats.distribution_after
@@ -139,7 +138,8 @@ def test_recolor_session_patches_summary_html(synthetic_session: Path) -> None:
     html = (synthetic_session / "test_summary.html").read_text()
     m = re.search(
         r'<script id="vehicles-data" type="application/json">(.*?)</script>',
-        html, re.DOTALL,
+        html,
+        re.DOTALL,
     )
     assert m is not None
     embedded = json.loads(m.group(1))

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    import cv2
     import numpy as np
 
 
@@ -64,7 +65,7 @@ class FileSource:
         self.file_path = str(p.resolve())
         self.codec = codec
         self.fps = float(assumed_fps)  # may be overridden after probe in open()
-        self._cap = None  # type: ignore[assignment]
+        self._cap: cv2.VideoCapture | None = None
         self._used_nvdec = False
         self.pipeline_str = build_file_pipeline(self.file_path, codec)
 

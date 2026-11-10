@@ -353,7 +353,7 @@ def _apply_operator_merges(pool: dict[str, dict[str, Any]], merge_map: dict[str,
         _merge_pool_rec(tgt_rec, src_rec)
 
 
-def build_showcase(
+def build_showcase(  # noqa: C901
     output_root: Path,
     *,
     fuzzy_ratio: int | None = FUZZY_RATIO_DEFAULT,

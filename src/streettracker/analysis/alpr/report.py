@@ -173,11 +173,14 @@ def render_html(
     for r in records:
         img = r["image"]
         by_image[img][r["pipeline"]] = r
-        image_meta.setdefault(img, {
-            "track_id": r["track_id"],
-            "snap_index": r["snap_index"],
-            "class_name": r["class_name"],
-        })
+        image_meta.setdefault(
+            img,
+            {
+                "track_id": r["track_id"],
+                "snap_index": r["snap_index"],
+                "class_name": r["class_name"],
+            },
+        )
 
     rows = []
     sort_key = lambda kv: (  # noqa: E731 — local lambda is fine here

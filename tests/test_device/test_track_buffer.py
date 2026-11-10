@@ -783,9 +783,7 @@ def _door_track(points: list[tuple[float, float, float]], class_id: int = 0) -> 
     return tr
 
 
-def _finalize_with_door(
-    tr: BufferedTrack, zone: DoorZone | None = _DOOR
-) -> TrackRecord | None:
+def _finalize_with_door(tr: BufferedTrack, zone: DoorZone | None = _DOOR) -> TrackRecord | None:
     return compute_attributes(
         tr,
         frame_h=_FRAME_H,
@@ -851,18 +849,14 @@ def test_person_away_from_the_door_is_not_exempt() -> None:
 
 def test_no_door_zone_keeps_the_old_behaviour() -> None:
     """Installs without a door zone must finalize exactly as before."""
-    tr = _door_track(
-        [(0.0, _AT_DOOR_CX, 300), (1.0, _MID_ROAD_CX, 300), (2.0, _AT_DOOR_CX, 300)]
-    )
+    tr = _door_track([(0.0, _AT_DOOR_CX, 300), (1.0, _MID_ROAD_CX, 300), (2.0, _AT_DOOR_CX, 300)])
     assert _finalize_with_door(tr, zone=None) is None
 
 
 def test_door_exemption_needs_frame_w_for_entry_points() -> None:
     """Without frame_w there are no fractional entry/exit points, so the
     zone can't be tested and the track falls back to the old filters."""
-    tr = _door_track(
-        [(0.0, _AT_DOOR_CX, 300), (1.0, _MID_ROAD_CX, 300), (2.0, _AT_DOOR_CX, 300)]
-    )
+    tr = _door_track([(0.0, _AT_DOOR_CX, 300), (1.0, _MID_ROAD_CX, 300), (2.0, _AT_DOOR_CX, 300)])
     result = compute_attributes(
         tr,
         frame_h=_FRAME_H,

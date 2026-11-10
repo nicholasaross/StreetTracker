@@ -65,8 +65,8 @@ def test_solid_red_returns_red() -> None:
 def test_grey_with_minor_blue_picks_blue() -> None:
     # Grey background with a >=15% blue strip should pick blue, per the
     # CHROMATIC_PREFER_FRAC rule (grey/silver plurality defers to chromatic).
-    img = _solid_bgr(100, 100, (128, 128, 128))      # grey body
-    img[:, :25] = (255, 80, 0)                       # 25% blue strip
+    img = _solid_bgr(100, 100, (128, 128, 128))  # grey body
+    img[:, :25] = (255, 80, 0)  # 25% blue strip
     assert vote_color(img) == "blue"
 
 

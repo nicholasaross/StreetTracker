@@ -215,9 +215,7 @@ def _collect_plate_requests(
             if conf > existing.plate_conf:
                 by_plate[plate] = dataclasses.replace(existing, plate_conf=conf)
     # Sort for stable output ordering -- humans diff these files.
-    return sorted(by_plate.values(), key=lambda r: r.plate), sorted(
-        skipped_non_canonical
-    )
+    return sorted(by_plate.values(), key=lambda r: r.plate), sorted(skipped_non_canonical)
 
 
 def _result_to_json(
@@ -244,9 +242,7 @@ def _load_existing(path: Path) -> dict[str, Any]:
     try:
         prev = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        logger.warning(
-            "[dvsa-label] %s is corrupt (%s) -- starting fresh.", path, exc
-        )
+        logger.warning("[dvsa-label] %s is corrupt (%s) -- starting fresh.", path, exc)
         return {"labels": {}, "unknown": [], "skipped_non_canonical": []}
     # Be tolerant of older variants that may have omitted these keys
     # (pre-canonical-filter outputs).
@@ -269,9 +265,7 @@ def _write_output(
 ) -> None:
     payload: dict[str, Any] = {
         "session": session_label,
-        "labelled_at": datetime.datetime.now(datetime.timezone.utc).isoformat(
-            timespec="seconds"
-        ),
+        "labelled_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "n_high_conf_plates": n_high_conf_plates,
         # The confidence gate this harvest's track attributions reflect.
         "conf_threshold": conf_threshold,
@@ -287,7 +281,7 @@ def _write_output(
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:  # noqa: C901
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
@@ -378,9 +372,7 @@ def main(argv: list[str] | None = None) -> int:
     existing_unknown: set[str] = set(existing["unknown"])
     # Merge the run's skipped set with any prior skipped record; the
     # output is the cumulative diagnostic, not just this run's.
-    existing_skipped: set[str] = set(existing["skipped_non_canonical"]) | set(
-        skipped_non_canonical
-    )
+    existing_skipped: set[str] = set(existing["skipped_non_canonical"]) | set(skipped_non_canonical)
     if args.re_label:
         # Drop everything; we'll re-query every plate.
         existing_labels.clear()
@@ -431,7 +423,9 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:  # pragma: no cover - hard-to-mock network
             logger.error(
                 "[dvsa-label] %s lookup failed: %s: %s",
-                req.plate, type(exc).__name__, exc,
+                req.plate,
+                type(exc).__name__,
+                exc,
             )
             api_errors += 1
             continue
@@ -439,9 +433,7 @@ def main(argv: list[str] | None = None) -> int:
             existing_unknown.add(req.plate)
             new_unknown += 1
         else:
-            existing_labels[req.plate] = _result_to_json(
-                result, req.plate_conf, req.track_ids
-            )
+            existing_labels[req.plate] = _result_to_json(result, req.plate_conf, req.track_ids)
             new_labels += 1
         # Persist after every successful lookup so a SIGKILL doesn't
         # lose the work. Cheap -- the output is < 1 MB even for a

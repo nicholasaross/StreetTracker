@@ -117,7 +117,7 @@ class _Cand:
     plate_bbox: tuple[float, float, float, float] | None = None
 
 
-def extract_crops(
+def extract_crops(  # noqa: C901
     sessions: list[Path],
     out_dir: str | Path,
     *,

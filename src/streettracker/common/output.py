@@ -24,11 +24,7 @@ def format_wall(unix_ts: float) -> str:
     """Local-time ISO-8601 with timezone offset, e.g.
     ``2026-05-17T14:32:05+01:00``. Matches NanoTracker's `format_wall()`.
     """
-    return (
-        datetime.datetime.fromtimestamp(unix_ts)
-        .astimezone()
-        .isoformat(timespec="seconds")
-    )
+    return datetime.datetime.fromtimestamp(unix_ts).astimezone().isoformat(timespec="seconds")
 
 
 class EventLog:
@@ -73,10 +69,7 @@ def save_data_json(records: list[TrackRecord | dict[str, Any]], path: Path) -> N
     ingestion). Pretty-printed; size is small enough (~150 B/row) that
     even a 24h session is a few MB.
     """
-    payload = [
-        r.to_json_dict() if isinstance(r, TrackRecord) else r
-        for r in records
-    ]
+    payload = [r.to_json_dict() if isinstance(r, TrackRecord) else r for r in records]
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
@@ -123,9 +116,7 @@ def read_events_jsonl(path: Path) -> list[TrackRecord]:
         try:
             payload = json.loads(line)
         except json.JSONDecodeError as exc:
-            logger.warning(
-                "[output] skipping torn line %d in %s: %s", n, path, exc
-            )
+            logger.warning("[output] skipping torn line %d in %s: %s", n, path, exc)
             continue
         out.append(TrackRecord.from_json_dict(payload))
     return out
@@ -231,7 +222,5 @@ def read_ir_events_jsonl(path: Path) -> list[dict[str, Any]]:
         try:
             out.append(json.loads(line))
         except json.JSONDecodeError as exc:
-            logger.warning(
-                "[output] skipping torn IR-event line %d in %s: %s", n, path, exc
-            )
+            logger.warning("[output] skipping torn IR-event line %d in %s: %s", n, path, exc)
     return out

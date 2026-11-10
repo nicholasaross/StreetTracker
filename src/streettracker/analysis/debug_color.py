@@ -56,10 +56,7 @@ def _pick_with_rule(counts: dict[str, int], total: int) -> tuple[str, str]:
     best_chrom = max(chromatic.values()) if chromatic else 0
     if achromatic:
         best_ach_name = max(achromatic, key=lambda k: achromatic[k])
-        if (
-            best_ach_name in ("white", "black")
-            and achromatic[best_ach_name] > best_chrom
-        ):
+        if best_ach_name in ("white", "black") and achromatic[best_ach_name] > best_chrom:
             return best_ach_name, "white/black plurality"
     if chromatic:
         best_chrom_name = max(chromatic, key=lambda k: chromatic[k])
@@ -90,8 +87,11 @@ def analyze_crop(path: Path | str, pad_frac: float = DEFAULT_PAD_FRAC) -> CropAn
         inset_x : max(inset_x + 1, w - inset_x),
     ]
     analysis = CropAnalysis(
-        path=p, width=w, height=h,
-        inner_width=inner.shape[1], inner_height=inner.shape[0],
+        path=p,
+        width=w,
+        height=h,
+        inner_width=inner.shape[1],
+        inner_height=inner.shape[0],
     )
 
     hsv = cv2.cvtColor(inner, cv2.COLOR_BGR2HSV)
@@ -107,18 +107,14 @@ def analyze_crop(path: Path | str, pad_frac: float = DEFAULT_PAD_FRAC) -> CropAn
         analysis.result = "unknown"
         analysis.rule = "no pixels voted"
     else:
-        analysis.result, analysis.rule = _pick_with_rule(
-            analysis.counts, analysis.total_voted
-        )
+        analysis.result, analysis.rule = _pick_with_rule(analysis.counts, analysis.total_voted)
 
     # Unvoted-pixel HSV stats — useful for spotting whether a missing
     # plurality is due to a hue we don't have a range for.
     if analysis.total_voted < analysis.inner_size:
         all_in_any = np.zeros(hsv.shape[:2], dtype=np.uint8)
         for low, high, _ in COLOR_RANGES:
-            all_in_any = cv2.bitwise_or(
-                all_in_any, cv2.inRange(hsv, np.array(low), np.array(high))
-            )
+            all_in_any = cv2.bitwise_or(all_in_any, cv2.inRange(hsv, np.array(low), np.array(high)))
         unv_mask = all_in_any == 0
         unv_hsv = hsv[unv_mask]
         if unv_hsv.shape[0] > 0:
@@ -136,8 +132,7 @@ def format_report(a: CropAnalysis) -> str:
     lines = [
         f"\n=== {a.path} ===",
         f"  crop {a.width}x{a.height}, inner {a.inner_width}x{a.inner_height}",
-        f"  voted pixels: {a.total_voted} / {a.inner_size} "
-        f"({a.coverage_pct:.0f}% coverage)",
+        f"  voted pixels: {a.total_voted} / {a.inner_size} ({a.coverage_pct:.0f}% coverage)",
     ]
     for name, c in sorted(a.counts.items(), key=lambda x: -x[1]):
         if c > 0:

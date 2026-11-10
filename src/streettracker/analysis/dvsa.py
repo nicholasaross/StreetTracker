@@ -55,9 +55,9 @@ logger = logging.getLogger(__name__)
 # operator who specifically needs those can pass
 # ``--include-non-canonical`` to the CLI.
 _UK_PLATE_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"^[A-Z]{2}\d{2}[A-Z]{3}$"),       # 2001+ current
-    re.compile(r"^[A-Z]\d{1,3}[A-Z]{3}$"),        # 1983-2001 prefix
-    re.compile(r"^[A-Z]{3}\d{1,3}[A-Z]$"),        # 1963-1983 suffix
+    re.compile(r"^[A-Z]{2}\d{2}[A-Z]{3}$"),  # 2001+ current
+    re.compile(r"^[A-Z]\d{1,3}[A-Z]{3}$"),  # 1983-2001 prefix
+    re.compile(r"^[A-Z]{3}\d{1,3}[A-Z]$"),  # 1963-1983 suffix
 )
 
 
@@ -70,6 +70,7 @@ def is_canonical_uk_plate(plate: str) -> bool:
     if not plate:
         return False
     return any(pat.fullmatch(plate) for pat in _UK_PLATE_PATTERNS)
+
 
 # DVSA's documented limit. We deliberately stay just below it so a
 # brief network blip doesn't push us over.
@@ -133,17 +134,17 @@ class MotLookupResult:
     registration: str
     make: str
     model: str
-    year: int | None              # parsed from firstUsedDate
+    year: int | None  # parsed from firstUsedDate
     primary_colour: str | None
     fuel_type: str | None
     engine_size_cc: int | None
-    looked_up_at: str             # ISO 8601 UTC timestamp
+    looked_up_at: str  # ISO 8601 UTC timestamp
 
 
 @dataclasses.dataclass(slots=True)
 class _Token:
     access_token: str
-    expires_at_mono: float        # time.monotonic() value when token dies
+    expires_at_mono: float  # time.monotonic() value when token dies
 
 
 def _parse_year(date_str: str | None) -> int | None:
@@ -218,16 +219,12 @@ class DvsaClient:
             access_token = body["access_token"]
             expires_in = float(body["expires_in"])
         except (KeyError, TypeError, ValueError) as exc:
-            raise RuntimeError(
-                f"DVSA token endpoint returned malformed body: {body!r}"
-            ) from exc
+            raise RuntimeError(f"DVSA token endpoint returned malformed body: {body!r}") from exc
         self._token = _Token(
             access_token=access_token,
             expires_at_mono=time.monotonic() + expires_in,
         )
-        logger.info(
-            "[dvsa] obtained Bearer token (expires in %.0f s)", expires_in
-        )
+        logger.info("[dvsa] obtained Bearer token (expires in %.0f s)", expires_in)
 
     def _ensure_token(self) -> str:
         if not self._token_is_fresh():
@@ -296,7 +293,5 @@ class DvsaClient:
             primary_colour=body.get("primaryColour"),
             fuel_type=body.get("fuelType"),
             engine_size_cc=_parse_int(body.get("engineSize")),
-            looked_up_at=datetime.datetime.now(datetime.timezone.utc).isoformat(
-                timespec="seconds"
-            ),
+            looked_up_at=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         )

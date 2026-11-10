@@ -1,0 +1,6 @@
+# Commits that only reformat code. `git blame` skips them when run with
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# and GitHub's blame view reads this file automatically.
+
+# Format src/ and tests/ with ruff format (2026-11-10)
+538eaec6ca2fd11e31fa8d7007a12c9760ad9b9e

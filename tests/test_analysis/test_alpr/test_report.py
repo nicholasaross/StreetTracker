@@ -8,8 +8,9 @@ from pathlib import Path
 from streettracker.analysis.alpr.report import render_html
 
 
-def _rec(image: str, pipeline: str, *, ocr: str | None,
-         track_id: int = 1, snap_index: int = 1) -> dict:
+def _rec(
+    image: str, pipeline: str, *, ocr: str | None, track_id: int = 1, snap_index: int = 1
+) -> dict:
     return {
         "image": image,
         "image_path": image,

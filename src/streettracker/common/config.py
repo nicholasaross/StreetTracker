@@ -378,7 +378,7 @@ def _strip_comments(data: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in data.items() if not k.startswith("_")}
 
 
-def _load(cls: Any, data: Any, path: str) -> Any:
+def _load(cls: Any, data: Any, path: str) -> Any:  # noqa: C901
     """Recursive type-driven loader.
 
     ``path`` is the JSON path of the current node, used purely for

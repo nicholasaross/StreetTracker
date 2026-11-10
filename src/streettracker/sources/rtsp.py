@@ -21,6 +21,7 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    import cv2
     import numpy as np
 
 
@@ -52,7 +53,7 @@ class RtspSource:
         self.codec = codec
         self.transport = transport
         self.connect_timeout_s = connect_timeout_s
-        self._cap = None  # type: ignore[assignment]
+        self._cap: cv2.VideoCapture | None = None
         self._first_frame: np.ndarray | None = None
 
     def _redacted_url(self) -> str:

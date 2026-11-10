@@ -149,7 +149,7 @@ def _asset_matches(asset: dict[str, Any] | None, sha: str, size: int) -> bool:
     return digest is None or digest == f"sha256:{sha}"
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:  # noqa: C901
     parser = argparse.ArgumentParser(
         prog="streettracker model-release",
         description="Publish the production make model as a (public) GitHub Release.",
