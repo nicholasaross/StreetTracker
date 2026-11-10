@@ -31,7 +31,9 @@ live.
 from __future__ import annotations
 
 import json
+import os
 from collections import Counter
+from collections.abc import Collection
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -187,6 +189,20 @@ def _load_colour_by_track(session_dir: Path) -> dict[int, str]:
     return out
 
 
+def list_session_images(session_dir: Path) -> frozenset[str]:
+    """Names of the ``.jpg`` files directly inside ``session_dir``.
+
+    One directory listing answers every "is this snap on disk?" question
+    for the session. The showcase asks three per sighting; as individual
+    ``stat`` calls that was ~130k of them and a quarter of its rebuild
+    time. An unreadable or missing directory lists as empty."""
+    try:
+        with os.scandir(session_dir) as entries:
+            return frozenset(e.name for e in entries if e.name.endswith(".jpg") and e.is_file())
+    except OSError:
+        return frozenset()
+
+
 def resolve_image_urls(
     output_root: Path,
     session: str,
@@ -195,21 +211,30 @@ def resolve_image_urls(
     prefix: str = "vehicle",
     best_image: str | None = None,
     prefer_hq: bool = False,
+    on_disk: Collection[str] | None = None,
 ) -> tuple[str | None, str | None, bool]:
     """Existence-checked ``(thumb, full, thumb_small)`` for one track's snaps.
 
     Sessions pulled with ``--only-main`` before 2026-10-04 ship the 4K
-    ``_main_N.jpg`` snaps but not the ``_hq``/tile crops, so we stat each
+    ``_main_N.jpg`` snaps but not the ``_hq``/tile crops, so we check each
     candidate and only reference files that are actually on disk: ``thumb``
     is the smallest present (tile -> hq -> the 4K ``best_image``), ``full``
     the largest. ``thumb_small`` is True when ``thumb`` is a real small crop
     (not a downscaled 4K snap). ``prefer_hq`` puts the HQ crop (the tracker's
     largest, sharpest view of the car) ahead of the tile (its midpoint view).
-    Shared with :mod:`streettracker.web.stats` (fastest-car thumbnails)."""
-    base = output_root / session
+    Shared with :mod:`streettracker.web.stats` (fastest-car thumbnails).
+
+    ``on_disk`` is the session's image names from
+    :func:`list_session_images`; pass it when resolving many tracks of one
+    session. Without it each candidate is checked with its own ``stat``."""
+
+    def _exists(name: str) -> bool:
+        if on_disk is not None:
+            return name in on_disk
+        return (output_root / session / name).is_file()
 
     def _url(name: str | None) -> str | None:
-        return f"/images/{session}/{name}" if name and (base / name).is_file() else None
+        return f"/images/{session}/{name}" if name and _exists(name) else None
 
     tile = _url(f"{prefix}_{track_id}.jpg")
     hq = _url(f"{prefix}_{track_id}_hq.jpg")
@@ -218,7 +243,13 @@ def resolve_image_urls(
     return small or best, best or hq or tile, small is not None
 
 
-def _image_urls(output_root: Path, session: str, visit: Any) -> ShowcaseImage:
+def _image_urls(
+    output_root: Path,
+    session: str,
+    visit: Any,
+    *,
+    on_disk: Collection[str] | None = None,
+) -> ShowcaseImage:
     """Build a :class:`ShowcaseImage` for one sighting (gallery use)."""
     thumb, full, small = resolve_image_urls(
         output_root,
@@ -226,6 +257,7 @@ def _image_urls(output_root: Path, session: str, visit: Any) -> ShowcaseImage:
         visit.track_id,
         prefix=visit.asset_prefix or "vehicle",
         best_image=visit.best_image,  # 4K snap that produced the best ALPR read
+        on_disk=on_disk,
     )
     return ShowcaseImage(
         session=session,
@@ -379,6 +411,10 @@ def build_showcase(
     else:
         canonical = {p: p for p in conf_by_plate}
 
+    # One directory listing per session, taken the first time one of its
+    # sightings needs an image (see list_session_images).
+    images_on_disk: dict[str, frozenset[str]] = {}
+
     pool: dict[str, dict[str, Any]] = {}
     for sname, vplate, v in plated:
         key = canonical.get(vplate, vplate)
@@ -401,9 +437,12 @@ def build_showcase(
         rec["colors"].update(v.colors)
         rec["parked"].extend(v.parked_episodes)
         sess_cnn = cnn_by_session.get(sname, {})
+        on_disk = images_on_disk.get(sname)
+        if on_disk is None:
+            on_disk = images_on_disk[sname] = list_session_images(output_root / sname)
         for visit in v.visits:
             rec["dates"].add(visit.time_start[:10])
-            rec["images"].append(_image_urls(output_root, sname, visit))
+            rec["images"].append(_image_urls(output_root, sname, visit, on_disk=on_disk))
             rec["trips"].append(
                 (visit.time_start_unix, visit.time_end_unix, visit.direction, visit.time_start)
             )

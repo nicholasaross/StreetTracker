@@ -11,6 +11,8 @@ Also covers conf_threshold + include_unread filters.
 from __future__ import annotations
 
 import json
+import random
+from collections.abc import Callable
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -314,6 +316,114 @@ def test_cluster_support_outranks_a_single_high_conf_misread() -> None:
     plates = [("AB12CDF", 1.0), ("AB12CDE", 0.95)]
     m = _cluster_plates_by_similarity(plates, ratio=85, support={"AB12CDE": 50, "AB12CDF": 1})
     assert m["AB12CDF"] == "AB12CDE"
+
+
+def _reference_cluster(
+    plates_with_conf: list[tuple[str, float]],
+    *,
+    ratio: int,
+    is_distinct: Callable[[str, str], bool] | None = None,
+    support: dict[str, float] | None = None,
+) -> dict[str, str]:
+    """The clustering rule written as the plain double loop it used to be:
+    each plate joins the earliest-created same-length seed at or above
+    ``ratio`` that isn't vetoed, else becomes a seed. Kept here as the
+    definition the bucketed implementation must reproduce exactly."""
+    from rapidfuzz import fuzz
+
+    sup = support or {}
+    ordered = sorted(plates_with_conf, key=lambda x: (-sup.get(x[0], 0.0), -x[1], x[0]))
+    canonical: dict[str, str] = {}
+    seeds: list[str] = []
+    for plate, _conf in ordered:
+        matched: str | None = None
+        for seed in seeds:
+            if len(seed) != len(plate) or fuzz.ratio(seed, plate) < ratio:
+                continue
+            if is_distinct is not None and is_distinct(seed, plate):
+                continue
+            matched = seed
+            break
+        if matched is None:
+            seeds.append(plate)
+        canonical[plate] = matched if matched is not None else plate
+    return canonical
+
+
+def _random_plates(rng: random.Random, n: int) -> list[tuple[str, float]]:
+    """Plate-like strings of mixed length, dense in near-duplicates: about
+    half are an earlier plate with one or two characters changed."""
+    letters, digits = "ABCDEFGHJKLMNOPRSTUVWXY", "0123456789"
+    plates: list[str] = []
+    for _ in range(n):
+        if plates and rng.random() < 0.5:
+            chars = list(rng.choice(plates))
+            for _ in range(rng.choice((1, 1, 2))):
+                i = rng.randrange(len(chars))
+                chars[i] = rng.choice(digits if chars[i].isdigit() else letters)
+            plates.append("".join(chars))
+        else:
+            shape = rng.choice(("LLDDLLL", "LLDDLLL", "LDDDLLL", "LLLDDDL", "LDDLLL"))
+            plates.append("".join(rng.choice(letters if c == "L" else digits) for c in shape))
+    unique = sorted(set(plates))
+    # Confidences tie often, as real OCR confidences do, so the tie-breaks
+    # are exercised too.
+    return [(p, rng.choice((1.0, 1.0, 0.97, 0.9, 0.82))) for p in unique]
+
+
+@pytest.mark.parametrize("ratio", [70, 80, 85, 90])
+@pytest.mark.parametrize("seed", range(6))
+def test_cluster_matches_the_reference_rule(ratio: int, seed: int) -> None:
+    rng = random.Random(seed)
+    plates = _random_plates(rng, 400)
+    support = {p: float(rng.randrange(1, 40)) for p, _c in plates if rng.random() < 0.6}
+    vetoed = {p for p, _c in plates if rng.random() < 0.15}
+
+    def distinct(a: str, b: str) -> bool:
+        return a in vetoed and b in vetoed
+
+    for kwargs in (
+        {},
+        {"support": support},
+        {"is_distinct": distinct},
+        {"support": support, "is_distinct": distinct},
+    ):
+        got = _cluster_plates_by_similarity(plates, ratio=ratio, **kwargs)
+        assert got == _reference_cluster(plates, ratio=ratio, **kwargs)
+
+
+def test_cluster_attaches_to_earliest_seed_not_best_scoring() -> None:
+    # The two seeds are too far apart to merge (ratio 57). AB12XYE is within
+    # ratio 70 of both: 71 against the first seed, 86 against the second. The
+    # greedy rule is the earliest-created seed, not the closest one.
+    plates = [("AB12CDE", 1.0), ("AB12XYZ", 1.0), ("AB12XYE", 0.9)]
+    support = {"AB12CDE": 9.0, "AB12XYZ": 5.0}
+    got = _cluster_plates_by_similarity(plates, ratio=70, support=support)
+    assert got == {"AB12CDE": "AB12CDE", "AB12XYZ": "AB12XYZ", "AB12XYE": "AB12CDE"}
+
+
+def test_cluster_compares_against_seeds_only() -> None:
+    # AB12CDX and AB12CXE each attach to the seed AB12CDE. AB12CXX is one
+    # character from both of them but two from the seed, and members that
+    # attached are never compared against, so it starts its own cluster.
+    plates = [("AB12CDE", 1.0), ("AB12CDX", 0.9), ("AB12CXE", 0.9), ("AB12CXX", 0.8)]
+    support = {"AB12CDE": 9.0, "AB12CDX": 3.0, "AB12CXE": 2.0}
+    got = _cluster_plates_by_similarity(plates, ratio=85, support=support)
+    assert got == {
+        "AB12CDE": "AB12CDE",
+        "AB12CDX": "AB12CDE",
+        "AB12CXE": "AB12CDE",
+        "AB12CXX": "AB12CXX",
+    }
+
+
+def test_cluster_veto_falls_through_to_a_later_seed() -> None:
+    # AB12CDG is one character from both seeds. The earlier seed is vetoed
+    # for it, so it attaches to the later one rather than starting a cluster.
+    plates = [("AB12CDE", 1.0), ("AB12CDF", 0.99), ("AB12CDG", 0.5)]
+    vetoes = {("AB12CDE", "AB12CDF"), ("AB12CDE", "AB12CDG")}
+    got = _cluster_plates_by_similarity(plates, ratio=85, is_distinct=lambda a, b: (a, b) in vetoes)
+    assert got == {"AB12CDE": "AB12CDE", "AB12CDF": "AB12CDF", "AB12CDG": "AB12CDF"}
 
 
 def test_fuzzy_clustering_merges_one_char_variants(
