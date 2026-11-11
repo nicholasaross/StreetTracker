@@ -198,7 +198,7 @@ def test_pre_crop_padding_capped_for_wide_bboxes() -> None:
     1000x800 bbox with pad_frac=0.15 would naturally pad 150/120 px,
     but with pad_max_px=30 the actual padding is 30 px each side.
     This prevents wide BotSORT bboxes from spilling into neighbouring
-    cars (Step 10 of CLAUDE.md ANPR tuning loop)."""
+    cars (Step 10 in docs/history/anpr_tuning.md)."""
     plate = _FakePlateDetector(detection=PlateDetection(bbox=(0, 0, 50, 20), det_confidence=0.5))
     pre = PreCropDetector(plate_detector=plate, pad_frac=0.15, pad_max_px=30)
     _inject_fake_yolo(pre, np.array([[1000.0, 800.0, 2000.0, 1600.0]]))

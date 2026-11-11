@@ -3,7 +3,7 @@
 Drafted 2026-05-28 after the post-Step-13a pivot to dataset-level
 enrichment. **STATUS 2026-06-01:** the §7 open questions are resolved
 (see that section) and the DVSA-first prong has shipped (PRs
-#41/#42/#43 -- see CLAUDE.md "Make/model classification").
+#41/#42/#43 -- see docs/history/makemodel.md "Make/model classification").
 
 **STATUS 2026-06-02 (supersedes much of §5/§9):** the CompCars CNN was
 built + trained (98.8 % CompCars-val, PR #46) but scored **~1 % on real
@@ -15,7 +15,8 @@ TASK-bound ceiling** -- three levers (tuning, 2× data 440→800 cars,
 best-view selection) all fail to break it. So make/model in production
 is **DVSA-only**; CNN verdict pending (park vs a 384 px-crop retry). The
 §5/§9 CompCars plan is moot (dataset was local, wrong domain regardless).
-See CLAUDE.md "Make/model classification" for the live status.
+See CLAUDE.md "Classifiers" for the live status and
+docs/history/makemodel.md for how it got there.
 
 ## 1. Goal
 

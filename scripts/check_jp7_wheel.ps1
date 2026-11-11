@@ -142,7 +142,7 @@ Write-Host "== VERDICT ==" -ForegroundColor Cyan
 if ($readyShelf) {
     Write-Host ("READY: {0}/{1} carries {2}+{3} wheels for {4}." -f $JetPack, $readyShelf, $PyTag, $PlatTag, ($Packages -join ' + ')) -ForegroundColor Green
     Write-Host ("  Next: point pyproject.toml [[tool.uv.index]] at {0}/{1}/{2}/+simple/ ," -f $Base, $JetPack, $readyShelf)
-    Write-Host  "        then proceed with the 5 JP7 edits (CLAUDE.md -> 'JetPack 7 upgrade plan')."
+    Write-Host  "        then proceed with the 5 JP7 edits (docs/deployment.md -> 'JetPack 7 upgrade plan')."
     Write-Host  "        NB: sm_87 execution is still only provable on the device itself."
     exit 0
 } else {

@@ -2,7 +2,7 @@
 
 Compares per-car high-confidence read rate and ghost-plate
 distribution for ``session_20260525_200916`` (bbox-pipe live) against
-the Step 7 numbers recorded in CLAUDE.md (91.5% with aliasing,
+the Step 7 numbers recorded in docs/history/anpr_tuning.md (91.5% with aliasing,
 ``FD61PVX`` in 363/410 tracks).
 
 Run from repo root:

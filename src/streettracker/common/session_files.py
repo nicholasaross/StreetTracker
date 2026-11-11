@@ -6,8 +6,8 @@ tracker or an enrichment command writes about it is named
 those names once, so readers and writers can't drift apart on a suffix.
 
 The property list doubles as an index of the per-session artefacts; the
-format of each is described where it is written (and in CLAUDE.md's
-"Output schema" section).
+format of each is described where it is written (and in
+``docs/session_files.md``).
 """
 
 from __future__ import annotations

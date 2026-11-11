@@ -98,7 +98,7 @@
             "Operator-traced road polygon + asymmetric direction-tagged",
             "triggers. Forward (R->L approach, front plate) fires on small",
             "t' values; reverse (L->R depart, rear plate) fires on large.",
-            "See CLAUDE.md `Snap gate` section for the artifact pipeline."
+            "See docs/snap_gate.md for the artifact pipeline."
         ],
         "snap_gate": {
             "polygon_frac": [[0.10, 0.50], [0.90, 0.50], [0.90, 0.55], [0.10, 0.55]],

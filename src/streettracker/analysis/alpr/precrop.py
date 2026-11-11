@@ -1,6 +1,6 @@
 """Vehicle pre-crop wrapper for plate detectors.
 
-Diagnostic study on 2026-05-25 (see CLAUDE.md ANPR tuning loop, "B1
+Diagnostic study on 2026-05-25 (see docs/history/anpr_tuning.md, "B1
 diagnostic") found that the dominant failure mode for the 137 / 387
 cars in the soak that yielded no OCR read was **plate-detector miss
 on every snap, on both pipelines** -- never an OCR miss. The plates
