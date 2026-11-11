@@ -58,7 +58,7 @@ Off-device, batch, post-session. Same model as `streettracker alpr-run`:
 - Reads `<session>_data.json` for track list + classes
 - Reads `<session>/<prefix>_<id>_main_<N>.jpg` for the 4K snaps
 - Reads `TrackRecord.main_snap_bboxes` for the BotSORT-tracked vehicle
-  crop. Reuses [analysis/alpr/precrop.py](src/streettracker/analysis/alpr/precrop.py)'s
+  crop. Reuses [analysis/alpr/precrop.py](../src/streettracker/analysis/alpr/precrop.py)'s
   `_detect_with_hint` path so the make/model classifier sees the same
   cropped vehicle that ALPR's plate detector does — avoids re-doing
   the vehicle-pre-crop work and guarantees we agree on which car is
