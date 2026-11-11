@@ -361,7 +361,7 @@ uv run streettracker people output/<session>             # person activity enric
 uv run streettracker showcase --output-root output       # local website: enriched + recurring cars (http://127.0.0.1:8090/)
 uv run streettracker makemodel output/<session>          # CNN make/model inference -> _makemodel.json
 uv run streettracker bodytype output/<session>           # CNN body-type inference -> _bodytype_by_track.json (pad_frac 0.1)
-uv run streettracker colour output/<session>             # CNN vehicle-colour inference -> _colour_by_track.json (pad_frac 0.1); beats HSV 42%->87% grouped vs DVSA
+uv run streettracker colour output/<session>             # CNN vehicle-colour inference -> _colour_by_track.json (pad_frac 0.1); replaces the HSV colour vote
 # Mine the Orin -> grow the UK make-classifier corpus (run pull from PowerShell):
 uv run streettracker pull --session <S> --only-main      # pull a session's 4K snaps + vehicle HQ crops + JSON from the Orin
 uv run streettracker pull --session <S> --crops-only     # fetch just the missing vehicle HQ crops (never the JSON, so safe on an enriched session)
@@ -369,7 +369,7 @@ uv run streettracker recover-session output/<session>    # rebuild data/meta/hou
 uv run streettracker makemodel-build-uk runs/uk_crops --output-size 512  # DVSA-labelled UK make crops @512 (auto-discovers sessions); --crop-mode plate (default) = plate-anchored crops, needs alpr-run output
 uv run streettracker model-release                       # publish the production make model as a public GitHub Release (promote's last step; idempotent; refuses checkpoints holding plate-shaped strings or paths; --dry-run)
 uv run streettracker makemodel-compare runs/uk_crops --candidate runs/uk_make_X/best.pt  # head-to-head vs production on shared held-out cars -> runs/uk_make_X/compare.json (the report it replaces is kept as compare.prev.json); --target colour|body_type for the other heads (colour also reports a grouped score); --eval-session <S>... scores fresh sessions' cars instead of the corpus val split, minus every car in production's and the candidate's corpora (+ --include-trained-cars to keep those cars and score their new passes)
-uv run streettracker makemodel-train-uk runs/uk_crops --input-size 512   # train the UK make classifier (B0@512; +--backbone b4/b5). honest make@1 ~28% on 1229 cars (old "37.6%" was small-val optimism)
+uv run streettracker makemodel-train-uk runs/uk_crops --input-size 512   # train the UK make classifier (default backbone efficientnet_b0; production used --backbone efficientnet_b6 --input-size 528 --batch-size 6; --target colour|body_type for the other heads). Judge the run with makemodel-compare, not its validation score
 ```
 
 **Windows + Git Bash gotcha for `streettracker pull`**: MSYS rewrites
