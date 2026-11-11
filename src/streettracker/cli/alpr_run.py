@@ -222,7 +222,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "image before detection so the plate detector cannot see "
             "stationary plates that aren't from passing traffic. "
             "Eliminates the parked-car aliasing surfaced by Step 9 of "
-            "the ANPR tuning loop in CLAUDE.md."
+            "the ANPR tuning loop (docs/history/anpr_tuning.md)."
         ),
     )
     return ap

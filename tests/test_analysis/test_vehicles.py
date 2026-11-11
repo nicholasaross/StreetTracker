@@ -432,7 +432,7 @@ def test_fuzzy_clustering_merges_one_char_variants(
     """Two tracks whose plate strings differ by exactly one character
     (same length) should collapse into a single Vehicle. Canonical is
     the higher-confidence plate; lower-conf one lands in
-    plate_variants. Documented in Step 12 of CLAUDE.md as the
+    plate_variants. Documented in Step 12 of docs/history/anpr_tuning.md as the
     known limitation that this feature addresses."""
     t1 = sample_track  # AB12CDE @ 0.98
     t2 = replace(

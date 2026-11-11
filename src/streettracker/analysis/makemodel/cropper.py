@@ -3,8 +3,8 @@
 The ALPR pipeline ships with :class:`streettracker.analysis.alpr.precrop.PreCropDetector`,
 which crops *tight* around the tracked vehicle bbox -- ``pad_frac=0.15,
 pad_max_px=30`` -- to keep neighbouring cars OUT of the plate
-detector's field of view (the FD61PVX failure mode, see Step 10 of
-the ANPR tuning loop in CLAUDE.md).
+detector's field of view (the FD61PVX failure mode, see Step 10 in
+docs/history/anpr_tuning.md).
 
 For make/model classification we want the *opposite* framing:
 

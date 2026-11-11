@@ -224,8 +224,8 @@ def build_prompt(report: JobReport, *, tail: int = DEFAULT_TAIL) -> str:
 
     hint = _KIND_HINTS.get(report.kind)
     closing = (
-        "This is the StreetTracker project; the conventions, deploy procedures and tuning "
-        "history are in CLAUDE.md. "
+        "This is the StreetTracker project; the conventions and deploy rules are in CLAUDE.md "
+        "and the tuning history in docs/history/. "
     )
     if hint:
         closing += hint + " "

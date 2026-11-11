@@ -88,7 +88,8 @@ uv run streettracker run --config configs/camera.json
 
 To run as a managed service, install the unit at
 `scripts/systemd/streettracker.service` — see the
-[Fresh deployment procedure](CLAUDE.md#fresh-deployment-procedure) in `CLAUDE.md`.
+[Fresh deployment procedure](docs/deployment.md#fresh-deployment-procedure) in
+`docs/deployment.md`.
 
 ## CLI
 
@@ -197,8 +198,10 @@ uv run mypy src/                     # type-check
 
 The runtime is asyncio throughout; config is loaded by a strict frozen-dataclass
 JSON loader that rejects unknown keys. See **`CLAUDE.md`** for architecture
-decisions, the ANPR/make-model tuning history, deployment + recovery procedures,
-and the snap-gate geometry.
+decisions and the current state, [`docs/history/`](docs/history/README.md) for
+the ANPR/make-model tuning history, [`docs/deployment.md`](docs/deployment.md)
+for deployment + recovery procedures, and [`docs/snap_gate.md`](docs/snap_gate.md)
+for the snap-gate geometry.
 
 ## Performance on the deployment scene
 
@@ -227,7 +230,7 @@ pwsh -ExecutionPolicy Bypass -File scripts/check_jp7_wheel.ps1   # exit 0 = read
 ```
 
 When it turns green, the upgrade follows the five repo edits + single-Orin flash
-plan in [`CLAUDE.md` → JetPack 7 upgrade plan](CLAUDE.md#jetpack-7-upgrade-plan).
+plan in [`docs/deployment.md` → JetPack 7 upgrade plan](docs/deployment.md#jetpack-7-upgrade-plan).
 
 ## License
 

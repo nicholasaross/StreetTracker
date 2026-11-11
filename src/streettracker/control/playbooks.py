@@ -52,7 +52,7 @@ from streettracker.control.jobs import JobRunner, JobSpec
 
 logger = logging.getLogger(__name__)
 
-# Canonical enrichment args (see CLAUDE.md "ANPR tuning loop" / make-model).
+# Canonical enrichment args (see CLAUDE.md "Plate reading" / "Classifiers").
 GHOST_MASK = ".claude/ghost_mask.json"
 
 

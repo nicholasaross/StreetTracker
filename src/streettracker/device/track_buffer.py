@@ -151,7 +151,7 @@ class BufferedTrack:
     # finalize. Analysis-side ALPR pre-cropping uses these to target
     # the exact tracked vehicle in the 4K snap instead of falling back
     # to "largest vehicle bbox", which aliases onto parked cars on the
-    # far side of the road (see CLAUDE.md ANPR tuning loop, Step 7).
+    # far side of the road (see docs/history/anpr_tuning.md, Step 7).
     snap_fire_bboxes: dict[int, tuple[int, int, int, int]] = field(default_factory=dict)
     # Per-snap-index bbox re-captured when the snap's HTTP task
     # COMPLETED (the image is exposed near response time, ~0.7-1.3 s

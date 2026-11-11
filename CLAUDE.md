@@ -7,492 +7,186 @@ as a private artifact. It is a one-page architecture of the hardware, the live p
 enrichment, training, storage and sites, and gives every component a discussion ID (`RT-6`,
 `EN-5` …). Update and republish it when a component changes; the README says how.
 
-## ⮕ Start here — 2026-06-13 checkpoint
+## How this file is organised
 
-Everything from the last sprint is **merged (#57–#64) and on `main`** (clean
-tree). The detailed history lives in the sections below; this block is the
-"resume from cold" summary.
+This file holds what every session needs: the current state, the standing rules, the commands and
+the deploy order. Dated results and procedures for particular jobs live in `docs/`. Read the one
+that matches the task before starting.
 
-**⮕ READ FIRST (2026-09-27): [`docs/data_integrity_review.md`](docs/data_integrity_review.md)**
-— the follow-up to the crop-contamination finding: 15 unverified-association
-risks with a phased experiment plan (Phase 0 = read-only checks on existing
-`output/`). Until those land, the ALPR rates below are *canonical-shape* rates,
-not verified reads.
+| Before you… | Read |
+| --- | --- |
+| change the snap gate, move a trigger or re-sketch the road | [`docs/snap_gate.md`](docs/snap_gate.md) |
+| redeploy or reflash the Orin, restore the dev box or plan the JetPack 7 move | [`docs/deployment.md`](docs/deployment.md) |
+| read, write or extend a per-session file | [`docs/session_files.md`](docs/session_files.md) |
+| change the showcase site or the control panel | [`docs/sites.md`](docs/sites.md) |
+| quote a plate-read rate, or revisit a capture or crop setting | [`docs/history/anpr_tuning.md`](docs/history/anpr_tuning.md) |
+| retrain, compare or promote a classifier | [`docs/history/makemodel.md`](docs/history/makemodel.md) |
+| change the plate gate, or pick up the data-integrity plan | [`docs/data_integrity_review.md`](docs/data_integrity_review.md) and [`docs/history/plate_gate.md`](docs/history/plate_gate.md) |
+| need earlier project history (migration, cutover, people side, old plans) | [`docs/history/project.md`](docs/history/project.md) |
 
-**⮕ OCR confidence bug FIXED IN CODE 2026-09-28 (R1) — existing sessions still
-need re-scoring.** Under the locked fast-plate-ocr 1.1.0, `ocr_conf` was the
-most confident OCR slot (0.96–0.998 for every read, garbage included), so every
-`conf ≥ 0.9` gate (DVSA harvest, `vehicles`, the canonical-rate headline) passed
-everything. It is now the probability of the **weakest decoded character**
-(`alpr/preferred._unpack_ocr_output`; per-character probs persisted as
-`ocr_char_probs`). Fix existing sessions with the panel's **Re-score plate
-confidence** playbook (sessions badged **Plates v2**): `alpr-rescore` re-OCRs
-the saved plate crops (no detection re-run) → `dvsa-label` → `dvsa-apply` →
-`vehicles` → showcase refresh. Expect fewer DVSA-labelled tracks: reads with
-one uncertain character no longer pass. **One shared plate gate** (2026-09-28):
-`configs/alpr.json` `{"plate_conf_threshold": X}` (gitignored; template
-`configs/alpr.example.json`) is read by dvsa-label, `vehicles` + the showcase,
-the stats page's fastest-car plates and alpr-rescore's summary
-(`analysis/alpr/base.resolve_plate_conf_threshold`: `--conf-threshold` /
-`--conf` flag > file > default 0.9; a malformed file is an error, never a silent
-fallback). **Calibrated 2026-09-28 to 0.90** (handoff step 3 below); to
-re-calibrate after more sessions land, run
-`uv run python .claude/ocr_conf_calibration.py` (label-free: DVSA not-found rate
-on plates old enough to have an MOT, DVSA-vs-CNN colour mismatch, and snap
-agreement, per confidence group and per cut-off; it marks the current gate) and
-set the value where the rates level off. Then re-run `dvsa-label` →
-`dvsa-apply` → `vehicles` per session and refresh the showcase; dvsa-label's
-track clearing is reversible (labels are cached), so this costs no API calls,
-and `_dvsa_labels.json` records the `conf_threshold` it used. Rebuild the
-make/colour/body corpus afterwards so training labels drop the misreads.
-**⮕ 2026-10-04: the gate is now pluggable** (`analysis/alpr/gate.py`,
-`PlateGate`; `configs/alpr.json` `"plate_gate": "conf" | "combined"`). The
-**combined** gate (review E1.4) counts a read at min-char conf >= 0.80 that
-another snap of the track agrees with (`n_agree` on the rollup's best read) or
-that >= 2 tracks anywhere share (cross-session support from every rollup);
-plate colour runs upstream (`colour_suspect` reads never become a best read).
-Apply/re-apply with the panel's **platecheck** playbook.
+**Keep this file short.** When a result lands, edit "Current state" so it says what is true now,
+and append the dated account (numbers, method, what it replaced) to the matching file in
+`docs/history/`. Don't add a correction under an old claim here: replace the claim.
 
-**⮕ NEXT SESSION — start here (handoff written 2026-09-28; steps 1-5 done
-by 2026-10-04, so start at step 6, revised 2026-10-04).** PR #110 (the
-review doc, the R1 OCR-confidence fix + `alpr-rescore` + panel **rescore**
-playbook, `.claude/ocr_conf_calibration.py`, the shared plate gate
-`configs/alpr.json`) is **merged**. Steps 1-5 were all dev-box analysis code;
-step 6's E1.5(c) is the one Orin deploy. In order:
+## Current state (2026-11-11)
 
-1. **Land the branch.** Done (PR #110 merged; it changed no dependencies, so
-   no `uv sync` was needed).
-2. **Re-score.** Done 2026-09-28 (panel *Re-score plate confidence*, 185/185
-   steps, 108 min): all 46 ALPR'd sessions carry the min-character
-   confidence (Plates v3).
-3. **Calibrate.** Done 2026-09-28: **gate = 0.90**, written to
-   `configs/alpr.json` (its `_why` key holds the evidence; full numbers in
-   `.claude/ocr_calibration.json`). Not-on-DVSA-register rate by
-   min-confidence group over 51,953 UK-shaped best reads: 0.95-0.98 1.5 %,
-   0.90-0.95 2.5 %, 0.85-0.90 4.2 %, 0.80-0.85 7.2 %, 0.70-0.80 12.2 %. The
-   rates never level off; below 0.90 a group's rate is ~3x the top group's.
-   0.90 keeps 66 % of tracks at 2.0 % not-on-register, while 0.95 keeps only
-   32 % at 1.5 %, halving the labelled set. The colour-mismatch check is too
-   small to decide (n < 30 in most groups once training cars are excluded).
-   **Follow-up (code): snap agreement beats confidence.** 0.85-0.90 reads
-   that another snap agrees with are 1.0 % not-on-register; 0.90-0.95 reads
-   that no snap agrees with are 7.0 %. A gate that combines agreement with
-   confidence would beat any single threshold.
-4. **Apply the gate.** Done 2026-09-28 with the new panel **relabel**
-   playbook (*Re-apply plate gate (all sessions)*, PR #111): 32,150 car
-   tracks DVSA-labelled, **12,672 stale per-track labels cleared** by the
-   R13 `dvsa-apply` fix, 0 new DVSA lookups, showcase at 4,058 cars.
-   Per-track labels match `_dvsa_labels.json` exactly in all 46 sessions.
-   Re-run the playbook whenever `configs/alpr.json` changes (it costs no
-   API calls; rescore skips sessions it has already done, so it can't).
-5. **Retrain on the cleaner labels.** Run the build-train playbook (make),
-   plus `--target colour|body_type`, head-to-head, and promote only on a
-   clear win.
-   **Rebuild the corpus; don't reuse `uk_crops_0924_576`.** Checked
-   2026-09-29 against the post-gate labels: 28 % of its crops no longer have
-   a valid label (23.1 % come from tracks the gate now rejects, 3.9 % from
-   tracks now labelled a *different make*), and 45 % of its 7,319 "cars"
-   were phantom plates from misreads. Training on wrong labels fits the
-   early-peak-then-memorise curve every head showed. Estimated rebuild:
-   ~3,900 cars / ~59k crops / ~36 makes (was 62), so judge only
-   head-to-head. The top 500 cars would still hold ~55 % of crops, so test
-   the per-car cap as a separate run: build-train uncapped vs **max
-   crops/car = 30** (the dashboard field; capped runs get `_capN` dirs), each
-   compared against production.
-   **Progress (2026-10-01):** the uncapped run (`runs/uk_make_0929_b6`,
-   corpus `uk_crops_0929_576`: 4,347 cars / 76,033 crops / 62 makes) ran all
-   20 epochs at batch 6 (~100 min/epoch); val make@1 peaked **0.932** at epoch
-   15 and never fell away (the old corpus peaked at epoch 2, then dropped).
-   Its build-train head-to-head is **inconclusive**: +1.3 pp per track (95 % CI
-   −2.6..+6.3) on only **67 held-out cars**, because 93 % of the rebuilt
-   corpus's cars are also in production's training corpus and are excluded.
-   The cap-30 run (`runs/uk_make_1001_b6_cap30`, 39,219 train crops,
-   ~69 min/epoch) followed automatically. **To decide:** enrich the unseen
-   week `session_20260924_104939` (pulled 2026-09-30) once training frees the
-   GPU, then score both candidates on its fresh cars with `makemodel-compare
-   <corpus> --candidate <best.pt> --eval-session session_20260924_104939
-   --exclude-corpus runs/uk_crops_0924_576 <the other candidate's corpus>`.
-   Pass the same exclusions for both runs so they score identical cars
-   (`--exclude-corpus` replaces the default production-corpus exclusion, so
-   name 0924 explicitly; each run always excludes its own corpus).
-   **Fresh cars are scarce on this street:** the cap-30 run (best val 0.934,
-   early-stopped at epoch 13) also tied production on the 67 cars (+0.0 pp),
-   and `session_20260930_211033` (one day) had 124 DVSA-labelled cars of which
-   only **15** were in no training corpus (~88 % regulars). A week gives
-   maybe ~100 fresh cars, so also run each candidate with
-   `--include-trained-cars`: every labelled car in the eval sessions, scored
-   on its new passes (all sessions after every model's training data). It
-   has several hundred cars and matches what the classifier mostly sees, but
-   it rewards recognising known cars, so read it beside the fresh-car result
-   and use `--out` to keep the two reports apart.
-   **Verdict (2026-10-01) — uncapped `uk_make_0929_b6` PROMOTED.** Scored on
-   the unseen sessions `session_20260924_104939` + `session_20260930_211033`
-   (reports `runs/uk_make_*/compare_{fresh,known}_week0924.json`), per-track
-   make@1:
+### Live on the Orin
 
-   | model | 117 fresh cars | 710 cars, new passes |
-   | --- | --- | --- |
-   | production (`uk_make_0924_b6`) | 80.8 % | 93.6 % |
-   | **uncapped `uk_make_0929_b6`** | **85.0 %** (+4.2, CI −1.2..+10.0) | **95.1 %** (+1.5, CI +0.0..+2.9) |
-   | cap-30 `uk_make_1001_b6_cap30` | 84.4 % (+3.6, CI −0.7..+8.2) | 94.0 % (+0.4, CI −1.2..+1.9) |
+- **Code `0b817b7`**, pulled 2026-11-10 and started by a panel roll at 17:18 GMT. Rollback:
+  `git checkout 6707789` + restart. JetPack 6, Python 3.10.
+- **`session_20261110_171836`** is the first session recorded with the summary-page stall fix
+  (see [Device runtime notes](#device-runtime-notes-orin-nano-8gb-super)). Its check is still to
+  run (Open work, item 1).
+- **Config.** `vehicle_classes = [0,1,2,3,5,7,16]` (person, bicycle, car, motorcycle, bus, truck,
+  dog). The snap gate is the road polygon with six triggers, plus pipeline mode (400 ms, 15 per
+  track) with per-direction bands. The live block is under
+  [Snap-gate config layout](#snap-gate-config-layout).
+- **Camera.** Forced colour (`dayNight: Color`) since 2026-09-28. In IR mode the frames are
+  monochrome and the runtime skips inference, so the tracker is blind (it was for 41.7 % of
+  September). Don't return the camera to automatic day/night, or add an IR illuminator, without
+  an IR-mode inference option (review R16).
+- **Retention.** The Orin deletes 4K snaps after 7 days and keeps tiles, HQ crops and JSON. Pull a
+  session within the week.
+- **Fields by recording date.** A session recorded before a deploy lacks that deploy's fields;
+  treat a missing field as unknown. Bicycle, motorcycle, bus and truck tracks and
+  `main_snap_bboxes_done` date from 2026-06-13; dog tracks and `class_suspect` from 2026-07-07;
+  `entry_point_frac` / `exit_point_frac` from 2026-07-19; `main_snap_fire_unix` /
+  `main_snap_done_unix` and `_trajectories.jsonl` from 2026-10-04.
 
-   Better than production in both tests and never worse, from cleaner labels;
-   the 710-car CI touches zero, so it was a judgement call, not the panel's
-   strict "clear win". **The per-car cap doesn't help** (no better fresh,
-   −1.1 pp known) — keep the option, don't use it by default. Prior model
-   backed up as `makemodel_b0.20261001T224515.pt`; the reinfer playbook was
-   queued to follow the week's enrich (done 2026-10-02: all 48 sessions,
-   showcase at 4,173 cars).
-   **Colour + body type — retrained on `uk_crops_0929_576` and PROMOTED
-   (2026-10-03).** EfficientNet-B0 @384, batch 32, 20 epochs / patience 5
-   (`runs/uk_colour_1002_b0`: early-stopped at 15, best val 0.906 at epoch
-   10; `runs/uk_body_1002_b0`: all 20, best 0.940 at 16 — neither showed the
-   old epoch-1-to-3 peak). Same fresh-week head-to-heads, per track:
+### Plate reading
 
-   | head | fresh cars | all cars, new passes |
-   | --- | --- | --- |
-   | colour | 76.2 % → **83.3 %** (+7.1, CI +0.6..+13.8; grouped +5.9, CI +0.6..+12.1), 118 cars | 86.9 % → **93.5 %** (+6.6, CI +4.7..+8.6; grouped +5.3), 711 cars |
-   | body type | 87.8 % → **89.1 %** (+1.3, CI −2.6..+4.7), 109 cars | 92.8 % → **95.9 %** (+3.1, CI +1.7..+4.5), 674 cars |
+- **Command.** The panel's enrich playbook runs `alpr-run <session> --pipeline preferred
+  --pre-crop --ghost-mask .claude/ghost_mask.json`. The bespoke pipeline adds no useful signal.
+- **Crops.** `alpr-run` defaults to `--crop-mode fullframe`: it detects vehicles in the whole 4K
+  frame and picks the one that matches the track's trajectory. `--crop-mode hint` is the legacy
+  path, which cropped around a box the car had already left.
+- **Read rate.** Per car, on canonical UK plates with fullframe crops (2026-07-28): R→L 69.7 %,
+  L→R 66.8 %, net 68.3 %. Direction is not the limit and no second camera is needed. Every
+  earlier "R→L is capped by camera geometry" claim was a crop artefact.
+- **Low light is the limit.** Day (06-18 h) reads about 75 % per car; dusk and dark about 45 %.
+  The cause is motion blur (plates are found but smeared), plus R→L front-plate detection falling
+  to 17-41 % at 07-08 h and 18-19 h under headlight glare. As the days shorten this covers both
+  rush hours: gated reads at 17:00 were 54.5 % in July and 5.2 % on 1 October. The lever is a
+  faster shutter scheduled for 07-09 h and 17-19 h. It is the operator's decision (`SetIsp` needs
+  the camera's admin account). Brightening or a longer exposure makes it worse, and a shutter cap
+  all day cost about 23 pp in daylight.
+- **Night counts are sound.** In forced colour, weekday dark-hour car counts match summer
+  daylight: nights are quiet, not missed.
+- **Confidence.** `ocr_conf` is the probability of the weakest decoded character, on sessions
+  stamped `"ocr_conf": "min_char"` in `_static_plates.json`. Re-score an unstamped session with
+  `alpr-rescore`.
+- **Plate gate.** One shared gate, `configs/alpr.json` (gitignored; template
+  `configs/alpr.example.json`), read by `dvsa-label`, `vehicles`, the showcase and `/stats`
+  through `analysis/alpr/gate.py` (`PlateGate`). It is set to `"plate_gate": "combined"`: a read
+  counts at minimum-character confidence ≥ 0.80 when another snap of the track agrees, or when at
+  least two tracks anywhere read the same plate. Reads whose plate colour contradicts the
+  direction (`colour_suspect`; R→L shows the white front plate, L→R the yellow rear) and static
+  parked plates (`static_suspect`) never become a track's best read. A malformed file is an
+  error, never a silent fallback. After any change to it, run the panel's **platecheck**
+  playbook; plates that newly pass cost DVSA lookups. 41.8 % of car journeys carry a DVSA label
+  (2026-10-04).
+- **Unverified.** Only the plate-colour rule checks that a plate belongs to the tracked car; the
+  DVSA register can't see that. Until the E1.2 audit set exists
+  ([`docs/data_integrity_review.md`](docs/data_integrity_review.md)), read rates are
+  canonical-shape rates, not verified reads.
+- **Tried and rejected** (don't repeat without new evidence): multi-frame character voting
+  (−43 pp against best-of-N; `alpr/consensus.py` is kept as infrastructure), a daytime shutter
+  cap (Anti-Smearing, 2026-05-31), and a fuzzy plate ratio below 85 (it merges different cars
+  across regional prefixes).
 
-   Colour is a clear win on both sets; body type is clear on the large set
-   and level on fresh cars (both near ceiling there). Prior models backed
-   up as `models/{colour,bodytype}_b0.20261003T*.pt` (untracked); every
-   session re-run with both heads via the panel (2026-10-03, 96 jobs, then
-   a showcase refresh). **Step 5 is complete** — all three heads now train
-   on the label-clean corpus.
-6. **Then the review's plan, revised 2026-10-04**
-   (`docs/data_integrity_review.md` §4, "Revision (2026-10-04)" has the
-   reasoning). In order:
-   1. **Small code fixes. Done 2026-10-04.** The `/stats` make chart counts
-      only plates with current `track_ids` (E0.2: 10,071 of 29,053 label
-      rows were orphans; the top-12 makes halved to 3,196 cars, Toyota
-      +2.3 pp). HSV-sourced colours show as "unknown" in the mix and the
-      fastest-by-colour board (E0.8: HSV coloured only 5.5 % of car tracks,
-      but 78 % of them black or blue). E0.6 found no time-base anomaly (Orin
-      `Europe/London`, NTP synced; `.claude/phase0_checks.py --checks e06`),
-      and the BST repeat hour needs no fix: each pass counts once, and the
-      repeated hour just holds two clock-hours (E3.5 note). The showcase was
-      restarted on it 2026-10-04.
-   2. **E1.5(c): persist per-snap fire/done timestamps and a thinned
-      per-track trajectory.** A code-only Orin deploy, in the
-      [schema-additive order](#schema-additive-config-changes). It only helps
-      sessions recorded after it ships, and the Orin deletes 4K snaps after
-      7 days, so land it early. **Deployed 2026-10-04 09:52** (PR #123; the
-      Orin went from #89 to `5f4ceb4`, whose only runtime change is this;
-      rollback `git checkout 90e10df` + restart). `session_20261004_095219`
-      is the first session with `TrackRecord.main_snap_fire_unix` /
-      `main_snap_done_unix` and `{session}_trajectories.jsonl` (checked on
-      its first track: fire→done 703 ms, 32 trajectory rows). **Pull the
-      closed `session_20261001_190826` before ~2026-10-08**, when its first
-      snaps age out.
-   3. **Phase 0 script. Done 2026-10-04** (`.claude/phase0_checks.py`;
-      results in each experiment's row in the review, local report
-      `.claude/phase0_report.{json,txt}`, git-ignored because it holds
-      plates). E0.3: IR mode (no inference) took **41.7 % of September's
-      session time** (new finding R16). E0.5: **R2 is real**, two cars passing
-      share one plate on 1.3 % of gated read tracks. E0.9: **R3 is real**,
-      ~40 % of labels from a plate read on one track describe another car,
-      and cross-track support separates labels far better than confidence.
-      E0.4: 11 % of the "fresh" test cars are misreads of regulars. E0.7:
-      most "joggers" are near-pavement walkers.
-      - **3a. New: low light (review R16 + its update).** The camera has
-        been in **forced colour (`dayNight: Color`) since 2026-09-28**, so the
-        IR gap is mid-Aug to 28 Sep only. The live problem is that **rush-hour
-        plate reads collapse as the days shorten**: gated read rate at 17:00
-        was 54.5 % in July, 15.0 % in September and 5.2 % on 1 Oct; at 08:00,
-        43 % → 11 %. Forced colour doesn't help.
-        **Capture analysed 2026-10-05** (review R16 "Results"; `~/ir_test`
-        on the Orin, `.claude/ir_capture.py --windows`: sub-stream + 4K every
-        2 s at 18:30, 21:30 and 07:00 on 4-5 Oct):
-        - **Nights are quiet, not missed.** Mon-Thu car tracks/h in forced
-          colour (28 Sep-1 Oct, dark) match summer daylight: 20 h 43.5 vs
-          49.6, 22 h 1.8 vs 1.5, 23 h 2.2 vs 2.1 (the IR weeks: 20 h 17.0,
-          blind). Dark tracks have lower confidence (0.77 vs 0.84) and are
-          visible ~2 s less; 21 h (8.2 vs 12.2) may be missing a few cars.
-        - **The capture itself was weak: 4 Oct was a Sunday**, the quietest
-          evening. 21:30-22:00 had no traffic at all (live, offline YOLO down
-          to conf 0.05, motion count and 4K snaps all empty), 18:30 no cars.
-          Run future captures on weekdays. The **07:00 Monday** window matched
-          the live tracker 1:1 (6 cars, 3 people, a dog; no motion
-          unexplained), but its 6 cars gave 11 views in the periodic 4K snaps,
-          2 plate detections and 0 reads.
-        - **Low-light plate loss = blur + R→L front plates not found.** Same
-          week, per car: L→R plates are still found at 07-08/18-19 h
-          (81-100 %) but none read (sharpness 2-4× below day while brighter);
-          R→L plate detection drops to 17-41 % (day 91 %), most likely
-          headlight glare around the front plate. Gated per-car reads: day
-          47.7 %, 17-18 h 7.7 %, 18-19 h 0 %, 07-08 h 0 %, 08-09 h 3.2 %.
-        - **The low-light choice is the operator's** (it changes the camera):
-          counting needs nothing (forced colour tracks at night); the plate
-          lever is a faster shutter scheduled for 07-09 h and 17-19 h only
-          (E2.8; a cap all day cost ~23 pp in daylight), via a scheduled
-          `SetIsp` (admin account). IR-mode inference (option a) is now only
-          a plate-read option and keeps the long exposures.
-        - Scripts: `.claude/lowlight_{counts,plates}.py` (tables from
-          `output/`), `.claude/ir_capture_{detect,report,plates}.py` (a pulled
-          capture; outputs stay beside it, never in the repo).
-   4. **E1.3 plate-colour/direction check, and the combined gate. Live
-      2026-10-04.** `configs/alpr.json` is `"plate_gate": "combined"`, and the
-      panel's **platecheck** playbook ran on all 49 sessions (197/197 steps,
-      ~24 min; every session now badges Plates v4, every harvest records the
-      combined gate). **Car journeys with a DVSA label: 33,445 (35.9 %) →
-      39,499 (41.8 %)**; showcase 4,164 cars. Harvests attribute some non-car
-      tracks (vans as "truck", buses, bicycles) and tracks with no `data.json`
-      record; `dvsa-apply` writes car records only, so those never reach
-      `data.json` (expected; review R14). Re-run platecheck (or relabel) after
-      any change to `configs/alpr.json`. Simulated beforehand: tracks passing
-      36,078 → 41,923 (+16.2 %), 581 new DVSA lookups. Classifier
-      `analysis/alpr/plate_colour.py` (R→L shows the white front plate, L→R
-      the yellow rear). **2.5 % of gated best reads carry a plate whose colour
-      contradicts the direction** (L→R 3.9 %, mostly oncoming cars' front
-      plates), confidence and support can't see it, and colour resolves all
-      230 of E0.5's concurrent collisions. Gate comparison
-      (`.claude/plate_gate_rules.py`, review E1.4): **gate H = (another snap
-      agrees, or ≥ 2 tracks read the plate) and conf ≥ 0.80 and plate colour
-      not wrong**. It labels 15.5 % more tracks than today's conf ≥ 0.90, with
-      not-on-register 2.1 → 1.4 %, unseen colour mismatch 4.1 → 3.6 % and
-      misattributed plates 2.5 % → 0. Built as: colour-inconsistent reads are
-      `colour_suspect` (the best read falls back), and H is the shared gate's
-      `combined` mode (dvsa-label, vehicles, showcase, stats).
-   5. **E1.2 audit set** (extend `.claude/triage_rl.py`), stratified to
-      over-represent what E0.5 and E1.3 flag; then calibrate E1.3 and the
-      combined gate against it. It is the only check on whether a plate
-      belongs to the tracked car: the DVSA register can't see that.
-   6. **E2.6** (plate-blind test first: the heads were promoted on plated
-      cars, but `/stats` uses them on unplated ones), E2.1 capture-band
-      curves, E2.3 ghost mask on/off, E2.7 colour augmentation. E1.5(a)/(b)
-      can run at any point.
-   7. **E3.1 hand count, then the night A/B (E2.8).** Reframed by R16:
-      after the IR switch nothing is recorded, so the A/B depends on step
-      3a's choice.
-   8. **Retrain (E2.5)** once the E1.4 filter and cluster-aware
-      `makemodel-compare` exclusion exist (E0.4: the fresh set holds
-      misreads of regulars) and fresh cars have built up.
-   Also from Phase 0: show joggers as "fast-moving person tracks" until E3.2
-   (E0.7).
+### Classifiers
 
-   The production `uk_make_0929_b6` is backed up as GitHub Release
-   `models-2026-10-26` (2026-10-26; see
-   [Dev-box disaster recovery](#dev-box-disaster-recovery)).
+All three production heads were trained on `runs/uk_crops_0929_576` (4,347 cars / 76,033 crops /
+62 makes; plate-anchored crops, pad 0.1; labels from DVSA lookups of gated plate reads). Per-track
+accuracy on the unseen sessions `session_20260924_104939` + `session_20260930_211033`:
 
-**Cloud sessions have no `output/`**, so they can only do code work there:
-- step 6.1's fixes;
-- E1.5(c)'s runtime change (the Orin deploy itself runs from the dev box);
-- the R16 runtime option (an IR-mode inference switch);
-- the E1.3 plate-colour script and the combined gate;
-- cluster-aware exclusion in `makemodel-compare`.
+| Head | Run | Promoted | Fresh cars | All cars, new passes |
+| --- | --- | --- | --- | --- |
+| make (EfficientNet-B6 @528) | `uk_make_0929_b6` | 2026-10-01 | 85.0 % (117 cars) | 95.1 % (710) |
+| colour (B0 @384) | `uk_colour_1002_b0` | 2026-10-03 | 83.3 % (118) | 93.5 % (711) |
+| body type (B0 @384) | `uk_body_1002_b0` | 2026-10-03 | 89.1 % (109) | 95.9 % (674) |
 
-Anything that reads session data runs on the dev box, and the operator
-pastes the output back.
+Weights are in `src/streettracker/analysis/makemodel/models/` (`makemodel_b0.pt`, `colour_b0.pt`,
+`bodytype_b0.pt`, each with a `.meta.json` sidecar; the dated backups beside them are untracked).
+The make model is too big to commit: it is GitHub Release `models-2026-10-26`, and each promotion
+publishes `makemodel-<run>`.
 
-**Live on the Orin** (#63 runtime bundle deployed 2026-06-13; code updated to
-`5f4ceb4` on 2026-10-04 for E1.5(c), see step 6.2 above; `6707789` on
-2026-10-26 for the startup wait for the boot's first NTP sync (PR #136) and
-`YOLO_AUTOINSTALL=false` (#137); **now `0b817b7`**, pulled on 2026-11-10 and
-started by a panel roll at 17:18 GMT; service active, NRestarts=0). Its one
-behaviour change over `6707789` is the summary-page stall fix (PR #145, see
-[Device runtime notes](#device-runtime-notes-orin-nano-8gb-super)); it also
-carries the shared file helpers (#144, imports only on the device) and
-formatting / type annotations (#143). `session_20261110_171836` is the first
-session recorded with the fix. Rollback: `git checkout 6707789` + restart.
-Still live from earlier deploys:
+- **These scores are on plated cars.** `/stats` mostly uses the heads on unplated cars, where the
+  crop comes from the trajectory rule and accuracy is untested (review E2.6).
+- **Sources.** `make_model_source` and `colour_source` say where a value came from: `"dvsa"` is
+  the register (truth for a correctly read plate), `"cnn"` a prediction. `/stats` prefers DVSA,
+  then the CNN, then "unknown". The HSV `color` field is not a colour source (about 40 % grouped
+  accuracy): leave it alone and never fall back to it.
+- **Crops must match training.** Inference with `--crop-mode auto` follows the checkpoint; these
+  models infer `fullframe` at pad 0.1. `bodytype` and `colour` need `--pad-frac 0.1` (the CLI
+  default): 0.25 skews the shape classifier toward "van".
+- **Judge a candidate only head-to-head.** `makemodel-compare <corpus> --candidate <best.pt>
+  --eval-session <unseen sessions>` scores the candidate and production on the same cars with a
+  by-car bootstrap interval. Add `--include-trained-cars` for the larger known-car set and
+  `--target colour|body_type` for the other heads. Never compare raw validation scores, or scores
+  across corpora or crop families: that mistake produced most of the superseded numbers in the
+  history. About 88 % of this street's cars are regulars, so a week yields roughly 100 fresh cars.
+- **Training.** B6 @528 trains at batch 6 on the 10 GB RTX 3080 (batch 8 spills into system
+  memory and runs about 5× slower); the build-train playbook defaults to it. A per-car crop cap
+  doesn't help.
+- **What moved accuracy:** clean crops (the clean-crop make retrain gained 22.5 pp per track),
+  clean labels, input resolution and more cars.
+  **What didn't:** CompCars pre-training (about 1 % on UK cars) and a local VLM (Qwen3-VL 8B lost
+  clearly, and it starves panel jobs of memory: never run it beside them).
+- **The next retrain** waits on cluster-aware exclusion in `makemodel-compare` (11 % of the
+  "fresh" test cars were misreads of regulars) and on fresh cars building up (review E2.5).
 
-- **per-direction pipeline bands** `pipeline_t_usable_by_direction =
-{forward(R→L):[0.10,0.20], reverse(L→R):[0.30,0.60]}` (reverse lower edge
-  nudged 0.25→0.30 on 2026-06-19, **validated 2026-06-22** on the ~72h
-  `session_20260619_111111` soak — L→R per-car 73-82 % → **92.3 %**, net
-  per-car ~48 % → **57.9 %**). **SUSTAINED-RATE CORRECTION (2026-07-09):
-  that 57.9 % was ONE favorable soak — three later completion-bbox
-  sessions (0628/0703/0707) cluster at net **~40-45 %** (L→R ~73-80 %,
-  R→L ~9-11 %), and 0628 predates the 07-07 dog-class deploy so it's
-  session variance, not snap-contention. The reverse-band conclusion is
-  unchanged (L→R = win, R→L HW-only); only the headline number was
-  over-anchored on one good soak — quote ~40-45 % net, not 57.9 %.**
-  **Post-deploy verdict
-  (2026-06-19, two ~70h soaks) falsified the R→L half** of the 2026-06-11
-  re-analysis: L→R is the win (per-car ~73-82 %), R→L is camera-geometry-capped
-  at ~15-20 % at _every_ position (the "R→L reads far" finding was a
-  motion-window-hint artifact that completion-time bboxes corrected; honest net
-  per-car ~48 %, not the inflated 63.9 %). R→L now needs hardware, not tuning.
-  Detail in the [snap-gate config layout](#snap-gate-config-layout) section.
-  **⮕ SUPERSEDED 2026-07-28 — R→L SOLVED IN SOFTWARE (read this before
-  quoting anything above):** every "R→L camera-geometry-capped / HW-only /
-  needs hardware" claim in this bullet is **falsified**. The cap was
-  contaminated crops (recorded done-bboxes sit a median ~510 4K px off the
-  car + ~34-53 % of R→L "reads" were static parked/background plates), NOT
-  geometry. The full-frame trajectory-matched crop path (`alpr-run
---crop-mode fullframe`, the default since 2026-07-28, PR #94/#95)
-  recovered R→L to **per-car parity in software** — production **R→L 69.7 %
-  / L→R 66.8 %, net 68.3 %** (was ~9-17 % R→L / ~45 % net). No 2nd camera.
-  The remaining variance is now time-of-day (day ~74.7 % vs dusk/dark
-  ~45.4 %) → the residual capture lever is **night capture, characterised
-  2026-08-12 as MOTION BLUR, not underexposure** (night plates are still
-  detected but glyph-smeared → fix is a faster night shutter + IR fill, NOT
-  brightening). Not geometry. See Next-steps item 5.
-- **`vehicle_classes = [0,1,2,3,5,7]`** (person+car+bike+moto+bus+truck; was
-  `[0,2]`).
-- **completion-time bbox capture** (`TrackRecord.main_snap_bboxes_done`) —
-  sessions recorded _after_ the deploy carry the bbox at snap-landing time, and
-  `alpr-run` prefers it (exact crops, no extrapolation).
-- rollback: on-device `configs/camera.json.bak.20260613T075913Z`, git `523c820`.
+### People side
 
-**State:** `session_20260608_125639` pulled (56 GB) + enriched (alpr + dvsa =
-1,174 new labels, 59 parked beacons suppressed). Showcase live on **:8090**
-(~2,700 cars).
+- `streettracker people` writes `_people.json`: walker / jogger / cyclist (jogger ≥ 2.5 m/s; a
+  person paired with a bicycle track is a cyclist), a `dog_walker` flag, BotSORT-split fragments
+  merged into walks, out-and-back round trips, and door-origin trips when
+  `configs/door_zone.json` (gitignored) exists. Field notes are in
+  [`docs/session_files.md`](docs/session_files.md).
+- About 75-80 % of raw round-trip pairs are coincidence on this pavement. Report only the excess
+  over the time-shift control.
+- Most "joggers" are near-pavement walkers who move fast in pixel terms (Phase 0, E0.7), until
+  ground-plane speed exists (E3.2).
+- A "person" whose median box is at least 1.5× wider than it is tall is flagged `class_suspect`
+  and left out of people and car counts.
+- **Privacy line.** Walks are never matched across days, and this repo does no cross-session
+  person re-identification. The door zone identifies the household's trips by where they enter
+  and leave the frame, not by who takes them.
+- **Parked by the operator (2026-07-07):** a retention policy for person 4K imagery on the dev
+  box. It stays last until they say otherwise.
 
-**Make-model: CLOSED 2026-06-14.** Corpus rebuilt (`runs/uk_crops_0614_512` =
-**32,777 crops / 36 makes**, ~4× the 0611 corpus after folding in the new
-session), B5@456 retrained **make@1 0.349 → 0.402** (+5.3 pp on a trustworthy
-6,570-crop val; plateaued 0.39-0.40 over epochs 16-30, not a fluke), **promoted**
-(`runs/uk_make_0614_b5/best.pt` → `…/models/makemodel_b0.pt`; prior 0.349/0.303
-backed up beside it), and **all 17 sessions re-inferred** with it + showcase
-refreshed. Data-is-the-lever, confirmed again (4× data → +5.3 pp). The
-`*_0613_*` runs are dead partials from a sleep-killed overnight job — ignore.
+### Open work, in order
 
-**People side (shipped 2026-07-07):** `streettracker people` writes
-`{session}_people.json` — walker/jogger/cyclist kinds (jogger ≥2.5 m/s,
-the empirical valley; cyclist via bicycle-track pairing so riders don't
-pollute joggers) + `dog_walker` via temporal+direction pairing (PR #70).
-Panel-integrated: allowed job kind (net lane), 6th enrich-playbook step,
-sessions-table badge (PR #71). All 23 local sessions backfilled (~28k
-classified: 76 % walkers / 23 % joggers / 1 % cyclists; pre-06-13 jogger
-counts include unfiltered riders, ~+4pp — no bicycle class then).
-**Dog class 16 live on the Orin** since 2026-07-07 08:11
-(`vehicle_classes=[0,1,2,3,5,7,16]`, rollback
-`camera.json.bak.20260707T065646Z`); 3 dog tracks in the first 5 h, so
-YOLOv8m sees dogs here. Coverage soak (`.claude/person_coverage.py`,
-5 soaks / 13,359 person tracks): 66.7 % of person tracks get a 4K snap
-(cars 94.4 %) — gap is short-dwell/BotSORT-splits, NOT band geometry;
-no person-specific snap gate needed. Both ancestor repos archived
-2026-07-07 (migration closed).
+1. **Confirm the stall fix.** Once `session_20261110_171836` has been rolled and pulled, run
+   `uv run --no-sync python .claude/loop_stall_check.py output session_20261110_171836`. Tracks
+   ending at a rebuild instant should be at the chance level (a pre-fix session shows about 13
+   times chance).
+2. **Data-integrity plan** (review §4, revised 2026-10-04; its first four steps are done). Next
+   is the E1.2 audit set, stratified toward flagged reads, then calibrating the plate-colour
+   check and the combined gate against it. After that: E2.6 (plate-blind test first), E2.1, E2.3
+   and E2.7; the E3.1 hand count, then the night A/B (E2.8); and the retrain (E2.5) last.
+3. **Low-light shutter schedule.** Waiting on the operator's decision (see Plate reading).
+4. **Code-quality roadmap** (2026-11-10 review). Done: showcase rebuild speed, CI checks, the
+   shared file helpers, the stall fix and this file's split. The rest are unapproved proposals;
+   ask before starting one.
+5. **JetPack 7.** Blocked until `scripts/check_jp7_wheel.ps1` exits 0. Stay on JetPack 6; the
+   plan is in [`docs/deployment.md`](docs/deployment.md#jetpack-7-upgrade-plan).
 
-**Next steps (updated 2026-07-07), priority order** (older list; the
-2026-09-28 handoff above takes priority):
+### Working rules
 
-1. **Merge PR #72** (stats-page people kinds; CI green, awaiting operator
-   merge) → restart the showcase on :8090 to pick it up.
-2. **Dog-walk first light — tokenless operator loop.** Let the live
-   session soak a few days → panel **roll** → **enrich** (now writes
-   `_people.json`) → first real `dog_walkers` count on `/stats`.
-3. **Person-count hardening:** (a) class-flip guardrail — cross-check
-   `class_name` against `speed_px_s` + bbox aspect ratio at finalize
-   (kills the parked-car-labelled-person corruption, hardens footfall);
-   (b) same-session walk dedup — BotSORT splits inflate walk counts;
-   within-session appearance matching only (reuse `vote_color` infra),
-   deliberately NO cross-session person re-id (privacy line).
-4. **⮕ SUPERSEDED 2026-09-25 — clean-crop B6 promoted.** Every make@1
-   below was trained and validated on stale-bbox crops (~2/3 missed the
-   car; see [Make/model classification](#makemodel-classification)).
-   Production is now **`uk_make_0924_b6`** (B6@528, plate-anchored
-   `uk_crops_0924_576`, 62 makes / 7,319 cars / 81,933 crops), promoted on
-   a head-to-head: **60.4 % vs 37.9 % per-track make@1 (+22.5 pp, 95 % CI
-   +19.6..+25.4)** on 883 held-out cars. Colour + body-type heads still
-   run the legacy hint crops — retrain them on the same corpus next.
-   History as it stood before the crop fix:
-   **Make classifier — B6 SHIPPED, VLM FALSIFIED (2026-07-08):**
-   B6@528 trained on `uk_crops_0707_576` (45 makes / 3,942 cars /
-   47,881 crops) → **make@1 0.451**, promoted over B5's 0.441. VLM
-   bake-off DONE — **Qwen3-VL 8B loses decisively** (0.15-0.18 vs B6's
-   ~0.29-0.30 per-car-largest-crop on 400 val cars; ~15 s/image vs ms)
-   and shows its own OOD attractor (MINI 23 %) — no pipeline role at
-   this size. **Positive surprise: B6 largely fixed the June OOD
-   VW-collapse** (VW max-share on unlabelled tracks: B5 19 % → B6 11 %,
-   plausible Ford-topped mix) — corpus growth + capacity, not
-   structural after all. Bake-off methodology gotchas recorded in
-   `.claude/vlm_bakeoff.py` (cross-corpus val leakage: 276/400 of the
-   0707 val cars were in B5's train set; per-car-largest is a harder
-   metric than the trainer's per-crop val). **Body-type coarse target —
-   infra SHIPPED (2026-07-08):** `analysis/makemodel/bodytype.py` maps
-   the DVSA _model_ string (prefix-matched, trim-suffix-tolerant) to a
-   silhouette class {hatchback, saloon, suv, mpv, van, pickup, coupe} at
-   **90 % of labelled cars** (45 % hatchback / 32 % suv / ~8 % van+saloon
-   / ...). `makemodel-build-uk` now tags `body_type` per crop; train it
-   with `makemodel-train-uk <corpus> --target body_type` (the make path
-   is byte-identical when `--target make`). The DVSA "UNKNOWN" placeholder
-   is now filtered in `normalize_make` (PR #76, #77). **VERDICT
-   (2026-07-09, `runs/uk_body_0708_b0`, b0@384, 20ep early-stop @12):
-   body_type@1 = 0.694 per-crop / 0.667 per-car — beats make (0.45) by
-   ~+24 pp but short of the 80-90 % hope.** The win is CONCENTRATED: the
-   two dominant, visually-distinct classes — **hatchback + suv, 77 % of
-   cars — read ~0.75 per-car**; the minority classes are weak (saloon
-   0.37 / mpv 0.42 / van 0.59 / coupe 0.43 / pickup 0.21 recall),
-   capped by rear-view ambiguity + tiny support + label noise (one model
-   name → predominant body style mislabels estates/variants), and mostly
-   confuse INTO hatchback. So body type is a usable coarse "hatchback vs
-   suv vs other" tag for the majority, NOT a clean win — surface it only
-   if that split is wanted; inference/showcase wiring is an unbuilt,
-   optional follow-up. Reproduce: `.claude/bodytype_eval.py`. Ops: the
-   8B VLM spills
-   ~17 GB commit to system RAM on the 10 GB 3080 — never run it beside
-   panel jobs (it starved an `alpr-run` to death on 2026-07-08).
-5. **R→L SOLVED IN SOFTWARE (2026-07-28) — 2nd-camera plan shelved; night
-   exposure is the freed-up lever.** The 2026-06-19 verdict ("R→L
-   geometry-capped ~23 %, only a 2nd discreet approach camera can lift it")
-   was **falsified 2026-07-27/28**: the "cap" was contaminated crops, not
-   geometry. The recorded `main_snap_bboxes_done` sit a median **~510 4K px
-   off the car**, and ~34-53 % of R→L "reads" were static parked/background
-   plates. Fixed offline (E1 re-score) then **productionised** — the
-   full-frame trajectory-matched crop path (`analysis/alpr/fullframe.py`,
-   `TrajectoryCropDetector`): **`alpr-run --crop-mode fullframe` is the
-   default since 2026-07-28** (PR #94/#95; `--crop-mode hint` = legacy).
-   Production-confirmed on the re-enriched sessions: **R→L 69.7 % / L→R
-   66.8 % per-car canonical, net 68.3 %** (was ~9-17 % R→L / ~45 % net) —
-   **direction parity achieved, no hardware needed.** The whole local
-   corpus is on the fullframe path (panel `Plates v2` badge; **re-enrich
-   backlog cleared** — all ALPR'd sessions verified `crop_mode=fullframe`).
-   **The remaining variance is now time-of-day, not direction**: day
-   (06-18) ~74.7 % vs dusk/dark (18-06) ~45.4 % per-car → the freed-up
-   capture lever is **night capture**, NOT geometry/hardware. Multi-camera
-   architecture is no longer a prerequisite for anything. Repro:
-   `.claude/rl_rescore_e1.py`, evidence in `.claude/rl_evidence_0727/`.
-   **Night lever CHARACTERISED 2026-08-12 — it's MOTION BLUR, not
-   underexposure** (3 night-spanning fullframe soaks, `.claude/night_exposure_verdict.py`
-   + `.claude/night_exposure_pixels.py`). Per-car canonical: day ~84-89 % →
-   **dusk (19-21h) 48.7 %** → **dark (21-24h) 17.4 %**, both directions
-   equally (lighting, not geometry). Failure is NOT detection — plates are
-   still FOUND at night (det % 81-92 %, highest at dusk); the OCR/legibility
-   stage collapses (readable-given-detected 70 % day → 34 % dusk → 11 % dark).
-   The detected-but-unread night plates are **bright** (luma 120 > day reads'
-   100), not blown out, not IR-mono, but **~4.6× less sharp** (width-matched
-   Laplacian var 1397 vs day 6413) — horizontal smear in the travel direction
-   (`.claude/night_fail_plates.jpg`). **So the fix is to FREEZE motion at
-   night — a night-scheduled *faster* shutter + a supplementary IR illuminator
-   (cheap add-on), NOT "brighten"/longer exposure (that worsens the smear).**
-   This is the exact variant the daytime Anti-Smearing falsification (2026-05-31)
-   couldn't rule out: that faster-shutter test failed in *daylight* because day
-   plates were never blur-limited (day sharp ~6000), so its gain-noise cost more
-   than the blur removed; at night plates ARE blur-limited (~1400), so a
-   *night-only* faster shutter is mechanistically motivated. **Aim at dusk**
-   (5,191 snaps, det 92 %, only 34 % readable = biggest recoverable volume);
-   full dark is harder + lower volume; night is ~15 % of traffic so net gain is
-   bounded. Next: night-shutter + IR-fill A/B on a dusk soak (Reolink day/night
-   ISP schedule; `SetIsp` needs admin — `cv` acct is read-only — helpers
-   `.claude/setexp*.py`). **⮕ 2026-10-04: shutter-only for now.** An IR
-   illuminator only helps in the camera's IR mode, whose monochrome frames
-   make the runtime skip inference (`device/runtime.py:699`), so the tracker
-   would go blind. See review E2.8. **⮕ 2026-10-05:** "plates are still found
-   at night" no longer holds for R→L. At 07-08/18-19 h front-plate detection
-   drops to 17-41 % (day 91 %, headlight glare), and the low-light window now
-   covers both rush hours. See step 6.3a above and review R16 "Results".
-6. **JP7:** wheel gate re-checked 2026-07-07 — still no jp7 index.
-   Re-run `scripts/check_jp7_wheel.ps1` before any flash; stay on JP6.
-7. **Parked by choice — people P0 (retention policy).** Deliberately
-   deprioritised (operator call, 2026-07-07). Person 4K imagery
-   accumulates indefinitely on the dev box (Orin prunes at 7 d, dev box
-   never); records-forever/sweep-images-after-N-days is the sketched
-   design. Revisit when ready — it stays last until the operator says
-   otherwise.
-
-**Ops (learned the hard way):** launch long jobs **detached (WMI/VBS, outside
-the Claude helper tree)** AND **verify completion by artifact mtimes, never a
-log tail** — a reaped batch's frozen log is indistinguishable from a working
-one (cost ~2 days, 2026-06-11→13). **The dev box idle-sleeps** (~Kernel-Power
-42; killed the 06-13 overnight build) — unattended long jobs need a
-`SetThreadExecutionState` wake-lock (pattern in `.claude/rebuild_0614.ps1`) or
-run them daytime while active. Showcase restart: `uv run streettracker
-showcase --output-root output --port 8090` (detached). Orin prunes 4K snaps
-after **7 days** — pull within the week. `pull --skip-existing` is resumable +
-large-session-safe since #64.
+- **Cloud sessions have no `output/`.** They can do code work only. Anything that reads session
+  data runs on the dev box, and the operator pastes the output back.
+- **Long jobs on the dev box.** The box idle-sleeps, and background children of a Claude session
+  can be reaped. Run long jobs through the control panel (it holds a wake-lock for a whole
+  playbook) or detached with a wake-lock, and confirm completion from artefact modification
+  times, never from a log tail: a dead job's frozen log looks like a working one.
+- **Services.** The showcase (:8090) and the control panel (:8095) run as the scheduled tasks
+  `StreetTrackerShowcase` and `StreetTrackerControlPanel`. Check the task before launching a
+  second copy. New data needs `POST /api/refresh` on the showcase; a code change needs a task
+  restart, and restarting the panel kills its running jobs.
+- **Never run `alpr-run` on the Orin.** The live tracker uses all of it; pull to the dev box.
+- **Size the test set before trusting a rate.** A make@1 figure needs more than about 200
+  held-out cars.
 
 ## Project overview
 
@@ -583,176 +277,69 @@ still write in place.
   before naming the session; `--clock-sync-timeout-s` (0 = off). A restart
   on a synced device doesn't wait. Fitting an RTC backup battery would avoid
   the wait.
-- **Summary-page stall: found, fixed and deployed 2026-11-10 (live from
-  `session_20261110_171836`; not yet confirmed from a full session's logs).**
-  The runtime rebuilt the summary page inline in `process_frame`, 11.76 s
-  after each kept track ended (10 s idle + the 16 frames a track takes to
-  expire), converting every record the session held. On the Orin that took
-  **0.5 s + 0.24 ms per record** (0.75 s at 1,000 records, 2.4 s at 8,000),
-  and no frame was processed meanwhile. Measured on the seven sessions with
-  trajectory logs (`.claude/loop_stall_check.py`, 46,376 tracks): **5.5 % of
-  kept tracks end at a rebuild**, about 2.2 % are one pass recorded as two
-  tracks, and 4K snaps in flight at a rebuild get a late completion time. So
-  some "BotSORT splits" were self-inflicted, and data late in a long session
-  is worse than early. The fix keeps the page's rows ready
-  (`common.summary.SummaryRows`, one row serialised per kept track at
-  finalise) and writes the files from a worker thread
-  (`runtime.start_html_write`); the on-loop cost of a rebuild at 8,000 records
-  drops from ~1.4 s to ~3 ms on the dev box. Timed on the Orin itself before
-  the restart, on the then-live session's 6,838 records: the old page
-  generation took 1,254 ms, the new render 4.9 ms (plus a 14 ms file write in
-  the worker thread), with identical output. **Still to do:** once
-  `session_20261110_171836` has been rolled and pulled, run
-  `uv run --no-sync python .claude/loop_stall_check.py output session_20261110_171836`.
-  Tracks ending at a rebuild instant should be down to the chance level (a
-  pre-fix session shows about 13 times chance, e.g. 479 against 36), with no
-  pile of ends at the instant. Sessions recorded before the deploy keep their
-  splits.
+- **The summary page is written off the event loop** (since `0b817b7`, 2026-11-10). The runtime
+  keeps the page's rows ready (`common.summary.SummaryRows`, one row serialised per kept track at
+  finalise) and writes the files from a worker thread (`runtime.start_html_write`). Before the
+  fix each rebuild stopped frame processing for 0.5 s + 0.24 ms per record held: 5.5 % of kept
+  tracks ended at a rebuild and about 2.2 % were one pass recorded as two tracks. Sessions
+  recorded before `session_20261110_171836` keep those splits, more of them late in a long
+  session. Don't put per-session work back on the loop.
+  Measurements: [`docs/history/project.md`](docs/history/project.md).
+- **Track class and file prefix.** A track's class is the `argmax` of confidence-weighted votes
+  (`BufferedTrack.class_votes`), not the last detection. Its file prefix is locked at finalise
+  and snaps saved under another prefix are renamed, so file names always agree with
+  `record.asset_prefix`.
 
-## Output schema (preserved from NanoTracker)
+### Phase 3 architectural decisions (locked in)
 
-Per finalized track:
+- **Asyncio throughout.** Entry is `asyncio.run(run_session(config))`.
+  Blocking sources (`cv2.VideoCapture.read()`) go to a background thread
+  pushing into an `asyncio.Queue`. Blocking inference goes to
+  `loop.run_in_executor`. HTTP is `aiohttp`.
+- **Frozen dataclasses + strict JSON loader.** `common/config.py` rejects
+  unknown keys with a JSON-path error (catches typos and forces
+  schema-additive config changes through the proper deploy order — see
+  [Schema-additive config changes](#schema-additive-config-changes)).
+- **Graceful shutdown via `loop.add_signal_handler(SIGTERM, ...)`,**
+  bounded by a 30s timeout so systemd won't SIGKILL mid-write. Stop the
+  source first, drain active tracks through finalize, write
+  summary HTML + data.json + meta.json + hourly.json, then `loop.stop()`.
+- **Heavy unit tests + manual Orin smoke.** No recorded-frames
+  integration test (would balloon the repo + CI skips torch /
+  ultralytics). End-to-end validation by ssh against the live Reolink.
+- **Config loading is forgiving on stream names and strict on the engine.** `cli/run.py` falls
+  back to matching `stream.quality` when `nano.preferred_stream` matches no `stream.name`, and a
+  missing `inference.engine_path` fails at load with a JSON-path `ConfigError`.
 
-| File                         | Quality         | Use                    |
-| ---------------------------- | --------------- | ---------------------- |
-| `{prefix}_{id}.jpg`          | q=85, ~80px     | dashboard tile         |
-| `{prefix}_{id}_hq.jpg`       | q=95, ~250px    | quick color/silhouette |
-| `{prefix}_{id}_main_{N}.jpg` | 4K Reolink HTTP | ALPR / make-model      |
+## Session files
 
-`{prefix}` is `vehicle` or `person`. `N` is `1..max_snaps_per_track`.
-The Orin prunes only the 4K `_main_` snaps (7 days); tiles and HQ crops stay.
-The vehicle HQ crop (sharpest, largest sub-stream view) is the one picture
-sure to show the tracked car, so `pull --only-main` fetches it since
-2026-10-04 and the `/stats` fastest-cars board shows it; `pull --crops-only`
-backfills older sessions without touching their JSON.
+Full field notes are in [`docs/session_files.md`](docs/session_files.md). Record fields are
+defined in `common/schema.py` (`TrackRecord`, `SessionMeta`) and paths in `SessionFiles`.
 
-Session files:
+Per finalised track (`{prefix}` is `vehicle` or `person`): `{prefix}_{id}.jpg` (dashboard tile),
+`{prefix}_{id}_hq.jpg` (the sharpest, largest sub-stream view, and the one picture sure to show
+the tracked object) and `{prefix}_{id}_main_{N}.jpg` (4K snaps, `N` from 1; a snap lands about
+0.7 s after it fires, so the car may have moved on).
 
-- `{session}_events.jsonl` — appended line-per-track (crash-safe)
-- `{session}_trajectories.jsonl` — one line per kept track:
-  `{"track_id", "t0_unix", "points": [[dt, x1, y1, x2, y2], ...]}`, every
-  3rd sub-stream bbox plus the last (≤ ~200 rows). With
-  `TrackRecord.main_snap_fire_unix` / `main_snap_done_unix` it lets analysis
-  fit when each 4K snap was exposed (review E1.5(c); sessions recorded from
-  the 2026-10 deploy on; `common.output.read_trajectories_jsonl`)
-- `{session}_data.json` — array of records, written at session end
-- `{session}_meta.json` — session-level metadata + IR periods + snap_stats.
-  `_data.json` / `_meta.json` / `_hourly.json` are written only at a clean
-  shutdown; after a power cut or crash, `pull` rebuilds them from
-  `_events.jsonl` + the meta embedded in `_summary.html` (or run
-  `recover-session`), and the meta then carries a `recovered` block
-  (2026-10-23)
-- `{session}_hourly.json` — per-hour rollup
-- `{session}_summary.html` + `index.html` — dashboard + auto-redirect
-- `{session}_alpr.json` + `{session}_alpr_by_track.json` — per-image
-  - per-track ALPR rollup (after running `alpr-run`). `ocr_conf` is the
-    probability of the weakest decoded character, with the per-character
-    probabilities in `ocr_char_probs`, when `_static_plates.json` carries
-    `"ocr_conf": "min_char"`; without that stamp it is the pre-2026-09-28
-    always-~1.0 value (run `alpr-rescore`). Since 2026-10-04 each read with a
-    saved crop carries `plate_colour` (yellow/white/mono/unsure) and
-    `colour_suspect: true` when the colour contradicts the track's direction
-    (R→L shows the white front plate, L→R the yellow rear); suspects are left
-    out of the rollup like `static_suspect`, and each best read carries
-    `n_agree` (other snaps reading the same string). Stamp
-    `"plate_colour": "hsv_v1"` in `_static_plates.json` (`alpr-run`, or
-    `alpr-colour` for older sessions). Since 2026-10-09 a read carries
-    `bottom_retry: true` when the fullframe crop path found it on its last
-    resort: a vehicle that overlaps the hint and whose bottom-centre, but
-    not its box centre, is on the road (tall vans and SUVs). The static
-    filter checks these reads but doesn't learn spots from them
-    (`.claude/onroad_bottom_centre_check.py`).
-- `{session}_vehicles.json` — per-vehicle plate-anchored aggregation
-  (after running `vehicles`); carries DVSA `make`/`model`/`year` once
-  `dvsa-label` has harvested for the session
-- `{session}_dvsa_labels.json` — DVSA MOT `make`/`model`/`year` per
-  plate (after `dvsa-label`); `dvsa-apply` folds it onto `data.json` +
-  `events.jsonl` per-track records. `conf_threshold` records the plate gate
-  the track attributions reflect (absent on harvests before 2026-09-28), and
-  `plate_gate` the full gate (mode + settings) since 2026-10-04
-- `cross_session_repeats.json` — repeat vehicles pooled across a cohort
-  of sessions (after `vehicles --across`; written to the output root)
-- `{session}_makemodel.json` + `{session}_makemodel_by_track.json` —
-  per-image top-k + per-track confidence-weighted CNN make/model
-  predictions (after `makemodel`; `make_model_source="cnn"`)
-- `{session}_bodytype.json` + `{session}_bodytype_by_track.json` —
-  per-image + per-track confidence-weighted coarse body type (after
-  `bodytype`; classes hatchback/saloon/suv/mpv/van/pickup/coupe). The
-  stats page's "Vehicle body types" mix prefers the DVSA-model-derived
-  class for plated cars and falls back to this CNN for the unplated
-  majority. **CRITICAL: `bodytype` inference must use `--pad-frac 0.1`
-  to match the training corpus** (the CLI default; the make model's
-  0.25 loosens the crop and skews a _shape_ classifier toward "van" —
-  CNN-vs-DVSA agreement dropped 79 %→42 % at 0.25 on session_20260703).
-- `{session}_colour.json` + `{session}_colour_by_track.json` —
-  per-image + per-track confidence-weighted CNN vehicle colour (after
-  `colour`; `colour_source="cnn"`; classes white/silver/grey/black/blue/
-  red/green/yellow/orange/brown/purple). **Replaces the rubbish HSV
-  vote** (`common.color.vote_color`, the `color` field): the HSV path
-  reads a low-res sub-stream crop with an 8-colour palette and scores
-  only ~40 % grouped / 32 % fine per-track vs DVSA `primary_colour`
-  (light cars drift to black/blue; can't emit silver/orange/brown/
-  purple). The colour head reads the 4K snap (same "resolution is the
-  lever" fix as make) → **87 % grouped / 74 % fine per-track** on the
-  same held-out val cars (`.claude/color_accuracy.py`, shipped
-  2026-08-11, b0@384 `models/colour_b0.pt`). **⮕ 2026-09-27: that 87 %
-  scored confident passes only** — the harness skips passes whose colour
-  is blank (best read < 0.5 conf, 22 % of all passes); the strict
-  head-to-head (every pass counts) put that model at 44.8 % exact / 53.3 %
-  grouped. It was replaced on 2026-09-27 by the clean-crop retrain (see
-  [Make/model classification](#makemodel-classification)). Same `--pad-frac 0.1`
-  discipline as bodytype. The HSV `color` field is left untouched
-  (offline sidecar, no Orin/schema change). **Wired in 2026-08-11:** the
-  `/stats` colour mix prefers DVSA `primary_colour` → this CNN → "unknown"
-  (HSV was the last resort until 2026-10-04, review E0.8); the
-  showcase car page shows the CNN `cnn_colour`; the control-panel
-  **enrich** playbook runs `colour` after `bodytype`; and the sessions
-  table shows a **Colour** enrichment badge (`has_colour` =
-  `_colour_by_track.json` present). All existing sessions backfilled.
-- `{session}_vehicle_boxes.json` — cache of full-frame YOLOv8m@1920
-  vehicle boxes (car/moto/bus/truck) per 4K snap, written by
-  `makemodel-build-uk --crop-mode plate` and the `makemodel`/`bodytype`/
-  `colour` commands in fullframe crop mode, so one YOLO pass per session
-  is shared by all of them. Disposable — rebuilt if deleted or if the
-  detector params change (see `analysis/vehicle_locator.py`).
-- `{session}_people.json` — per-person-track activity enrichment
-  (after `people`): kind walker/jogger/cyclist + `dog_walker` flag via
-  temporal+direction pairing with dog/bicycle tracks. Jogger split
-  uses the showcase speed calibration (default boundary 2.5 m/s);
-  cyclist beats jogger so riders (who detect as person) don't land in
-  the jogger bucket. Dog pairing needs COCO class 16 in the live
-  `vehicle_classes`. `class_suspect` tracks (kinematics guardrail) are
-  excluded (`n_suspect_excluded`). BotSORT-split fragments merge into
-  walks (`walk_id` per track; summary `walks` / `n_split_merged`; rule:
-  same direction, start within [-2 s, +3 s] of the walk's end, colours
-  not known-different — merges ~7.6 % of person tracks on the measured
-  soaks). Since 2026-07-19 also **out-and-back round trips** (walk +
-  later opposite-direction walk, same kind/dog-flag, colours compatible,
-  gap 3 min–2 h; both rows share `round_trip_id`; summary
-  `round_trips` + `round_trips_chance` + `away_minutes_median`).
-  **~75-80 % of raw pairs are coincidence on this pavement** — the
-  time-shift control (`chance_round_trips`) measures the floor and the
-  stats page reports only the excess as "likely" trips. The `/stats`
-  People section also mines **recurring walk patterns** (dog walks /
-  joggers / cyclists recurring in a 40-min time-of-day window on ≥3
-  dates, ≤1.6 walks/day so rush-hour waves don't qualify; ranked by
-  regularity) — aggregate street statistics; walks are never matched
-  across days (privacy line unchanged). Since 2026-07-19 also
-  **door-origin ("my walks")** — the _only_ person-side individual
-  feature, and deliberately non-biometric: `TrackRecord` now carries
-  `entry_point_frac`/`exit_point_frac` (first/last detection centroid,
-  fractional; captured by `compute_attributes` when `frame_w` is
-  passed), and `analysis/walks.py` (`DoorZone` + `classify_walk_origin`)
-  flags a walk as `originated`/`returned`/`round_trip` when its
-  entry/exit falls in an operator-traced door polygon
-  (`configs/door_zone.json`, gitignored + `.example` tracked). `people`
-  tags each row's `door_origin` + counts `summary.own_trips` when a zone
-  is configured. This identifies the _household's_ trips by where they
-  enter/leave frame — NOT who takes them yet, that's the next step. **Forward-only**: needs the post-2026-07-19 runtime
-  (schema-additive, Orin redeploy), so existing sessions currently read `unknown`;
-  door zone can be assumed not to have changed, so should be able to reprocess.
+| Session file | Written by | Holds |
+| --- | --- | --- |
+| `_events.jsonl` | runtime, per track | one record per kept track; survives a crash |
+| `_trajectories.jsonl` | runtime | thinned box path per kept track (from 2026-10-04) |
+| `_data.json`, `_meta.json`, `_hourly.json` | runtime, at a clean shutdown | records; session metadata with IR periods and `snap_stats`; hourly rollup. After a power cut, `pull` (or `recover-session`) rebuilds them and the meta carries a `recovered` block |
+| `_summary.html`, `index.html` | runtime | the Orin dashboard page |
+| `_alpr.json`, `_alpr_by_track.json`, `_static_plates.json` | `alpr-run`; updated by `alpr-rescore` and `alpr-colour` | per-image reads; each track's best read (suspects left out, `n_agree`); the stamps that say which fixes the session has |
+| `_dvsa_labels.json` | `dvsa-label` | register make / model / year / colour per plate, and the gate it used. Lookups are paid for and cached here |
+| `_vehicles.json` | `vehicles` | per-vehicle aggregation. It can be stale: the showcase rebuilds it live |
+| `_makemodel*.json`, `_bodytype*.json`, `_colour*.json` | the CNN commands | per-image and `_by_track` predictions |
+| `_vehicle_boxes.json` | any fullframe-crop command | cache of 4K vehicle boxes; disposable |
+| `_people.json` | `people` | activity per person track |
 
-JSON record fields: see `common/schema.py` (`TrackRecord`, `SessionMeta`).
+The output root also holds `cross_session_repeats.json` (`vehicles --across`),
+`showcase_metadata.json` (the showcase's only writable state) and `control_jobs.json` /
+`control_playbooks.json` (panel history).
+
+`dvsa-apply` writes make and model onto car records only, so harvest rows for vans, buses or
+tracks with no record never reach `_data.json`. That is expected.
 
 ## Common tasks
 
@@ -774,7 +361,7 @@ uv run streettracker people output/<session>             # person activity enric
 uv run streettracker showcase --output-root output       # local website: enriched + recurring cars (http://127.0.0.1:8090/)
 uv run streettracker makemodel output/<session>          # CNN make/model inference -> _makemodel.json
 uv run streettracker bodytype output/<session>           # CNN body-type inference -> _bodytype_by_track.json (pad_frac 0.1)
-uv run streettracker colour output/<session>             # CNN vehicle-colour inference -> _colour_by_track.json (pad_frac 0.1); beats HSV 42%->87% grouped vs DVSA
+uv run streettracker colour output/<session>             # CNN vehicle-colour inference -> _colour_by_track.json (pad_frac 0.1); replaces the HSV colour vote
 # Mine the Orin -> grow the UK make-classifier corpus (run pull from PowerShell):
 uv run streettracker pull --session <S> --only-main      # pull a session's 4K snaps + vehicle HQ crops + JSON from the Orin
 uv run streettracker pull --session <S> --crops-only     # fetch just the missing vehicle HQ crops (never the JSON, so safe on an enriched session)
@@ -782,7 +369,7 @@ uv run streettracker recover-session output/<session>    # rebuild data/meta/hou
 uv run streettracker makemodel-build-uk runs/uk_crops --output-size 512  # DVSA-labelled UK make crops @512 (auto-discovers sessions); --crop-mode plate (default) = plate-anchored crops, needs alpr-run output
 uv run streettracker model-release                       # publish the production make model as a public GitHub Release (promote's last step; idempotent; refuses checkpoints holding plate-shaped strings or paths; --dry-run)
 uv run streettracker makemodel-compare runs/uk_crops --candidate runs/uk_make_X/best.pt  # head-to-head vs production on shared held-out cars -> runs/uk_make_X/compare.json (the report it replaces is kept as compare.prev.json); --target colour|body_type for the other heads (colour also reports a grouped score); --eval-session <S>... scores fresh sessions' cars instead of the corpus val split, minus every car in production's and the candidate's corpora (+ --include-trained-cars to keep those cars and score their new passes)
-uv run streettracker makemodel-train-uk runs/uk_crops --input-size 512   # train the UK make classifier (B0@512; +--backbone b4/b5). honest make@1 ~28% on 1229 cars (old "37.6%" was small-val optimism)
+uv run streettracker makemodel-train-uk runs/uk_crops --input-size 512   # train the UK make classifier (default backbone efficientnet_b0; production used --backbone efficientnet_b6 --input-size 528 --batch-size 6; --target colour|body_type for the other heads). Judge the run with makemodel-compare, not its validation score
 ```
 
 **Windows + Git Bash gotcha for `streettracker pull`**: MSYS rewrites
@@ -790,213 +377,7 @@ POSIX-looking arguments (`/home/...`) into Windows paths before Python
 sees them. Either run from PowerShell / cmd, or prefix with
 `MSYS_NO_PATHCONV=1` and pass `--key` as a Windows-style path.
 
-## Showcase website
-
-`streettracker showcase` serves a local website (`src/streettracker/web/`:
-`aggregate.py` + `metadata.py` + `stats.py` + `server.py` + jinja2
-`templates/`) that browses the _enriched_ cars across every session in an
-output root — plate-read (ANPR) cars joined to DVSA make/model/year/colour —
-with the regularly-appearing ones featured, plus a per-car metadata editor
-("this is my car", "this is Shaun's car"), and a traffic-statistics page.
-
-```bash
-uv run streettracker showcase --output-root output   # http://127.0.0.1:8090/
-```
-
-- **Identified cars only.** `web/aggregate.build_showcase` pools the plated
-  subset from `analysis.vehicles.build_vehicles` (rebuilt **live** — the
-  on-disk `*_vehicles.json` can be stale, e.g. written before `dvsa-label`)
-  into one card per physical car, keyed by canonical plate and merged across
-  sessions with the same fuzzy clustering the `vehicles --across` cohort uses.
-  It also surfaces the richer DVSA fields (`primary_colour`/`fuel_type`/
-  `engine_size_cc`) read straight from `<session>_dvsa_labels.json`.
-  "Regulars" = the `different-day` kind (seen on ≥2 calendar dates).
-- **User metadata** (name / owner / notes / favourite) persists atomically to
-  `<output-root>/showcase_metadata.json`, keyed by plate so a tag follows a
-  car across every session. This is the _only_ state the site writes;
-  everything else is read-only upstream data.
-- **Local-only by default** (binds `127.0.0.1`; the page shows plate data +
-  personal tags). `--host 0.0.0.0` opts into LAN exposure. `POST /api/refresh`
-  re-aggregates in place after new sessions are pulled. Images are served from
-  the output root through a `.jpg`-only, single-segment-validated route.
-- **Statistics page** (`/stats`, `web/stats.build_stats`) — traffic analytics
-  over **all** vehicle tracks (`class_name=="car"`, not just the plated subset;
-  bucketed by camera-local `time_start`, so a multi-date session splits
-  correctly): daily L→R/R→L journeys (click a day → its 15-min profile),
-  day-of-week histogram, weekday×hour heatmap, speed distribution + fastest
-  cars (pictured by the tracker's HQ crop of the car, then the tile, then a
-  4K snap: a fast car has often left the frame before its 4K snap lands),
-  and make/colour mix. A **People** section aggregates person tracks
-  (footfall, dwell, heatmap) and — where sessions carry `_people.json` —
-  rolls up walker/jogger/cyclist/dog-walk counts (cyclists classified since
-  2026-06-13, dog walks since 2026-07-07; earlier jogger counts include
-  unfiltered riders, ~+4pp). Charts are dependency-free SVG/CSS. One car track
-  ≈ one pass (BotSORT can split). **Speed**: `speed_px_s` is inference-frame
-  pixels, shown as px/s unless a calibration is set, then mph. Calibrate via
-  `configs/showcase.json` (`{"m_per_px": X}` or `{"road_length_m": D}` →
-  `m_per_px = D/801`, the traced road's travel-axis pixel length) or the
-  `--m-per-px` / `--road-length-m` flags; see `configs/showcase.example.json`.
-  mph is approximate (single global factor, ignores perspective).
-
-## Operator control panel
-
-`streettracker control` serves a standalone web app (`src/streettracker/control/`:
-`server.py` + `orin.py` + `introspect.py` + jinja2 `templates/`) on the dev box
-that lets the **operator drive the day-to-day procedures without Claude attached
-— zero tokens once running**. It is a sibling to the showcase site (separate
-port, separate concern), built on the same aiohttp + jinja2 + dependency-free
-SVG stack.
-
-```bash
-uv run streettracker control --output-root output   # http://localhost:8095/
-pwsh -NoProfile -File scripts/control_panel.ps1      # detached launcher (opens browser)
-```
-
-- **Hosting = on-demand.** `scripts/control_panel.ps1` starts the panel detached
-  (outlives the launching terminal, runs outside any Claude helper tree). Ends at
-  logout/reboot or when you close it.
-- **Access split.** Binds `0.0.0.0` so dashboards are LAN-viewable (phone / wall
-  screen), but every control action is **localhost-only**, enforced server-side
-  (`server._require_local`) — a LAN viewer can watch but can't restart the camera
-  service or promote a model. `--host 127.0.0.1` to keep it fully local.
-- Background pollers refresh the Orin (~45 s, non-fatal/timeout-bounded) and
-  rescan local `output/`+`runs/` (~30 s); model metadata is read sidecar-first
-  (`makemodel_b0.meta.json`, written at promotion) then a one-off torch fallback.
-  Introspection reads are mtime-cached so a closed session is parsed once.
-
-**Phase 1 — decision radiator (shipped, read-only).** Orin live-session status
-(service state, live session, runtime, images banked, on-demand pull size/ETA via
-`remote_inventory`), local session inventory + enrichment badges (ALPR / DVSA /
-vehicles / make-model), corpus stats (`runs/uk_crops_*/manifest.json`),
-production-model metadata, training-run make@1 charts, and **retrain / promote
-recommendations with the evidence numbers** (`introspect.retrain_recommendation`
-/ `promote_recommendation`; defaults: retrain if +15 % cars / +3 makes / +5k
-crops vs the model's recorded training corpus, promote if a run beats production
-make@1 by ≥0.5 pp). Reuses `cli.pull` SSH/inventory helpers (made non-fatal +
-timeout-bounded in `control/orin.py`), `common.output`, and
-`analysis.snap_assets`. Tests: `tests/test_control/`.
-
-**Phase 2 — in progress (process control).** Shipped + tested:
-
-- `control/progress.py` — pure per-command **stdout progress parsers**
-  (`alpr`/`makemodel` `N/total`; `makemodel-train-uk` per-epoch loss/make@1 rows
-  for the live curve; pull/dvsa/build counts + summaries) + `estimate_eta`. No
-  clock/IO, fully unit-tested.
-- `control/jobs.py` — a **subprocess job runner**: streams stdout into the
-  parser + a 500-line ring buffer, classifies the exit, holds an in-process
-  `SetThreadExecutionState` **wake-lock** while busy, and cancels via Windows
-  `taskkill /T`. **Per-lane execution**: a serial **GPU lane** (alpr / makemodel
-  / build / train / export-engine) + a serial **net lane** (pull / dvsa /
-  vehicles) run concurrently, so a pull overlaps a train but two GPU jobs never
-  do (`JobSpec.lane` overrides). In-memory (no on-disk history yet).
-- `control/prompts.py` — **`build_prompt`** turns a finished job into a
-  complete, self-contained Claude Code prompt (project, command, cwd, exit code,
-  captured output tail, command-specific pointer); `summarize_issue` decides
-  _whether_ to surface one (non-zero exit, or a traceback / OOM / config-error /
-  … marker even on a clean exit).
-- server `/api/jobs` (GET list, POST submit [localhost + kind-allowlisted],
-  GET `{id}`, POST `{id}/cancel` [localhost]) + a **Processes** dashboard panel:
-  a localhost run-bar, live job cards with progress bars/ETA, a **live training
-  chart** (loss + make@1 per epoch + pre-training facts, rendered from the parsed
-  `epochs` metrics for `makemodel-train-uk` jobs), and — when a job fails or
-  looks off — a **"Copy Claude prompt"** button so the operator gets a
-  paste-ready help request with zero hand-writing. The localhost guard +
-  `POST /api/refresh` from Phase 1 pre-staged this access model.
-- **Pull byte-ETA.** The runner forces unbuffered child stdout
-  (`PYTHONUNBUFFERED`) so lines stream live, and a per-job **dir-watcher**
-  samples the local session dir as it fills toward the remote byte total — a
-  real transfer progress bar + ETA, not a spinner. `pull` prints a
-  machine-readable `size_bytes` (the main snaps + vehicle HQ crops under
-  `--only-main`, via `RemoteInventory.main_bytes` + `vehicle_hq_bytes`, so the
-  denominator matches what's copied);
-  `PullParser` turns the session/target/size_bytes lines into a generic
-  `watch` directive the runner consumes.
-- `control/playbooks.py` — a **multi-step playbook engine** (`PlaybookRunner`):
-  ordered steps run sequentially, stopping on the first failure (rest →
-  _skipped_); each step is a **job** (run on the shared `JobRunner`, so it
-  inherits lanes + live progress + the copy-prompt) or an in-process **action**
-  (for SSH/file steps). Playbooks (`PLAYBOOKS` registry; `build_playbook(name,
-ctx, …)` dispatches, `PlaybookContext` carries paths + device config):
-  - **enrich** (`alpr-run` → `dvsa-label` → `dvsa-apply` → `vehicles` →
-    `makemodel` → `bodytype` → `people`) and **build-train**
-    (`makemodel-build-uk` → `makemodel-train-uk` → `makemodel-compare`,
-    dated dirs; the last step writes the head-to-head `compare.json` the
-    promote recommendation needs) — pure job-chains. build-train takes an
-    optional per-car crop cap (`max_per_car`, the dashboard's "max
-    crops/car" field → `makemodel-build-uk --max-per-car`, recorded in the
-    corpus manifest); a capped run writes `uk_crops_MMDD_576_capN` /
-    `uk_make_MMDD_b6_capN`, so it never overwrites the same day's uncapped
-    build.
-  - **roll** (action: `orin.restart_service` finalises the live session + starts
-    a new one, verifies the handover + counts finalised tracks → then a `pull`
-    job of the closed session) and **promote** (action: back up `makemodel_b0.pt`
-    → copy the best run's `best.pt` in → write the metadata sidecar + corpus
-    fingerprint → then a `model-release` job publishes the model as the
-    **public** GitHub Release `makemodel-<run>`, its only off-box copy since it
-    is too big to commit; since 2026-10-26) — **destructive**, so the submit route refuses them without
-    `confirm=true` and the UI shows a confirm dialog. `roll` resolves the live
-    session over SSH at submit and refuses if the device is down/idle.
-  - **reinfer** (one `makemodel` job per local session → an action that POSTs
-    the showcase's `/api/refresh`) — re-runs the classifier everywhere + updates
-    the showcase.
-  - **rescore** (`alpr-rescore` → `dvsa-label` → `dvsa-apply` → `vehicles` on
-    every session whose ALPR stamp lacks `"ocr_conf": "min_char"` → showcase
-    refresh) — applies the 2026-09-28 OCR-confidence fix to already-enriched
-    sessions. The sessions table badges them **Plates v2** (amber) until done,
-    **Plates v3** after.
-  - **platecheck** (`alpr-colour` on every session with ALPR output first --
-    the combined gate counts plate support across all rollups -- then
-    `dvsa-label` → `dvsa-apply` → `vehicles` per session → showcase refresh)
-    -- applies the 2026-10-04 plate-colour check and the current plate gate.
-    Sessions badge **Plates v3** (amber) until colour-checked, **Plates v4**
-    (green) after. `alpr-colour` shares the GPU lane so it never overlaps an
-    `alpr-run` writing the same `_alpr.json`. Plates newly passing the gate
-    cost DVSA lookups.
-  - `/api/playbooks` routes (localhost submit/cancel; name + session validated,
-    destructive-confirm gated) + a **Playbooks** dashboard panel: step list with
-    live status, the running/failed step's job **inlined** (progress bar /
-    training chart / copy-prompt), and Cancel. (Fixed a cancel race: a cancel
-    landing during a job's spawn window now reaps the process once it exists.)
-- `control/history.py` — **on-disk job/playbook history**: each finished item's
-  terminal snapshot (incl. the failed-job copy-prompt) is appended to a capped,
-  atomically-written JSON list under the output root (`control_jobs.json`,
-  `control_playbooks.json`), and the runners' `snapshots()` merge prior-run
-  history with live items — so the panel's recent activity (and prompts) survive
-  a restart.
-- **`/training` full-page view** (`templates/training.html`) — picks the current
-  `makemodel-train-uk` job and shows pre-training facts (backbone / input /
-  makes / train+val crops), a large live **loss + make@1 curve** with the
-  production make@1 as a dashed reference line, a per-epoch table, the training
-  corpus's per-make distribution (brand logos), and — once finished — a
-  candidate-vs-production verdict + a one-click **Promote** (localhost,
-  confirm-gated, run derived from the checkpoint path). Top-bar nav switches
-  Dashboard ↔ Training. The shared brand-mark + `trainChart` helpers live in
-  `base.html` so both pages use them.
-
-**Phase 2/3 — complete** for the planned scope. The panel covers the full
-operator loop tokenlessly: radiator → run individual processes or one-click
-playbooks (enrich / build-train / roll / promote / reinfer) with live
-progress + ETAs + a copy-paste help prompt on failure, plus a dedicated live
-training page. Possible future polish (not required): per-session enrich/pull
-shortcut buttons on the sessions table, and surfacing `control_*.json` in
-`.gitignore`.
-
-## Migration status
-
-Clean-slate replacement for VehicleTracker + NanoTracker. **Migration
-complete** — both ancestor repos archived on GitHub 2026-07-07.
-
-| Phase | Scope                                                                   | Status                                                                                                                 |
-| ----- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| 0     | repo init + pyproject + CI + configs                                    | done                                                                                                                   |
-| 1     | `common/`: schema, color, output, hourly, summary                       | done                                                                                                                   |
-| 2     | `inference/` (Ultralytics) + `sources/` (RTSP, file)                    | done                                                                                                                   |
-| 3     | `device/`: live runtime, snapshotter, dashboard, IR                     | done — PRs #7/#8/#10/#11/#12/#13                                                                                       |
-| 4a    | `analysis/`: recolor + debug-color                                      | done                                                                                                                   |
-| 4b    | `analysis/alpr/` wholesale port                                         | done                                                                                                                   |
-| 5     | CLI: `pull`, `export-engine`, `setup_orin.sh`, systemd                  | done                                                                                                                   |
-| 6     | (opt) Nano archive role                                                 | not started                                                                                                            |
-| 7     | cutover: enable systemd on Orin + decommission Nano + archive old repos | **done** — Orin live since 2026-05-22; `VehicleTracker` + `NanoTracker` archived 2026-07-07 with superseded-by banners |
+## Tests and CI
 
 Tests at HEAD (2026-11-10): **about 1,300 passing on the dev box, on Python 3.10.**
 CI runs them in two jobs: `test` (no torch; the 8 torch-gated classifier modules
@@ -1018,404 +399,45 @@ plate-anchored aggregator. Place the bespoke detector at
 `src/streettracker/analysis/alpr/models/license_plate_detector.pt`
 (gitignored).
 
-### Phase 3 architectural decisions (locked in)
+## Showcase website
 
-- **Asyncio throughout.** Entry is `asyncio.run(run_session(config))`.
-  Blocking sources (`cv2.VideoCapture.read()`) go to a background thread
-  pushing into an `asyncio.Queue`. Blocking inference goes to
-  `loop.run_in_executor`. HTTP is `aiohttp`.
-- **Frozen dataclasses + strict JSON loader.** `common/config.py` rejects
-  unknown keys with a JSON-path error (catches typos and forces
-  schema-additive config changes through the proper deploy order — see
-  [Schema-additive config changes](#schema-additive-config-changes)).
-- **Graceful shutdown via `loop.add_signal_handler(SIGTERM, ...)`,**
-  bounded by a 30s timeout so systemd won't SIGKILL mid-write. Stop the
-  source first, drain active tracks through finalize, write
-  summary HTML + data.json + meta.json + hourly.json, then `loop.stop()`.
-- **Heavy unit tests + manual Orin smoke.** No recorded-frames
-  integration test (would balloon the repo + CI skips torch /
-  ultralytics). End-to-end validation by ssh against the live Reolink.
+`streettracker showcase` (`src/streettracker/web/`) serves the plate-read cars joined to DVSA
+make, model, year and colour, a per-car metadata editor and the `/stats` traffic page, on
+<http://127.0.0.1:8090/>. Full reference: [`docs/sites.md`](docs/sites.md).
 
-## Cutover status
+- **Identified cars only**, rebuilt live from `analysis.vehicles.build_vehicles` and merged across
+  sessions by canonical plate. "Regulars" are cars seen on at least two calendar dates.
+- **The only state it writes** is `<output-root>/showcase_metadata.json` (name, owner, notes,
+  favourite), keyed by plate so a tag follows a car across sessions.
+- **Local by default.** It binds `127.0.0.1` because the pages show plates and personal tags;
+  `--host 0.0.0.0` opts into LAN exposure.
+- **`/stats` counts every car track**, not just plated ones. One track is about one pass, and
+  `class_suspect` tracks are excluded. Speed is in px/s unless `configs/showcase.json` sets a
+  calibration; mph is approximate (one global factor, no perspective).
 
-Phase 7 cutover happened **2026-05-22**. Orin `streettracker.service`
-active since 15:42 BST; old Jetson Nano `nano_tracker.py` SIGTERM'd
-cleanly after 986,619 frames over 27.6h. **Repo archival DONE
-2026-07-07** — both repos archived with a "Superseded by StreetTracker
-as of 2026-07-07; read-only" banner prepended to each CLAUDE.md.
+## Operator control panel
 
-Two config-mismatch bugs surfaced + hardened in PR #15:
+`streettracker control` (`src/streettracker/control/`) is the dev-box web app the operator uses
+to run the day-to-day procedures without Claude attached, on <http://localhost:8095/>. Full
+reference: [`docs/sites.md`](docs/sites.md).
 
-1. **Stream-name lookup is forgiving.** `cli/run.py` falls back to
-   matching `stream.quality` when `nano.preferred_stream` doesn't match
-   any `stream.name`. Matters for configs migrated from NanoTracker.
-2. **`engine_path` validated at config load.** Missing engine file
-   surfaces as `ConfigError: $.inference.engine_path: file ... does not
-exist (resolved to <abs>)` at startup instead of a 5s-later
-   Ultralytics traceback.
+- **Access split.** It binds `0.0.0.0` so the dashboards are viewable on the LAN, but every
+  control action is localhost-only, enforced server-side (`server._require_local`).
+- **Jobs** are subprocesses on two serial lanes that run side by side: a GPU lane (`alpr-run`,
+  `alpr-colour`, the CNN commands, corpus build, training, `export-engine`) and a net lane
+  (`pull`, `dvsa-label`, `vehicles`, `people`). Two GPU jobs never overlap.
+- **Progress comes from stdout.** `control/progress.py` parses each command's printed lines, so
+  rewording a progress message breaks its progress bar. Change the parser and its test with it.
+- **Playbooks** (`control/playbooks.py`): enrich, build-train, roll, promote, reinfer, rescore,
+  relabel and platecheck. **roll** (restarts the Orin service, then pulls the closed session) and
+  **promote** (replaces the production model, then publishes the release) are destructive and
+  confirm-gated.
+- **Promote needs a head-to-head.** The recommendation reads the run's `compare.json`; a run with
+  no fresh report can't be promoted with one click.
+- **A failed job offers a "Copy Claude prompt" button** (`control/prompts.py`), and history
+  survives a restart in `control_jobs.json` / `control_playbooks.json`.
 
-A fresh deploy where you scp the live `configs/camera.json` back into
-place Just Works without manual edits even if engine target or stream
-names differ from the example.
-
-## ANPR tuning loop
-
-**Current status (updated 2026-07-28 — R→L solved in software; per-direction band verdict 2026-06-19; core table from 2026-05-27):**
-
-**⮕ R→L UPDATE 2026-07-28 (overrides the rows below):** every "R→L
-camera-geometry ceiling / capped ~15-20 % at any position" entry in this
-table is **falsified**. The cap was contaminated crops (done-bboxes ~510 4K
-px off the car + static parked-plate reads), not geometry. The full-frame
-trajectory-matched crop path (`alpr-run --crop-mode fullframe`, default
-since 2026-07-28, PR #94/#95) lifted R→L to **per-car parity in software**
-— production **R→L 69.7 % / L→R 66.8 %, net 68.3 %** (was ~9-17 % R→L /
-~45 % net). Read the "Per-image high-conf" and "Direction-aware throttling"
-rows as history through 2026-06-19; the net-read rate and the R→L gap are
-what changed.
-
-| Layer                      | Status                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 4K capture coverage        | Solved. 98 % cars get ≥1 snap. Pipeline mode dominates (`pipeline_interval_ms=400`, `pipeline_max_per_track=15`); trigger geometry is minor.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| Ghost-plate aliasing       | Solved (Step 10). Parked-car mask + padding cap eliminate all 5 ghost plates (138 tracks).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Per-image high-conf        | **Honest post-verdict (2026-06-19, two ~70h post-deploy soaks, completion-time bboxes): L→R 73-76 % mid-road; R→L ~12-13 %/image, ~15-20 %/car — a camera-geometry ceiling.** History: the 06-10 triage (Step 16) correctly found 96 % of R→L failures were snap-latency stale-bbox, but the 06-11 motion-window-hint re-run **overcorrected** — its "41-46 % → 63.9 % pooled, R→L 69.0 % > L→R 58.6 %, asymmetry inverted" was a forward-extrapolation artifact. Completion-time bboxes (exact landing crops, no extrapolation) on the post-deploy soaks restored the pre-Step-16 "R→L ~14 % ceiling at any position" — right all along. L→R reads well; R→L doesn't, at any landing position (`.claude/band_position_done.py`).                                                                                                                                                                                                                                                                                                                                                                             |
-| Per-car aliasing-free      | **~78 %** — intrinsic floor of camera + scene, verified across two sessions. Further snap-budget tuning will not move it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| Misclassification          | Confidence-weighted class voting (PR #23) defends single-frame flips; kinematics guardrail (2026-07-07) flags car-shaped "persons" (`class_suspect`, median bbox w/h ≥ 1.5) — excluded from people analytics.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| Direction-aware throttling | **NOT live.** Deployed 2026-05-27 (`pipeline_interval_ms_by_direction={forward:300, reverse:400}`) but dropped from the live config (likely the 2026-06-13 splice); now `{}` (uniform 400 ms). Not restored — premise (pack R→L's clean-read window) falsified: R→L is camera-capped ~15-20 % at any position (2026-06-19 verdict).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| Dataset-level pivot        | `vehicles` aggregator (Step 12) + fuzzy clustering (Step 14). **Make/model DVSA-first prong shipped** (PRs #41/#42/#43): `dvsa-label`→`dvsa-apply`→`vehicles` (+`--across`); covers the readable ~25-30 % of cars. **Universal CNN: CompCars trained (#46) but failed UK validation** (domain gap, ~1 %); **pivoted to a UK-native make classifier** (#47) trained on DVSA-auto-labelled local crops — the earlier "~21 % task-bound ceiling" was **wrong** — it was **resolution-bound** (the cropper hardcoded 224 px output, capping every prior lever). Lifting input resolution breaks it: **B0 @224/384/512 = 22 / 32 / 38 % make@1** (2026-06-03); bigger backbones (B4/B5) overfit 800 cars and don't beat B0. **Production UK model = EfficientNet-B5 @456** (make@1 **0.303**, 29 makes; B0 0.271 < B4 0.284 < B5 — bigger backbones win at 1,229 cars; `make_model_source="cnn"`). The old "37.6 %" was small-val optimism (audit: baseline scored 0.207 on unseen cars). Data IS a lever. See [Make/model classification](#makemodel-classification). Learned recolor + visual re-id still to do. |
-
-**Conclusion:** ANPR coverage objective is met. The 78 % aliasing-free
-floor is camera-geometry-bound (oblique angles, motion blur, occlusion),
-not solvable by more snaps. Pivoted to dataset-level enrichment.
-Capture-side read-rate tuning is likewise exhausted — near-camera band
-position and camera exposure/shutter (Step 15) were both tried and
-falsified.
-
-**Conclusion UPDATE 2026-07-28:** the "camera-geometry-bound floor" was
-substantially an OFFLINE CROP-PATH artifact, not a capture limit. Switching
-the plate detector to a full-frame trajectory-matched crop (`--crop-mode
-fullframe`, default since 2026-07-28, PR #94/#95) lifted net per-car
-canonical to **~68 %** with R→L≈L→R — so R→L is NOT geometry-capped and
-needs no 2nd camera. The one residual capture lever is **night exposure**
-(day ~74.7 % vs dusk/dark ~45.4 % per-car). See Next-steps item 5.
-
-**Step 16 addendum (2026-06-11) — SUPERSEDED by the 2026-06-19 verdict.**
-The 06-11 motion-window-hint re-run claimed the honest per-snapped-car
-canonical rate was 63.9 % (R→L 69.0 % > L→R 58.6 %, asymmetry inverted) and
-that every pre-Step-16 position/band conclusion was a stale-hint artifact
-needing re-derivation. **That re-derivation is now done** — the per-direction
-band was deployed 06-13 and two ~70h post-deploy soaks assessed with
-completion-time bboxes: the 63.9 %/inversion was ITSELF a forward-extrapolation
-artifact of the hint window. **Honest reality: per-snapped-car canonical ~48 %
-(L→R ~76 %, R→L ~16-20 %)** — L→R reads well, R→L is camera-geometry-capped at
-~15-20 % at every landing position, exactly the pre-Step-16 "R→L ~14 % ceiling"
-(right all along). Capture-side read-rate tuning is **exhausted** (band position
-
-- exposure + offline crop method all tried + falsified); R→L now needs hardware
-  (a 2nd discreet camera on the approach), not tuning. The Anti-Smearing
-  falsification stands (same-hint A/B). Full verdict: `.claude/verdict_band_0613.py`
-- `.claude/band_position_done.py`. **SUPERSEDED 2026-07-28:** the "R→L
-  needs hardware" conclusion here was itself falsified. The "offline crop
-  method" this paragraph tried was the hint-window / completion-bbox crop; a
-  _full-frame trajectory-matched_ crop (`--crop-mode fullframe`, default since
-  2026-07-28) recovered R→L to per-car parity in software (net ~68 %). R→L no
-  longer needs a 2nd camera — see Next-steps item 5.
-
-### Make/model classification
-
-**⮕ CROP CONTAMINATION (2026-09-24 — read before trusting any make/colour/
-body-type number below):** the corpus builder AND all three CNN inference
-commands cropped each 4K snap around the stale FIRE-TIME bbox
-(`resolve_bbox_hint`); the snap lands ~0.7 s later, so the car has moved
-on. Audit of 799 plate-anchored snaps of `uk_crops_0730_576`
-(`.claude/makemodel_crop_audit.py`): only **7.6 %** of training crops
-held ≥80 % of the labelled car, **66.5 %** held <30 % (empty road / a
-parked car); the hint sat a median 701 px (0.85 car-widths) off the car.
-Same root cause as the R→L "geometry cap" (fixed for ALPR only, 07-28).
-Every make@1 / colour / body-type figure to date was trained AND
-validated on these crops. **Fix:** `analysis/vehicle_locator.py` —
-`makemodel-build-uk --crop-mode plate` (default) crops the vehicle box
-holding the car's own plate read on that snap (65 % of snaps, ~all
-cars); inference `--crop-mode auto` follows the checkpoint (the trainer
-now records `crop_mode` + `crop_pad_frac`): plate-trained models infer
-`fullframe` (plate anchor, else nearest on-road vehicle to the hint —
-~7 % estimated wrong-pick on snaps without a plate read,
-`.claude/fullframe_crop_spotcheck.py`); legacy checkpoints keep `hint`
-unchanged. **Compare old vs new models only head-to-head:**
-`makemodel-compare <corpus> --candidate runs/<run>/best.pt` scores
-production (as deployed + on clean crops) and the candidate on the SAME
-held-out cars (the candidate corpus's val split minus every car in
-production's training corpus), per track, with a by-car bootstrap CI →
-`runs/<run>/compare.json`. The build-train playbook runs it as step 3, and
-the panel's promote recommendation uses it; a run on a different crop
-family with no fresh report is "can't compare" (never judged on raw val
-make@1), and one-click "Promote best model" refuses it. **First
-head-to-head (2026-09-24, `uk_crops_0730_576` val minus 0707 cars = 430
-cars / 572 tracks):** production B6 as deployed (hint@0.25) **35.1 %**
-per-track → the SAME model on clean crops (fullframe@0.1) **42.1 %
-(+7.0 pp, 95 % CI +3.9..+10.2)**; the 0730 B6 retrain on ~25 % more
-hint-crop data tied production (+0.0, CI −3.3..+3.2) — the crops, not
-data volume, were the bottleneck. Held-out cars are plated (plate-anchor
-crops), so the gain on unplated tracks (trajectory rule) will be smaller.
-
-**Clean-crop retrain — PROMOTED 2026-09-25.** `runs/uk_make_0924_b6`:
-B6@528 b8, 20-epoch cosine / patience 5, on `uk_crops_0924_576` (plate
-mode, pad 0.1: **62 makes / 7,319 cars / 81,933 crops**; 1,671 further
-DVSA-labelled cars had no plate-anchored snap). Val make@1 (plate-anchored
-crops — the easiest views, not comparable with anything earlier) peaked
-**0.868 at epoch 2**, then drifted 0.83-0.85 while train loss kept falling
-(memorising) → early-stopped at epoch 7. Head-to-head (`compare.json`,
-883 held-out cars / 1,319 tracks / 4,223 snaps, minus all 0707 cars):
-
-| model                            | crops         | per-track | per-car | shared-makes per-track |
-| -------------------------------- | ------------- | --------- | ------- | ---------------------- |
-| old production (0707 B6, 45 mk)  | hint@0.25     | 37.9 %    | 35.7 %  | 38.9 %                 |
-| old production, clean crops      | fullframe@0.1 | 43.9 %    | 38.8 %  | 45.0 %                 |
-| **uk_make_0924_b6 (62 makes)**   | fullframe@0.1 | **60.4 %**| **50.2 %** | **61.2 %**          |
-
-**+22.5 pp per-track (95 % CI +19.6..+25.4)** — the panel recommended,
-the operator promoted (prior model backed up as
-`makemodel_b0.20260925T174701.pt`); `makemodel` now infers
-`crop=fullframe pad=0.1` automatically, and the reinfer playbook
-(started 2026-09-25) re-runs every session with it. Caveats: plated held-out cars (unplated tracks use the
-trajectory rule, so their gain is smaller) and the val cars also picked
-the best epoch (mild optimism). **Ops:** at `--batch-size 8`, B6@528
-spilled ~1.06 GB into WDDM system memory (desktop compositor held
-1.2-1.4 GB) and every epoch ran ~200 min instead of ~85. **Measured
-2026-09-29** (real model, dummy data, desktop apps closed): batch 8
-reserves 9.49 GiB and still spills 834 MiB (3.4 img/s); batch 6 reserves
-7.46 GiB with no spill (18.2 img/s, 5.4× faster). Batch 8 can't fit a
-10 GB card beside the Windows desktop, so **build-train now defaults to
-batch 6**. Per-car crop dominance
-(top 500 of 7,319 cars hold 47.6 % of crops; residents LA68CWY 668 /
-FD61PVX 589) is an untested lever (`--max-per-car`).
-
-**Colour + body type — clean-crop retrains PROMOTED 2026-09-27.** Both
-EfficientNet-B0 @384 on the same plate-anchored `uk_crops_0924_576`
-(`runs/uk_colour_0926_b0`, `runs/uk_body_0926_b0`; batch 32, ~40 min/epoch
-— single-process photo loading, not the GPU, is the bottleneck for B0).
-Both peaked early (colour epoch 1, body epoch 3) then memorised, like
-make. Head-to-head (`makemodel-compare --target colour|body_type`, every
-pass counts, production's training cars excluded):
-
-| head      | held-out            | as deployed      | old model, clean crops | new model            | new − deployed (95 % CI)      |
-| --------- | ------------------- | ---------------- | ---------------------- | -------------------- | ----------------------------- |
-| colour    | 907 cars / 1,359 tr | 44.8 % (53.3 % grouped) | 55.2 % (63.5 %)  | **57.5 % (64.6 %)**  | +12.7 pp (+10.1..+15.2)       |
-| body type | 767 cars / 1,180 tr | 52.0 %           | 65.3 %                 | **68.5 %**           | +16.5 pp (+13.5..+19.6)       |
-
-Most of each gain is the crop fix itself (old model on clean crops: +10.4
-/ +13.4 pp); retraining adds ~2-3 pp. Old models backed up as
-`models/{colour,bodytype}_b0.20260927T094243.pt` (untracked); inference
-now runs `crop=fullframe pad=0.1` automatically, and a re-run of every
-session with both new heads was queued on 2026-09-27.
-
-The dataset-level enrichment pivot. Two prongs:
-
-- **DVSA-first (shipped, PRs #41/#42/#43).** The DVSA MOT API returns
-  ground-truth `make`/`model`/`year` from a plate. Pipeline:
-  `dvsa-label <session>` harvests `_dvsa_labels.json` (needs
-  `configs/dvsa.json`; canonical-plate-filtered so OCR garbage doesn't
-  bill the API) → `dvsa-apply <session>` writes make/model onto each
-  car's `data.json` + `events.jsonl` record → `vehicles` joins it
-  per-vehicle, and `vehicles <dir> --across <dirs>` pools repeat
-  vehicles across sessions (same-day / different-day). `TrackRecord` +
-  `Vehicle` carry `make`/`model`/`year`/`make_model_source` (= `"dvsa"`).
-  Coverage is the readable, ≥3yr-old subset (~25-30 % of cars on this
-  scene): newer cars 404 (no MOT record yet), unread plates aren't
-  covered at all.
-- **Universal CNN (the unreadable majority) — pivoted to UK-native
-  training (2026-06-02).** `docs/makemodel_design.md` has the original
-  CompCars plan, now partly superseded by the trajectory below:
-  1. **CompCars CNN (PR #46).** EfficientNet-B0 fine-tuned on CompCars'
-     surveillance subset → **98.8 % CompCars-val** make@1. **But ~1 % on
-     real UK cars** — a domain gap (CompCars = zoomed _frontal_ Chinese
-     toll-camera shots; this scene = _rear/oblique_ UK street views),
-     plus UK makes CompCars never had (Vauxhall/Tesla/MG/Mini…). A dead
-     end as a UK predictor. The inference CLI (`streettracker makemodel`)
-     - the lifted `analysis/snap_assets.py` helpers are reusable infra.
-  2. **UK-native classifier (PR #47).** Train on THIS scene instead: a
-     DVSA plate→make lookup auto-labels the car's own crops. Pipeline:
-     `pull --only-main` (Orin→local) → `alpr-run … --pipeline preferred
---pre-crop --ghost-mask .claude/ghost_mask.json` → `dvsa-label` →
-     `makemodel-build-uk` (crops; leakage-safe **by-car** split) →
-     `makemodel-train-uk`. Make-only for now (model-level too sparse).
-  - **Status (2026-06-03): RESOLUTION-bound, not task-bound — verdict
-    resolved, CNN is viable.** The earlier "~21 % task-bound ceiling"
-    was an artifact: `VehicleCropper` hardcoded `output_size=224`, so
-    _every_ prior lever (tuning, 2× data, best-view) was silently capped
-    at 224 px input while the source cars were 400-800 px (p50 574). Re-
-    extracting higher-res (`makemodel-build-uk --output-size`) + training
-    there (`makemodel-train-uk --input-size`) breaks it cleanly.
-    Resolution ladder (same 800-car corpus, by-car split, seed 0):
-
-    | Config                  | make@1     | note              |
-    | ----------------------- | ---------- | ----------------- |
-    | B0 @224 (old "ceiling") | 21.7 %     | —                 |
-    | B0 @384                 | 32.2 %     | +10.5 pp          |
-    | **B0 @512**             | **37.6 %** | best + cheapest   |
-    | B4 @384                 | 29.5 %     | overfit, < B0@384 |
-    | B5 @456                 | 37.7 %     | overfit, ≈ B0@512 |
-
-    Resolution is the lever (+16 pp 224→512, decelerating). **Backbone
-    capacity is saturated** — B4/B5 (`--backbone`) overfit the small
-    corpus (train loss → ~0.04 while val stalls) and don't beat B0, so
-    **B0 is right-sized**. The three "negatives" at 224 were all
-    resolution-capped, not task limits — best-view collapsed to 9-10 %
-    precisely because fewer-crops-at-224 starves a resolution-starved
-    model further. **EfficientNet-B5 @456 is the production UK model**
-    (make@1 0.303 on 1,229 cars — see the 2026-06-08 UPDATE below: B5 0.303
-
-    > B4 0.284 > B0 0.271; the 06/03 B0@512 "37.6 %" was small-val-inflated,
-    > honest ≈28 %); predictions carry `make_model_source = "cnn"`, distinct
-    > from the `"dvsa"` ground truth.
-
-  - **Only untapped lever is data.** B5's overfitting means capacity is
-    data-starved: growing the 800-car corpus is what would let a bigger
-    backbone push past 37.6 % (a collection effort — mine more Orin
-    sessions — not a tuning knob). Higher-res on B0 (640+) keeps
-    decelerating; a coarser target (body-type) is still untried. Banked
-    - now productive: the 800-car corpus, the full mining pipeline, and
-      the `--output-size` / `--input-size` / `--backbone` / `--top-by-area`
-      flags.
-  - **Mining the Orin grows the corpus** (`pull` snap-bearing
-    sessions → `alpr-run` → `dvsa-label` → `makemodel-build-uk` +
-    retrain). It grew 523→800 cars without lifting make@1 — but only
-    because that was measured _at 224 px_, where resolution (not data)
-    was the bottleneck. Now that resolution is lifted and bigger
-    backbones overfit 800 cars, **data is the next lever** to push past
-    37.6 %. Ops knowledge: **the Orin prunes 4K snaps after ~1 week**
-    (keeps JSON) — pull + process within the week or the training images
-    are gone. Don't run `alpr-run` on the Orin (compute-bound running the
-    live tracker); pull to the dev-box 3080.
-
-  - **UPDATE 2026-06-08 — the 37.6 % was small-val optimism; data IS a
-    lever (it lifted _honest_ make@1 ~21 → ~28 %).** Pulled + enriched 2
-    big new sessions (incl. the 3-day `session_20260601_173815`); corpus
-    grew **539 → 1,229 cropped cars / 24 → 29 makes / 3,952 → 9,841
-    crops**. Retrained B0@512 b16: **make@1 0.271 (29 makes) / 0.284 (24
-    makes, apples-to-apples)** — _looked_ like a drop from 0.376, but a
-    **leakage-free audit** (`runs/eval_gen.py`) shows the 06/03 baseline
-    reproduces 0.3755 on its own ~108-car val yet scores only **0.207 on
-    659 unseen cars** — so 0.376 was a small-val artifact and the true
-    cross-session make@1 rose ~0.21 → ~0.28 on the bigger, more honest
-    val. **Lesson: size the val (>~200 cars) before trusting make@1.** The
-    `--backbone b4/b5` re-test on 1,229 cars **reverses the old "overfits
-    800 cars" verdict** — at 2.3× data capacity pays off: **B0 0.271 < B4
-    0.284 < B5 0.303** (monotonic, 29-make val). **B5@456 is now the
-    default model** (make@1 0.303). Inference is **UK-aware**:
-    `streettracker makemodel` auto-detects the make-only checkpoint + reads
-    its `arch` + `input_size` from the checkpoint, so any backbone is a
-    drop-in default (`make_model_source="cnn"`).
-
-### Step trajectory
-
-| #   | Date  | What                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Headline result                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Source       |
-| --- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
-| 1   | 05-22 | Observability — `snap_stats` in `_meta.json` (latency p50/p90/p99, blur skips, HTTP counters)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | enabled tuning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | PR #16       |
-| 6   | 05-25 | First ALPR measurement on 27.3h soak (880 tracks)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | 59 % per-car @ conf≥0.95 (preferred pipeline). **Bespoke pipeline contributes no useful signal — disagreements with preferred at 98/108 cases; preferred is conf ≥0.99 clean UK plates, bespoke is truncated/garbled.**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | —            |
-| 7   | 05-25 | Vehicle pre-crop wrapper (`PreCropDetector` + `--pre-crop` flag, detector default bumped `yolo-v9-t-384` → `yolo-v9-t-640`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | 59 → **91.5 %** per-car ghost-filtered. **Aliasing new bottleneck:** `FD61PVX` parked car aliased onto 363/410 tracks via largest-vehicle heuristic.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | PR (in repo) |
-| 8   | 05-25 | BotSORT bbox pipe — runtime persists per-snap sub-stream bbox in `TrackRecord.main_snap_bboxes`; `alpr-run` reads it back as `bbox_hint` for `PreCropDetector`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Predicted ≥ 95 %; actual **~78.5 %**. Bbox correctly targets tracked car, but in late R→L snaps the bbox grows wide enough to physically encompass the adjacent parked `FD61PVX` car.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | PR #28       |
-| 9   | 05-26 | Re-soak measurement on 15h Step-8 build                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | 78.5 % verified. `FD61PVX` still in 106/247 tracks. **Asymmetric by direction:** L→R 93 %, R→L 43 % per-image.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | —            |
-| 10  | 05-26 | Ghost mask (zero-fill parked-car rect before any detector sees pixels) + `PreCropDetector(pad_max_px=30)` cap on padding                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | All 5 ghost plates eliminated. Strict per-car aliasing-free (top read is correct) **55.4 → 78.9 %** (+23.5 pp). The 78.9 % is the **true** aliasing-free floor — Step 9's 78.5 % estimate was correct but unverifiable until the mask proved it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | —            |
-| 11  | 05-26 | `t_usable_frac` trim `[0.10, 0.67] → [0.10, 0.45]` (snap-firing band shrunk past `FD61PVX` zone)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Per-image **+13 pp** (L→R +17 pp, R→L +3 pp). Snap budget redistributed (mean fires/track 1.19 → 1.45, `pipeline_budget_exhausted` 954 → 665). **Per-car aliasing-free flat at ~78 %** — confirms intrinsic floor; cars that _could_ be captured in mid-band already were.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | —            |
-| 12  | 05-26 | `streettracker vehicles` plate-anchored aggregator — folds `data.json` + `alpr_by_track.json` into per-vehicle records with `n_visits`, `gap_minutes_max/min`, direction + color histograms, inline visit list                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Step 10 session: 3 recurring. Step 11 session: 6 recurring including `HX18MYJ` going R→L then L→R 105 min later.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | —            |
-| 13a | 05-27 | Direction-aware `pipeline_interval_ms_by_direction` runtime — fire faster in one direction's narrow clean-read window                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Deployed `{forward:300, reverse:400}` (R→L 1.33× rate, L→R unchanged). **Later dropped from the live config + not restored — premise falsified 2026-06-19: R→L is camera-capped, there's no clean-read window to pack.**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | PRs #30/#31  |
-| 13b | 05-27 | Multi-frame plate consensus (`analysis/alpr/consensus.py`) — confidence-weighted character voting across a track's reads                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | **Negative result on this scene** (-43 pp vs best-of-N at conf 0.9). Per-image reads of one track frequently capture DIFFERENT physical plates (parked cars vs tracked car vs mask leakage), so voting dilutes. Primitive kept as infra.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | —            |
-| 14  | 05-27 | Fuzzy plate clustering in `vehicles.py` (rapidfuzz, ratio default 85, same-length only); no temporal-overlap rejection                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | `LD22BWG`/`LD22BMG` correctly merged (BotSORT ID-switch on same silver hatchback); Step 11 recurring 6 → 8.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | PRs #33/#34  |
-| 15  | 05-31 | Reolink **Anti-Smearing** exposure + shutter cap (`125→32`) to freeze near-camera motion blur; validation soak ran a widened `[0.10,0.60]` band, assessed + reverted 06-01                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | **Falsified.** Canonical read-rate ~halved (matched midday daylight 48.5 → 25.1 %, -23 pp, both directions); near-camera zone did not recover. Faster shutter → higher gain → sensor noise costs more than the motion blur it removes (mid-road reads were never blur-limited). Reverted ISP to Auto/125 + band to `[0.10,0.45]`. **Capture-side levers (band position + exposure) exhausted.**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | —            |
-| 16  | 06-10 | **Stale-bbox fix.** Operator triage of 99 R→L failed snaps (`.claude/triage_rl.py` labelling site) → **96 % were snap latency**: the 4K HTTP snap lands ~0.7-1.3 s after fire (p50 710 ms), the car exits its fire-time bbox (+≤30 px pad) and the plate detector was shown empty road; the fastest cars exit the _frame_ (the 11 % "no car" bucket had the highest host speeds). Zero smeared, zero sharp-unread — optics/OCR were never the limit. Fix: **motion-window hints** (`snap_assets.resolve_bbox_hint_window` — union of fire-time bboxes `i..i+3` ≈ the latency horizon; linear extrapolation at end-of-track, shift capped at 2.5 bbox-dims) + **vehicle stage inside the window** (`PreCropDetector(vehicle_stage_in_hint=True)`; window-only A/B _lost_ 15 pp R→L detection to input downscale — tight vehicle crops restore plate pixels). `alpr-run --hint-lookahead N` (default 3, 0 = legacy). | A/B on `session_20260530_165958` (`.claude/measure_hint_window_ab.py`): **canonical cars/session 43 → 99 (+130 %)**; L→R detection 49 → 90 %, canonical/image 32.4 → 75.7 %; R→L canonical cars 4 → 11 (~2.8×). **[CORRECTED 2026-06-19: the R→L gain here was a forward-extrapolation artifact of the hint window — completion-time bboxes on two post-deploy soaks show R→L is camera-capped ~15-20 % at *every* landing position; only the L→R gain was real. The "per-direction band is the next lever" follow-up was deployed 06-13 and confirmed to help ONLY L→R.]** Parked-beacon count flat — no aliasing cost. Related same-day work: **parked-plate beacon suppression** (PRs #57/#58) — a parked Duster read 99×/69 tracks had become the showcase's phantom #1 "regular" (55 visits); now suppressed into a `parked_episodes` record, with `dvsa-label` harvests scrubbed (replace + orphan-clear `track_ids` semantics) and the corpus rebuilt (1,311 cars / 8,067 crops / 29 makes in `runs/uk_crops_0610_512`). | PR #59       |
-
-Aggregation scripts that re-produce each measurement table live at
-`.claude/aggregate_step{8,10,11}.py`, `.claude/measure_consensus.py`,
-and `.claude/measure_hint_window_ab.py` (Step 16 A/B; expects the
-`_alpr.baseline_prewindow.json` backup next to the session's live
-output). The Step 16 failure-triage labelling site is
-`.claude/triage_rl.py` (`--select` builds the sample, then serves on
-:8091; labels persist to `.claude/triage/labels.json`).
-
-### Pipeline mode (the dominant capture mechanism)
-
-Trigger fires alone cap at ~3 per car. Since 2026-05-23 the live config
-also runs **pipeline mode**: while a track sits inside the polygon's
-`t_usable` band, fire a 4K snap every `pipeline_interval_ms` of
-wall-clock time, capped at `pipeline_max_per_track`. Pipeline fires
-have their own per-track counter (`pipeline_fires`) but share the
-snapshotter's `max_concurrent` HTTP semaphore with trigger fires.
-Pipeline fires dominate trigger fires by ~10× at the current settings
-(400 ms / 15-cap).
-
-`pipeline_interval_ms: 0` (the default in `RoadGateConfig`) disables
-pipeline mode entirely. Don't blindly re-deploy the local
-`.claude/snap_gate.json` artifact without preserving the live config's
-`pipeline_interval_ms` / `pipeline_max_per_track` / `pipeline_interval_ms_by_direction`
-fields — see [Snap-gate config layout](#snap-gate-config-layout).
-
-### Latest snap_stats (Step 11 soak, `session_20260526_124704`, 5.5h)
-
-| HTTP            | Latency (ms)                      | Blur      | Pipeline                                | Mean fires/track |
-| --------------- | --------------------------------- | --------- | --------------------------------------- | ---------------- |
-| 2381 / 2381 / 0 | p50=710 p90=957 p99=1221 max=2133 | skipped=0 | fires=2921 throttled=8565 exhausted=665 | 1.45             |
-
-`min_sharpness=100.0` essentially never trips (`blur_skipped=0` in both
-recent soaks); do not lower.
-
-### Bugs hardened during the tuning loop
-
-**asset_prefix split-flip** ([PR #21](https://github.com/nicholasaross/StreetTracker/pull/21)).
-BotSORT reassigns a track's class as evidence accumulates, so
-`track.class_id` can flip mid-life. The 4K snap path was built from
-`class_id` at fire time, while the TrackRecord + tile/HQ were built
-from it at finalize time. A flip between left the on-disk filenames
-disagreeing with `record.asset_prefix` (26/880 tracks ≈ 3 % in the
-soak). Fix: `BufferedTrack` records the fire-time prefix per
-`snap_index` and a `final_prefix` slot. `finalize_track` locks
-`final_prefix`, sweeps already-saved snaps whose fire prefix differs,
-and renames them; the snap `_on_done` callback handles late completions.
-Live on Orin since 2026-05-25.
-
-**Confidence-weighted class voting** (PR #23). PR #21 made the _file
-prefix_ consistent with the _finalize-time class_, but the
-finalize-time class itself came from "most-recent-detection wins".
-A single stray YOLO frame at the end of a track could corrupt the
-entire record. Fix: `BufferedTrack.class_votes: dict[class_id ->
-sum(detection_score)]`; `class_id = argmax(class_votes)` always.
-Three new tests cover tie-break (insertion-order), majority resilience,
-and accumulated-evidence flipping. Doesn't fix the rare case where YOLO
-is _consistently_ wrong on a scene (e.g. parked grey Prius+ labelled
-person) — that case is now covered by the **kinematics guardrail**
-(2026-07-07): `compute_attributes` sets `TrackRecord.class_suspect=True`
-on a "person" whose median bbox aspect (w/h) ≥ 1.5. Measured on six
-completion-bbox soaks (10,691 person / 15,254 car tracks): person p99 =
-0.82, rider max = 1.44, car p25 = 1.40 — so 1.5 catches the
-misclassified parked cars (all wide AND slow; speed added no signal)
-with zero rider collateral. Suspects keep their class + assets but are
-excluded from `web/stats.py` people+car counts and `analysis/people.py`
-(summary `n_suspect_excluded`). Old sessions lack the field (treated
-as not-suspect).
-
-### Schema-additive config changes
-
-The strict JSON loader is intentionally fatal on unknown keys (catches
-typos). Schema-additive changes to `camera.json` (new field in
-`SnapGateSpec`, etc.) **must land on `main` and be `git pull`'d on the
-Orin BEFORE the corresponding camera.json edit**, or the service
-crash-loops. Hit this on 2026-05-27 with `pipeline_interval_ms_by_direction`
-(~60s downtime before rollback to the `camera.json.bak.<ts>` snapshot
-restored the previous config and the service came back up).
-
-Right deploy order for schema-additive config changes:
-
-1. Push branch → open PR → CI green → merge to main.
-2. `ssh streettracker@orin "cd ~/streettracker && git pull"` (+
-   `scripts/setup_orin.sh --symlinks-only` if `.venv` was rebuilt — see
-   [Recovery from a venv rebuild](#repo--venv-setup)).
-3. Restart with the OLD `camera.json` — verify the new code parses
-   unchanged.
-4. THEN edit `camera.json`, scp, restart, verify.
-
-Value changes to existing keys (e.g. Step 11's `t_usable_frac` trim)
-are safe to deploy directly.
-
-### Vehicles aggregator (`streettracker vehicles`)
+## Vehicles aggregator (`streettracker vehicles`)
 
 Folds per-track records + per-track best ALPR reads into a per-vehicle
 view keyed by canonical plate. Run with
@@ -1461,167 +483,50 @@ and the new track's first-few-frames motion vector mislabelled the
 direction. Earlier code rejected such merges; that produced more false
 negatives than the heuristic caught true positives.
 
-## Fresh deployment procedure
+## Deploying to the Orin
 
-Canonical reference for any redeploy on a wiped Orin (new chassis, SD
-swap, or JetPack upgrade — see [JetPack 7 upgrade plan](#jetpack-7-upgrade-plan)
-for JP7 deltas).
+The Orin runs the tracker from the checkout at `~/streettracker` under `streettracker.service`,
+which passes `--no-sync`. A code-only deploy is: merge to `main`, `git pull` on the Orin, restart.
+The panel's **roll** playbook does the restart and pulls the closed session. Afterwards, update
+"Live on the Orin" above with the new commit and the rollback commit.
 
-### Backups to keep off-device
+- **Don't run a bare `uv sync` on the Orin** without checking the Jetson wheel index first (see
+  [Compatibility rules](#compatibility-rules)). If `.venv` was rebuilt, the system-TensorRT
+  symlinks are gone and the service restart-loops on `No module named 'tensorrt'`: run
+  `scripts/setup_orin.sh --symlinks-only`, then restart.
+- **Back up `configs/camera.json` on the device** (`camera.json.bak.<UTC timestamp>`) before
+  changing it. It holds the camera credentials, the traced polygon and the tuned snap gate, and
+  it is not in the repo.
 
-Three things are not in the repo and not portable from a fresh OS:
+### Schema-additive config changes
 
-| File                                         | Why                                                                                            |
-| -------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `~/streettracker/configs/camera.json`        | Reolink credentials + operator-traced road polygon + per-install snap_gate tuning. Gitignored. |
-| `/etc/sudoers.d/streettracker-svc`           | Lets the `streettracker` user run `systemctl * streettracker.service` without password prompt. |
-| `~/.ssh/authorized_keys` for `streettracker` | SSH keys for admin.                                                                            |
+The strict JSON loader is intentionally fatal on unknown keys (catches
+typos). Schema-additive changes to `camera.json` (new field in
+`SnapGateSpec`, etc.) **must land on `main` and be `git pull`'d on the
+Orin BEFORE the corresponding camera.json edit**, or the service
+crash-loops. Hit this on 2026-05-27 with `pipeline_interval_ms_by_direction`
+(~60s downtime before rollback to the `camera.json.bak.<ts>` snapshot
+restored the previous config and the service came back up).
 
-The TRT engine (`yolov8m.engine`) is deliberately _not_ on this list —
-it's GPU-architecture-bound and must be rebuilt on the target device.
+Right deploy order for schema-additive config changes:
 
-### Dev-box disaster recovery
+1. Push branch → open PR → CI green → merge to main.
+2. `ssh streettracker@orin "cd ~/streettracker && git pull"` (+
+   `scripts/setup_orin.sh --symlinks-only` if `.venv` was rebuilt — see
+   [Recovery from a venv rebuild](docs/deployment.md#repo--venv-setup)).
+3. Restart with the OLD `camera.json` — verify the new code parses
+   unchanged.
+4. THEN edit `camera.json`, scp, restart, verify.
 
-The table above is **Orin-side only**. The dev box (this analysis
-machine) holds a separate, mostly-irreplaceable set. As of 2026-07-09
-the durable, non-sensitive pieces are pushed so a fresh `git clone`
-recovers them (the repo is **public**, so secrets and plate/person
-imagery are deliberately kept out):
+Value changes to existing keys (e.g. Step 11's `t_usable_frac` trim)
+are safe to deploy directly.
 
-| Artifact                                                                                                                                                                          | Where it now lives                                                   | Recreate cost if lost                                                                    |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| Operator-traced **scene geometry** (`.claude/{ghost_mask,snap_gate,triggers_proposal,road_polygon_user,road_zones,road_polygon,reolink_isp_current}.json` + `sketch_me_done.png`) | **In repo** (gitignore negations)                                    | Irreplaceable without the physical camera + operator re-sketch + weeks of band re-tuning |
-| **Analysis / measurement scripts** (`.claude/*.py` — verdict/band/eval/bakeoff/coverage)                                                                                          | **In repo**                                                          | Re-derive methodology from scratch                                                       |
-| **Small inference models** (`bodytype_b0.pt` 16 MB, ALPR `license_plate_detector.pt` 6 MB) + all `*.meta.json` sidecars                                                           | **In repo**                                                          | 12 h train / hard to reacquire                                                           |
-| **Production make model** `makemodel_b0.pt` (164 MB, B6)                                                                                                                          | **GitHub Release `models-2026-10-26`** holds production `uk_make_0929_b6` (SHA-256 `f660a9eb…`); `models-2026-07-09` holds the older 0707 B6. Promotions from 2026-10-26 on publish `makemodel-<run>` automatically | ~1.5 days train on a months-built corpus                                                 |
+A fresh install on a wiped Orin, what to back up, dev-box disaster recovery and the JetPack 7
+plan are in [`docs/deployment.md`](docs/deployment.md).
 
-Still **NOT** in GitHub — keep a private/external backup (too big, or
-PII, or secret):
-
-- **Training corpora** `runs/uk_crops_0924_576` (make — the plate-anchored
-  corpus the production model trained on; also carries body-type + colour
-  labels) + the legacy `runs/uk_crops_0707_576` / `runs/uk_crops_0708_bt_384`
-  — the distilled datasets; source Orin sessions prune at 7 d, so these
-  can't be re-mined once the box dies.
-- **Per-session derived JSON** `output/*_{data,alpr,dvsa_labels,vehicles,makemodel,bodytype,people}.json`
-  — all the ANPR/DVSA/people labels (plate PII); tar the non-image files.
-- **Secrets**: `configs/dvsa.json` (DVSA API key), any `camera.json`
-  (Reolink pw) — encrypted store / password manager, never the public repo.
-- **Camera-ISP helpers** `.claude/setexp*.py` — re-ignored (hardcode the
-  LAN IP + admin account); recover from the private backup.
-
-The `output/` 4K images and `.claude/v*_main_*.jpg` debug snaps are
-disposable (raw imagery, plate/person PII) — external backup only if the
-imagery itself matters, not for tooling recovery.
-
-### One-time host setup
-
-```bash
-# As an admin user on the freshly-flashed Orin:
-sudo useradd -m -s /bin/bash streettracker
-sudo usermod -aG video,sudo,systemd-journal streettracker
-# video for nvidia; systemd-journal so streettracker can read its own
-# service logs (without this, `journalctl -u streettracker` looks
-# empty rather than erroring).
-sudo mkdir -p /home/streettracker/.ssh
-sudo cp ~/.ssh/authorized_keys /home/streettracker/.ssh/
-sudo chown -R streettracker:streettracker /home/streettracker/.ssh
-sudo chmod 700 /home/streettracker/.ssh
-sudo chmod 600 /home/streettracker/.ssh/authorized_keys
-
-# Scoped NOPASSWD for service management.
-echo "streettracker ALL=(ALL) NOPASSWD: /bin/systemctl * streettracker.service" \
-  | sudo tee /etc/sudoers.d/streettracker-svc
-sudo chmod 440 /etc/sudoers.d/streettracker-svc
-```
-
-### Repo + venv setup
-
-```bash
-ssh streettracker@orin
-git clone https://github.com/nicholasaross/StreetTracker.git ~/streettracker
-cd ~/streettracker
-scripts/setup_orin.sh         # idempotent: apt deps + uv + uv sync +
-                              # tensorrt symlinks + bashrc LD_LIBRARY_PATH
-                              # + nvpmodel
-```
-
-Handles both JP6 (Ubuntu 22.04 / Py 3.10) and JP7 (Ubuntu 24.04 / Py
-3.12) via uv's `.python-version` honouring.
-
-**Recovery from a venv rebuild.** A `uv sync` that recreates `.venv`
-(e.g. after a `.python-version` change) wipes the system-tensorrt
-symlinks. The systemd service then fails with `ModuleNotFoundError: No
-module named 'tensorrt'` and restart-loops. Recovery:
-
-```bash
-ssh streettracker@orin "cd ~/streettracker && scripts/setup_orin.sh --symlinks-only && sudo -n systemctl restart streettracker.service"
-```
-
-No sudo/apt/network needed — `--symlinks-only` runs the symlink step in
-isolation. Hit this on 2026-05-25 during the 3.10 → 3.11 → 3.10 pin
-churn, hence the dedicated flag.
-
-### Per-deploy files
-
-```bash
-scp <backup>/camera.json streettracker@orin:~/streettracker/configs/
-
-cd ~/streettracker
-uv run streettracker export-engine yolov8m.pt
-# ~5 min on Orin Nano Super. The output filename must match
-# `inference.engine_path` in camera.json — the load-time validator
-# catches mismatches with a clear JSON-path error.
-```
-
-### Systemd install + smoke
-
-```bash
-sudo cp scripts/systemd/streettracker.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo -n systemctl enable --now streettracker.service
-journalctl -u streettracker -f                  # Ctrl-C once frames flow
-curl http://orin:8080/                          # "no sessions yet" page
-                                                # or latest summary redirect
-```
-
-Roll back: `sudo -n systemctl disable --now streettracker.service`. SD
-card unchanged; next `enable --now` starts a fresh session.
-
-## JetPack 7 upgrade plan
-
-NVIDIA's JP7 for Orin Nano has shipped as **JetPack 7.2** (Jetson Linux
-39.2, CUDA 13.2.1, TensorRT 10.16.2, Ubuntu 24.04, Py 3.12 native;
-verified 2026-06-07). Before flashing, five repo edits have to land or
-the redeploy will fail at `uv sync` — and the hard prerequisite gating
-all of it is **torch-wheel availability** (see the go/no-go gate below):
-
-| What                     | Where                                               | JP6 today                                                      | JP7 target                                                                                                                                                          |
-| ------------------------ | --------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Python pin               | `.python-version`                                   | `3.10`                                                         | `3.12`                                                                                                                                                              |
-| Jetson torch wheel index | `pyproject.toml` `[[tool.uv.index]]`                | `https://pypi.jetson-ai-lab.io/jp6/cu126/+simple/`             | `https://pypi.jetson-ai-lab.io/jp7/cu13x/+simple/` (CUDA 13.2 → `cu132`/`cu130`; **not published as of 2026-06-07** — gate-check via `scripts/check_jp7_wheel.ps1`) |
-| cuDSS dep                | `pyproject.toml` `nvidia-cudss-cu12`                | `cu12`                                                         | `cu13` if JP7 ships CUDA 13.x (confirm)                                                                                                                             |
-| CUDA lib path            | `scripts/setup_orin.sh` `CUDA_LIB=...`              | `/usr/local/cuda-12.6/lib64`                                   | auto-detect or hardcode `cuda-13.x`                                                                                                                                 |
-| Systemd LD_LIBRARY_PATH  | `scripts/systemd/streettracker.service` Environment | `cuda-12.6/lib64` + `python3.10/site-packages/nvidia/cu12/lib` | both paths shift                                                                                                                                                    |
-
-**Go/no-go gate.** JP7.2 is out, but **don't flash until the wheel gate
-is green**: run `scripts/check_jp7_wheel.ps1` from the dev box (exit 0 =
-a `jp7`/CUDA-13.x `cp312`+`aarch64` torch **and** torchvision wheel is
-published on jetson-ai-lab — the only `sm_87`-safe source; the official
-PyTorch SBSA `cu126` wheel has `sm_87` gaps → silent NaN). **NOT YET as
-of 2026-06-07** (`jp7/` 404s); stay on JP6 meanwhile — the live service
-is safe (`--no-sync` blocks resync against the decaying JP6 index).
-
-**When the gate is green.** Spin up `claude/jp7-readiness`, make the five
-edits, then flash and run the [Fresh deployment
-procedure](#fresh-deployment-procedure). **Caveat — there is only ONE
-Orin, no separate test box** (the earlier "verify on a test Orin" plan is
-infeasible): flash JP7.2 onto a _second_ NVMe and keep the current JP6
-drive physically intact as the rollback + `output/` backstop; a
-major-version flash also rewrites the module QSPI bootloader, so
-reverting = re-flash QSPI to JP6 + reinsert the old drive (downtime, not
-a swap). PR #15 hardening (forgiving stream-name lookup + engine-path
-validation) means small config drift won't block the redeploy.
+**This repo is public.** Secrets (`configs/dvsa.json`, `camera.json`), plate or person imagery
+and per-session JSON never go into the repo, a release or a published page. `model-release`
+refuses a checkpoint that holds plate-shaped strings or paths.
 
 ## Snap gate (road polygon + axis triggers)
 
@@ -1640,28 +545,22 @@ and scales `w_img / source_size[0]`. If Reolink firmware changes the
 main-stream resolution, only update `source_size` in
 `.claude/ghost_mask.json` — the rect coords stay.
 
-### Live geometry (current values)
+### Pipeline mode (the dominant capture mechanism)
 
-| Field                               | Value                                                                | Origin                                                                                                                                                                                                           |
-| ----------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Polygon vertices                    | 23 fractional `(x, y)`                                               | operator sketch, `.claude/sketch_me_done.png`                                                                                                                                                                    |
-| `t_usable_frac`                     | `[0.10, 0.45]`                                                       | Step 11 trim (was `[0.10, 0.67]`)                                                                                                                                                                                |
-| `trigger_t_prime`                   | `[0.05, 0.20, 0.35, 0.65, 0.80, 0.95]` (in usable-band coords)       | 3 forward + 3 reverse triggers                                                                                                                                                                                   |
-| `trigger_directions`                | `["forward", "forward", "forward", "reverse", "reverse", "reverse"]` | asymmetric: forward = R→L approach, reverse = L→R depart                                                                                                                                                         |
-| `pipeline_interval_ms`              | `400`                                                                | base cadence                                                                                                                                                                                                     |
-| `pipeline_max_per_track`            | `15`                                                                 | per-track cap                                                                                                                                                                                                    |
-| `pipeline_interval_ms_by_direction` | `{}` (empty — uniform 400 ms both directions)                        | Step 13a deployed `{forward:300,reverse:400}` 2026-05-27 but it's **not in the live config** (dropped, likely the 2026-06-13 splice). Not restored — premise falsified (R→L camera-capped ~15-20 %, 2026-06-19). |
-| `pipeline_t_usable_by_direction`    | `{forward:[0.10,0.20], reverse:[0.30,0.60]}`                         | per-direction pipeline bands; reverse lower edge nudged 0.25→0.30 on 2026-06-19 (validated 2026-06-22: L→R per-car 92.3 %). See [config layout](#snap-gate-config-layout).                                       |
-| Ghost mask                          | rect `[750, 700, 960, 860]` at `source_size=[4512, 2512]`            | covers parked `FD61PVX` car at 4K `(853, 780)` (`t_norm=0.593`)                                                                                                                                                  |
+Trigger fires alone cap at ~3 per car. Since 2026-05-23 the live config
+also runs **pipeline mode**: while a track sits inside the polygon's
+`t_usable` band, fire a 4K snap every `pipeline_interval_ms` of
+wall-clock time, capped at `pipeline_max_per_track`. Pipeline fires
+have their own per-track counter (`pipeline_fires`) but share the
+snapshotter's `max_concurrent` HTTP semaphore with trigger fires.
+Pipeline fires dominate trigger fires by ~10× at the current settings
+(400 ms / 15-cap).
 
-**`trigger_t_prime` values are in `[0, 1]` of the USABLE band, not
-global** — so they automatically shrink with `t_usable_frac`. The
-"reverse" triggers (placed for L→R entry) now fire at absolute t_norm
-0.33 / 0.38 / 0.43 instead of 0.47 / 0.56 / 0.65 — moves L→R fires out
-of the FD61PVX zone (intended secondary benefit of the Step 11 trim).
-
-L→R = rear plate visible, R→L = front plate visible (visually confirmed
-in 27.3h soak samples).
+`pipeline_interval_ms: 0` (the default in `RoadGateConfig`) disables
+pipeline mode entirely. Don't blindly re-deploy the local
+`.claude/snap_gate.json` artifact without preserving the live config's
+`pipeline_interval_ms` / `pipeline_max_per_track` / `pipeline_interval_ms_by_direction`
+fields — see [Snap-gate config layout](#snap-gate-config-layout).
 
 ### Snap-gate config layout
 
@@ -1685,130 +584,28 @@ block contains all of:
 }
 ```
 
-`pipeline_t_usable_by_direction` (optional, schema-additive) gates
-PIPELINE fires per motion direction in **absolute t_norm coords** (same
-space as `t_usable_frac`; trigger t' values are unaffected). Directions
-absent from the dict — and frames whose motion direction isn't known
-yet — fall back to `t_usable_frac`. The bands were the 2026-06-11 band
-re-analysis prescription, deployed 2026-06-13. **Post-deploy verdict
-(2026-06-19, two ~70h soaks, completion-time bboxes, 100 % done-bbox
-coverage):** the L→R band is validated — rear plates read 73-76 % at
-mid-road landings, per-car ~73-82 % (a genuine win). The R→L prescription
-is **falsified**: front plates are camera-geometry-capped at ~15-20 % at
-_every_ landing position (`band_position_done.py`), so firing R→L far buys
-nothing. The 2026-06-11 "R→L reads 56-76 % fired far" was a motion-window-
-hint forward-extrapolation artifact; completion-time bboxes (exact landing
-crops, no extrapolation) corrected it, restoring the pre-Step-16 ~14 %
-geometry floor.
+`pipeline_t_usable_by_direction` gates pipeline fires per motion direction in absolute t_norm
+coordinates (the same space as `t_usable_frac`; trigger t' values are unaffected). A direction
+missing from the dict, and any frame whose direction isn't known yet, falls back to
+`t_usable_frac`. `forward` is R→L (front plate visible) and `reverse` is L→R (rear plate).
+`trigger_t_prime` values are fractions of the usable band, not of the whole axis, so they move
+when `t_usable_frac` changes.
 
-**⮕ CORRECTION 2026-07-28:** the "~14-20 % R→L geometry floor" asserted just
-above is **itself falsified** — it was measured through the *completion-bbox*
-crop, which still sits a median ~510 4K px off the car. The full-frame
-trajectory-matched crop (`alpr-run --crop-mode fullframe`, default since
-2026-07-28, PR #94/#95) reads R→L at **~70 % per-car** on the same snaps, so
-R→L is NOT camera-geometry-capped and the live-band question is moot for it
-(the reads were there all along, mis-cropped offline). The L→R reverse-band
-tuning in the rest of this paragraph still stands.
+- The reverse band's lower edge (0.30) was tuned on live soaks. The forward band `[0.10, 0.20]`
+  has not been re-derived with fullframe crops (review, "R→L pipeline band").
+- `pipeline_interval_ms_by_direction` is `{}` (a uniform 400 ms). The 2026-05-27
+  `{forward:300, reverse:400}` setting was dropped and has not been restored.
+- `min_sharpness=100.0` essentially never trips; don't lower it.
 
-The reverse lower edge was nudged **0.25→0.30 on 2026-06-19**
-(L→R departs/recedes ~0.10 t*norm during the ~700 ms snap latency, so 0.25
-fires landed in the weak far zone) and **validated 2026-06-22** on the ~72h
-`session_20260619_111111` soak: L→R per-car 73-82 % → **92.3 %**, per-image
-65.9 % → **77.4 %**, net per-car ~48 % → **57.9 %**. The landing histogram
-confirms the mechanism — L→R reads peak **83-89 % at 0.20-0.40 t_norm**, exactly
-where the raised 0.30 floor now lands them (vs 26-62 % below 0.20); R→L
-unchanged at ~23 % per-car, as designed (the nudge only touches the reverse
-band). \*\*NB (2026-07-09): the 92.3 %/57.9 % here was that single soak's
-high-water mark — three later completion-bbox sessions (0628/0703/0707)
-sit at net ~40-45 % (L→R ~73-80 %, R→L ~9-11 %); the band mechanism is
-sound, the sustained number is just lower. See
-`.claude/verdict_band_0613.py output/session*<id>`.** And
-`pipeline*interval_ms_by_direction` is **`{}`** (uniform 400 ms) — the
-Step 13a `{forward:300,reverse:400}`throttle is not live and won't be
-restored (same falsified R→L premise, and faster R→L firing only burns the
-shared HTTP semaphore the readable L→R direction needs). Once deployed,
-preserve these fields like the other`pipeline*\*`fields when splicing
-configs. Reproduce the verdict:`.claude/verdict_band_0613.py`+`.claude/band_position_done.py`.
+The reasons behind each value are in
+[`docs/history/anpr_tuning.md`](docs/history/anpr_tuning.md).
 
 The local artifact `.claude/snap_gate.json` historically only carried
 `polygon_frac` / `trigger_t_prime` / `trigger_directions` / `t_usable_frac`.
 **Always preserve the live `pipeline_*` fields when scp'ing** — pull
 the live config, edit only what you need, scp back. See [Adjusting the
-snap_gate](#adjusting-the-snap_gate).
+snap_gate](docs/snap_gate.md#adjusting-the-snap_gate).
 
-### Artifacts in `.claude/` (mostly per-install/gitignored)
-
-Most of `.claude/` is per-install scratch and stays ignored, but since
-2026-07-09 the **scene geometry** (`ghost_mask.json`, `snap_gate.json`,
-`triggers_proposal.json`, `road_polygon_user.json`, `road_zones.json`,
-`road_polygon.json`, `reolink_isp_current.json`, `sketch_me_done.png`)
-and the **analysis scripts** (`.claude/*.py`, except the `setexp*.py`
-camera-ISP helpers which hardcode the LAN IP + admin account) are
-**tracked** via gitignore negations — see [Dev-box disaster
-recovery](#dev-box-disaster-recovery). The `.jpg` overlays / debug snaps
-below stay ignored (regenerate from the tracked JSON).
-
-| File                                                 | Purpose                                                                                                                                                                     |
-| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `live_frame.jpg`                                     | Reference 4K snap of the live scene (fetched directly from Reolink).                                                                                                        |
-| `sketch_me.png`                                      | 1200×668 downscale of the live frame, given to the operator to sketch on.                                                                                                   |
-| `sketch_me_done.png`                                 | Operator's returned sketch — magenta (`#FF00FF`) outline of the visible road tarmac.                                                                                        |
-| `road_polygon_user.json`                             | Polygon vertices extracted from the magenta sketch (fractional coords, resolution-independent).                                                                             |
-| `triggers_proposal.json`                             | Full trigger spec: polygon vertices, principal axis, centroid, raw t-range, `t_usable_orig`, `triggers_tprime`, `trigger_directions`, `trigger_labels`.                     |
-| `triggers_proposal.jpg`                              | Visual overlay on the live frame — yellow road outline, dimmed excluded regions, coloured trigger lines. Re-render via `uv run python .claude/_render_triggers_overlay.py`. |
-| `snap_gate.json`                                     | Subset of `triggers_proposal.json` for shipping to `camera.json` under `snapshot.snap_gate`.                                                                                |
-| `ghost_mask.json`                                    | Parked-car rects + `source_size`, fed to `alpr-run --ghost-mask`.                                                                                                           |
-| `aggregate_step{8,10,11}.py`, `measure_consensus.py` | Re-producible measurement scripts for each step's table.                                                                                                                    |
-
-### Adjusting the snap_gate
-
-Most operator changes ("move T2 toward camera", "drop T1", "add a
-trigger between T2 and T3") only need t' values:
-
-1. Edit `triggers_tprime` (and optionally `t_usable_orig`) in
-   `.claude/triggers_proposal.json`. Values in `[0, 1]` over the usable
-   band — t'=0 = distant edge, t'=1 = near edge.
-2. Re-render: `uv run python .claude/_render_triggers_overlay.py`.
-3. Regenerate `.claude/snap_gate.json` from the JSON
-   (`polygon_frac=vertices_frac`, `trigger_t_prime=triggers_tprime`,
-   `t_usable_frac=t_usable_orig`, `trigger_directions` if used).
-4. Pull live config, splice the new fields in, scp back, restart:
-
-```bash
-scp streettracker@orin:~/streettracker/configs/camera.json /tmp/orin_live.json
-# Edit (Python or jq) -- replace the snap_gate value-changes only;
-# preserve pipeline_interval_ms / pipeline_max_per_track /
-# pipeline_interval_ms_by_direction.
-ssh streettracker@orin "cp ~/streettracker/configs/camera.json ~/streettracker/configs/camera.json.bak.$(date -u +%Y%m%dT%H%M%SZ)"
-scp /tmp/orin_proposed.json streettracker@orin:~/streettracker/configs/camera.json
-ssh streettracker@orin "sudo -n systemctl restart streettracker.service"
-ssh streettracker@orin "journalctl -u streettracker.service --since '30 seconds ago' --no-pager | tail -15"
-```
-
-For schema-additive changes (new key in `SnapGateSpec`), see
-[Schema-additive config changes](#schema-additive-config-changes).
-
-### Re-sketching the road (camera moved, new view)
-
-1. Pull a fresh 4K frame via the Reolink HTTP `cmd=Snap` endpoint →
-   `.claude/live_frame.jpg`.
-2. Downscale to 1200px wide → `.claude/sketch_me.png`.
-3. Operator traces the visible road tarmac as a closed magenta
-   (`#FF00FF`) outline → `.claude/sketch_me_done.png`.
-4. Extract polygon: detect magenta pixels, dilate + fill, take the
-   largest connected component, walk boundary radially from centroid,
-   Ramer-Douglas-Peucker simplify (`eps≈6`) →
-   `.claude/road_polygon_user.json`.
-5. Compute principal axis (PCA on polygon vertices in pixel coords),
-   propose initial triggers + `t_usable` band, render overlay,
-   iterate with operator until approved. Continue from "Adjusting"
-   step 3.
-
-### Live planner behaviour
-
-| `SnapPlannerConfig.road_gate`                       | Mode                        | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| --------------------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `None`, `right_half_only=True`                      | Right-half zone-thirds      | Pre-polygon fallback. Not used live.                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `None`, `right_half_only=False`                     | Legacy peak/decay           | Benchmark only.                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `RoadGateConfig(...)` w/ `pipeline_interval_ms = 0` | Road polygon + trigger-only | Crossing semantics: each frame compares bbox-centre's t' with previous frame's; a not-yet-fired trigger between them fires _if its direction tag matches the motion sign_. After a fire, `prev_t_prime` advances to the trigger's t' so subsequent triggers in the same motion remain detectable one-per-frame. Asymmetric triggers let R→L and L→R each have their own early-capture trigger without one direction consuming the other's. |
-| `RoadGateConfig(...)` w/ `pipeline_interval_ms > 0` | + pipeline mode             | **Live deployment since 2026-05-23.** Trigger crossings as above. _Additionally_, while a track sits inside `t_usable`, fire a snap every `pipeline_interval_ms` (or per-direction override), capped at `pipeline_max_per_track`. Pipeline fires share `max_concurrent` with trigger fires; dominate by ~10×. See `consider_pipeline` in `snap_planner.py`.                                                                                |
+The live geometry table (polygon, triggers, ghost mask), the scene artefacts in `.claude/`, how
+to move a trigger or re-sketch the road, and the planner's modes are in
+[`docs/snap_gate.md`](docs/snap_gate.md).
