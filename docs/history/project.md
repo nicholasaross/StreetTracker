@@ -175,7 +175,7 @@ names differ from the example.
 From the old "Device runtime notes" list.
 
 - **Summary-page stall: found, fixed and deployed 2026-11-10 (live from
-  `session_20261110_171836`; not yet confirmed from a full session's logs).**
+  `session_20261110_171836`; confirmed on that session 2026-11-13).**
   The runtime rebuilt the summary page inline in `process_frame`, 11.76 s
   after each kept track ended (10 s idle + the 16 frames a track takes to
   expire), converting every record the session held. On the Orin that took
@@ -199,6 +199,15 @@ From the old "Device runtime notes" list.
   pre-fix session shows about 13 times chance, e.g. 479 against 36), with no
   pile of ends at the instant. Sessions recorded before the deploy keep their
   splits.
+- **Confirmed 2026-11-13** on `session_20261110_171836`, the first session
+  recorded with the fix, with the same script. Tracks ending at a rebuild
+  instant: 29 against 21 expected by chance (pre-fix: about 13 times chance),
+  an excess of 8 = 0.2 % of kept tracks (was 5.5 %). 29 of 2,309 rebuilds
+  coincided with a track end (1.3 %); about one pass was recorded as two
+  tracks (0.0 %, was about 2.2 %). No track showed a logged-point gap at a
+  rebuild, so the stall-length table is empty. 4K snaps fired in the 0.7 s
+  before a rebuild landed in a median 0.54 s (n = 183) against 0.55 s for all
+  others (n = 11,579).
 
 ## Rest of the Orin runtime work from the 2026-11-10 review (2026-11-13)
 
@@ -241,3 +250,21 @@ On `main`; not deployed when written (the Orin stayed on `0b817b7`).
   (systemd's stop timeout) is now always rebuilt; before, a kill after
   `_data.json` left a session that looked finalised with no meta or hourly
   file. File contents are byte-for-byte what they were.
+
+## CLI command table (2026-11-13)
+
+From the 2026-11-10 review (Tranche 4). The subcommand list was kept in three
+places in `cli/__init__.py`: the module docstring, the `_HELP` string and a
+27-branch `if` chain. They had drifted (`colour` was missing from the
+docstring). `cli/commands.py` now holds one table, `COMMANDS` (name, one-line
+summary, `module:function` target), and the help text and the dispatch are
+both built from it. Targets are strings, so a command's module is still
+imported only when that command runs.
+
+Checked by parsing the old `_HELP` and `if` chain from `main` with `ast` and
+comparing them with the table: 27 commands, with the same names, order,
+summaries and targets. The one visible change is that the help columns line
+up (the hand-written columns were uneven). `main` dropped its
+`# noqa: C901`. The tests check every target against its module's source, so
+they run where torch is not installed, and check that the control panel's
+job-kind tables only name commands the CLI has.

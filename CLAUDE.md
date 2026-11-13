@@ -35,8 +35,8 @@ and append the dated account (numbers, method, what it replaced) to the matching
 - **Code `0b817b7`**, pulled 2026-11-10 and started by a panel roll at 17:18 GMT. Rollback:
   `git checkout 6707789` + restart. JetPack 6, Python 3.10.
 - **`session_20261110_171836`** is the first session recorded with the summary-page stall fix
-  (see [Device runtime notes](#device-runtime-notes-orin-nano-8gb-super)). Its check is still to
-  run (Open work, item 1).
+  (see [Device runtime notes](#device-runtime-notes-orin-nano-8gb-super)). The fix is confirmed
+  on it (2026-11-13): tracks ending at a rebuild are at chance level, 29 against 21 expected.
 - **Config.** `vehicle_classes = [0,1,2,3,5,7,16]` (person, bicycle, car, motorcycle, bus, truck,
   dog). The snap gate is the road polygon with six triggers, plus pipeline mode (400 ms, 15 per
   track) with per-direction bands. The live block is under
@@ -157,22 +157,18 @@ publishes `makemodel-<run>`.
 
 ### Open work, in order
 
-1. **Confirm the stall fix.** Once `session_20261110_171836` has been rolled and pulled, run
-   `uv run --no-sync python .claude/loop_stall_check.py output session_20261110_171836`. Tracks
-   ending at a rebuild instant should be at the chance level (a pre-fix session shows about 13
-   times chance).
-2. **Data-integrity plan** (review §4, revised 2026-10-04; its first four steps are done). Next
+1. **Data-integrity plan** (review §4, revised 2026-10-04; its first four steps are done). Next
    is the E1.2 audit set, stratified toward flagged reads, then calibrating the plate-colour
    check and the combined gate against it. After that: E2.6 (plate-blind test first), E2.1, E2.3
    and E2.7; the E3.1 hand count, then the night A/B (E2.8); and the retrain (E2.5) last.
-3. **Low-light shutter schedule.** Waiting on the operator's decision (see Plate reading).
-4. **Code-quality roadmap** (2026-11-10 review). Done: showcase rebuild speed, CI checks, the
-   shared file helpers, the stall fix, this file's split and the rest of the Orin runtime work
-   (2026-11-13: one sharpness measurement per track, the shutdown drain on the event loop, atomic
-   end-of-session JSON). That last part is on `main` but not on the Orin; it goes out with the
-   next code deploy and needs no config change. The rest are unapproved proposals; ask before
-   starting one.
-5. **JetPack 7.** Blocked until `scripts/check_jp7_wheel.ps1` exits 0. Stay on JetPack 6; the
+2. **Low-light shutter schedule.** Waiting on the operator's decision (see Plate reading).
+3. **Code-quality roadmap** (2026-11-10 review). Done: showcase rebuild speed, CI checks, the
+   shared file helpers, the stall fix, this file's split, the CLI command table and the rest of
+   the Orin runtime work (2026-11-13: one sharpness measurement per track, the shutdown drain on
+   the event loop, atomic end-of-session JSON). The runtime part is on `main` but not on the
+   Orin; it goes out with the next code deploy and needs no config change. The rest are
+   unapproved proposals; ask before starting one.
+4. **JetPack 7.** Blocked until `scripts/check_jp7_wheel.ps1` exits 0. Stay on JetPack 6; the
    plan is in [`docs/deployment.md`](docs/deployment.md#jetpack-7-upgrade-plan).
 
 ### Working rules
@@ -250,6 +246,12 @@ src/streettracker/
 ```
 
 Single import root: `from streettracker.common.schema import TrackRecord`.
+
+**CLI commands.** Every subcommand is one `Command(...)` line in `cli/commands.py`
+(`COMMANDS`: name, one-line summary, `module:function` target). The top-level
+help and the dispatch are both built from that table, so add a subcommand
+there and nowhere else. A command's module is imported only when it runs;
+keep `cli/__init__.py` and `cli/commands.py` free of heavy imports.
 
 **Session files (2026-11-10).** Write any file that outlives the command with
 `common.fileio.atomic_write_json` / `atomic_write_text` (temp file, then
