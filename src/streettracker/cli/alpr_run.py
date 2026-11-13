@@ -576,7 +576,7 @@ def _direction_by_track(session_dir: Path) -> dict[int, str]:
     for r in records if isinstance(records, list) else []:
         try:
             out[int(r["track_id"])] = str(r.get("direction") or "")
-        except (KeyError, TypeError, ValueError):
+        except (AttributeError, KeyError, TypeError, ValueError):  # AttributeError: not an object
             continue
     return out
 

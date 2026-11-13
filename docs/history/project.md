@@ -268,3 +268,36 @@ up (the hand-written columns were uneven). `main` dropped its
 `# noqa: C901`. The tests check every target against its module's source, so
 they run where torch is not installed, and check that the control panel's
 job-kind tables only name commands the CLI has.
+
+## Tests for `alpr-run` and the preferred pipeline (2026-11-13)
+
+From the 2026-11-10 review (Tranche 4). The main enrichment path was the
+least-tested code in the package: `cli/alpr_run.py` at 39 % line coverage
+(its `main()` and `_build_pipelines` never ran in a test) and
+`analysis/alpr/preferred.py` at 52 % (only the OCR-output unpacking). They
+are now at 99 % and 100 %, with 84 new tests and one small fix (below).
+
+- `tests/test_cli/test_alpr_run.py` runs `main()` on a synthetic session of
+  eleven snaps. Everything of ours is real (snap discovery, bbox hints, the
+  ghost mask, `PipelineRunner`, the static-plate filter, the plate-colour
+  check, the rollup, the files written); only the two models are replaced,
+  by a detector that returns the plate box painted into each snap and a
+  recogniser that returns that snap's scripted text. The scene holds a car
+  whose plate rides with it, a right-to-left car that picks up another
+  car's yellow plate, a parked plate, an empty snap and a corrupt one. It
+  also feeds what `main()` prints to the control panel's progress parser
+  and issue scan, and checks which detector and recogniser
+  `_build_pipelines` wires up for each flag combination.
+- `tests/test_analysis/test_alpr/test_preferred_models.py` puts stand-ins
+  for `onnxruntime`, `open_image_models` and `fast_plate_ocr` in
+  `sys.modules`, so the wrapper code runs where the `alpr` extra is not
+  installed. Checked by running the CLI and ALPR tests with torch,
+  Ultralytics and those libraries made unimportable: 482 passed.
+
+Found while writing them, and fixed: `_direction_by_track` raised
+`AttributeError` on a `_data.json` entry that is not an object, where its
+`except` (`KeyError`, `TypeError`, `ValueError`) was meant to skip it. It
+now skips such an entry. `alpr-run` as a whole still stops on that file:
+`snap_assets.load_bbox_index` and `load_done_bbox_index`, which run first
+and are shared with the classifier commands, call `.get` on each entry
+unguarded. The runtime never writes such a file.
