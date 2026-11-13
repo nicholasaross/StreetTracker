@@ -168,8 +168,8 @@ publishes `makemodel-<run>`.
 2. **Low-light shutter schedule.** Waiting on the operator's decision (see Plate reading).
 3. **Code-quality roadmap** (2026-11-10 review). Done: showcase rebuild speed, CI checks, the
    shared file helpers, the stall fix, this file's split, the CLI command table, end-to-end
-   tests for `alpr-run` and the preferred pipeline, per-session memoised `/stats`, and the rest
-   of the Orin runtime work
+   tests for `alpr-run` and the preferred pipeline, per-session memoised `/stats`, the CI check
+   of the `.claude` scripts, and the rest of the Orin runtime work
    (2026-11-13: one sharpness measurement per track, the shutdown drain on the event loop, atomic
    end-of-session JSON; deployed the same day). The rest are unapproved proposals; ask before
    starting one.
@@ -399,12 +399,16 @@ sees them. Either run from PowerShell / cmd, or prefix with
 
 ## Tests and CI
 
-Tests at HEAD (2026-11-13): **about 1,600 passing on the dev box, on Python 3.10.**
+Tests at HEAD (2026-11-13): **about 1,700 passing on the dev box, on Python 3.10.**
 CI runs them in two jobs: `test` (no torch; the 8 torch-gated classifier modules
 skip there) and `test-torch` (those 8 modules, 92 tests, on CPU wheels). CI also
 enforces `ruff check`, `ruff format --check`, `mypy` (`[tool.mypy]` in
 `pyproject.toml`) and a complexity limit of 15: the functions already over it
 carry `# noqa: C901` on their definition, so drop the marker when you split one.
+The tracked `.claude/*.py` scripts are checked too, without being run: CI runs
+pyflakes over them (`ruff check --select F .claude/`), and
+`tests/test_claude_scripts.py` fails when one uses a package name that no longer
+exists. If a refactor trips it, fix the script in the same change.
 A `tests/conftest.py` autouse fixture points
 the plate-gate config at a per-test path, so a calibrated `configs/alpr.json` on
 the dev box never changes what the tests see.
