@@ -399,3 +399,40 @@ they are checked from source:
 
 The four refactors merged earlier the same day (#148 to #151) had broken
 none of the scripts. Untracked scripts on the dev box are left alone.
+
+## One CNN inference command (2026-11-13)
+
+From the 2026-11-10 review (Tranche 4). `makemodel`, `bodytype` and `colour`
+each carried a copy of the same command: `bodytype_infer.py` and
+`colour_infer.py` were the same code with the names swapped, and `infer.py`
+shared the classifier set-up, the preprocessing, the argument parser, the
+per-snap loop and the file writing. A fix had to be made three times.
+
+`analysis/makemodel/session_infer.py` now holds the common parts:
+`SnapClassifier` (checkpoint, crop, preprocessing), `TopOneClassifier` (one
+softmax head with named classes), `aggregate_top_one` (the per-track vote)
+and `SessionInference` (the command, with the head-specific steps left to a
+subclass). The three modules keep their public names (`MakeModelClassifier`,
+`BodyTypeClassifier`, `ColourClassifier`, `aggregate_by_track`,
+`DEFAULT_MODEL`, `main`) and are down to their classifier and what differs:
+96 lines each for body type and colour, from about 280.
+
+Checked on a scratch copy of `session_20261113_065513` (115 vehicle snaps)
+with the production models on the GPU. First the method: the old code, run
+twice, gave identical files, and they matched the files the panel's enrich
+had written in the real session. Then 29 cases were run with the old and
+the new code (each command by default, with `--crop-mode hint`, `--cpu`,
+`--limit`, a changed pad and input size, a high threshold, `--top-k`, and
+the three refusals) and every exit code, printed line and output file
+compared: 27 identical. The two that differ are the `--help` text of
+`bodytype` and `colour`, which now list `--input-size` after
+`--road-polygon` and explain it and `--cpu`, as `makemodel` always did.
+
+31 new tests run each command end to end on a synthetic session with a
+random-init checkpoint and pin what it prints and writes; `main()` of
+`bodytype` and `colour` had no test before.
+
+Found on the way, not changed: the control panel shows no progress for
+these three commands. They print `N/M classified`, and the panel's batch
+parser looks for `[batch] N/M done`. The line is now printed in one place
+(`SessionInference.main`).

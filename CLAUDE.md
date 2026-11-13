@@ -121,6 +121,12 @@ publishes `makemodel-<run>`.
   the register (truth for a correctly read plate), `"cnn"` a prediction. `/stats` prefers DVSA,
   then the CNN, then "unknown". The HSV `color` field is not a colour source (about 40 % grouped
   accuracy): leave it alone and never fall back to it.
+- **One inference command, three heads.** `makemodel`, `bodytype` and `colour` share
+  `analysis/makemodel/session_infer.py`: the crop, the preprocessing, the arguments, the loop and
+  the files written. Each command's own module (`infer.py`, `bodytype_infer.py`,
+  `colour_infer.py`) holds only its classifier and what differs, so change shared behaviour in
+  `session_infer.py`, once. What the commands print and write is pinned by
+  `tests/test_analysis/test_makemodel/test_session_infer.py`.
 - **Crops must match training.** Inference with `--crop-mode auto` follows the checkpoint; these
   models infer `fullframe` at pad 0.1. `bodytype` and `colour` need `--pad-frac 0.1` (the CLI
   default): 0.25 skews the shape classifier toward "van".
@@ -169,7 +175,8 @@ publishes `makemodel-<run>`.
 3. **Code-quality roadmap** (2026-11-10 review). Done: showcase rebuild speed, CI checks, the
    shared file helpers, the stall fix, this file's split, the CLI command table, end-to-end
    tests for `alpr-run` and the preferred pipeline, per-session memoised `/stats`, the CI check
-   of the `.claude` scripts, and the rest of the Orin runtime work
+   of the `.claude` scripts, one shared CNN inference command, and the rest of the Orin runtime
+   work
    (2026-11-13: one sharpness measurement per track, the shutdown drain on the event loop, atomic
    end-of-session JSON; deployed the same day). The rest are unapproved proposals; ask before
    starting one.
