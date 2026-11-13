@@ -152,7 +152,7 @@ def main(argv: list[str]) -> int:
     print(f"  Auto base  : {auto_b}  (shutter max 125, band [0.10,0.45])")
     print(f"  Auto band-2: {auto_2}  (shutter max 125, band [0.25,0.60])")
     print(f"  canonical = preferred pipeline, conf>={CONF}, is_canonical_uk_plate")
-    print(f"  t_norm 1.0 = near camera")
+    print("  t_norm 1.0 = near camera")
     print("=" * 68 + "\n")
 
     _curve(f"Anti-Smear  {asm_s}", asm)

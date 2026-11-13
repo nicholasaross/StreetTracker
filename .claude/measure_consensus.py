@@ -141,7 +141,7 @@ def main() -> int:
         print(f"  per-car high-conf (best-of-N >= 0.9):     {b[0]}/{n} = {100*b[0]/n:.1f}%")
         print(f"  per-car high-conf (consensus  >= 0.9):    {c9[0]}/{n} = {100*c9[0]/n:.1f}%")
         print(f"  per-car high-conf (consensus  >= 0.7):    {c7[0]}/{n} = {100*c7[0]/n:.1f}%")
-        print(f"  per-direction (best vs consensus @ 0.9):")
+        print("  per-direction (best vs consensus @ 0.9):")
         for d, s_ in r["dir_split"].items():
             t = s_["total"]; b1 = s_["with_best"]; c1 = s_["with_consensus"]
             if t == 0: continue

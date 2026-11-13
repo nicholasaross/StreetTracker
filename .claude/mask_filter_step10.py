@@ -155,26 +155,26 @@ def main() -> int:
     print("=== Step 10 (option A): parked-car mask -- post-hoc ===")
     print(f"Mask: 4K rect x=[{MASK_X1},{MASK_X2}]  y=[{MASK_Y1},{MASK_Y2}]")
     print()
-    print(f"--- Per-image preferred-pipeline ---")
+    print("--- Per-image preferred-pipeline ---")
     print(f"  any high-conf read:             {pct(n_image_high, n_images)}")
     print(f"  L->R:                           {pct(dcounts['left to right'][1], dcounts['left to right'][0])}")
     print(f"  R->L:                           {pct(dcounts['right to left'][1], dcounts['right to left'][0])}")
     print()
-    print(f"--- Per-car rates ---")
+    print("--- Per-car rates ---")
     print(f"  high-conf any read (with aliasing) : {pct(tracks_with_high_read, n_cars)}  (Step 9: 90.4%)")
     print(f"  high-conf, ghost-filtered (any):     {pct(tracks_real_any, n_cars)}  (Step 9: 78.5%)")
     print(f"  high-conf, ghost-filtered (top):     {pct(tracks_real_top, n_cars)}  (Step 9: 55.4%)")
     print()
-    print(f"--- Ghost-plate distribution (top 10 by distinct-track count) ---")
+    print("--- Ghost-plate distribution (top 10 by distinct-track count) ---")
     for plate, n in plate_counts.most_common(10):
         flag = "  <-- GHOST" if n >= GHOST_TRACK_MIN else ""
         print(f"  {plate:<10}  {n} tracks{flag}")
     print()
-    print(f"Step 9 ghosts (>=5 tracks):  5 -- FD61PVX(106), FD61PWX(12), FD51PVX(10), FD61PYX(6), FD61PXX(5)")
+    print("Step 9 ghosts (>=5 tracks):  5 -- FD61PVX(106), FD61PWX(12), FD51PVX(10), FD61PYX(6), FD61PXX(5)")
     if ghosts_post:
         print(f"Step 10 ghosts (>=5 tracks): {len(ghosts_post)} -- {sorted(ghosts_post)}")
     else:
-        print(f"Step 10 ghosts (>=5 tracks): 0  (clean)")
+        print("Step 10 ghosts (>=5 tracks): 0  (clean)")
 
     return 0
 

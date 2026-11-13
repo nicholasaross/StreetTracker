@@ -126,17 +126,17 @@ def main() -> int:
 
     snap_stats = meta.get("snap_stats", {})
 
-    print(f"=== Step 8 (bbox-pipe) results vs Step 7 baseline ===")
+    print("=== Step 8 (bbox-pipe) results vs Step 7 baseline ===")
     print(f"Session:         {SESSION}")
     print(f"frame_size:      {meta.get('frame_size')}")
     print(f"  uptime hours:  {snap_stats.get('latency', {}).get('count')} HTTP successes")
     print()
-    print(f"--- Population ---")
+    print("--- Population ---")
     print(f"  car-class tracks:                {n_cars}")
     print(f"  cars with vehicle_*_main snaps:  {cars_with_snaps}")
     print(f"  cars with main_snap_bboxes set:  {cars_with_bboxes}")
     print()
-    print(f"--- Per-image rates (preferred pipeline) ---")
+    print("--- Per-image rates (preferred pipeline) ---")
     if n_images:
         pct_det = 100 * n_image_dets / n_images
         pct_ocr = 100 * n_image_high_ocr / n_images
@@ -145,9 +145,9 @@ def main() -> int:
     print(f"  images processed:                {n_images}")
     print(f"  with det_bbox:                   {n_image_dets} ({pct_det:.1f}%)")
     print(f"  with OCR conf >= {CONF_THRESHOLD}:           {n_image_high_ocr} ({pct_ocr:.1f}%)")
-    print(f"  (Step 7 was 99% / 99% on 2391 vehicle snaps)")
+    print("  (Step 7 was 99% / 99% on 2391 vehicle snaps)")
     print()
-    print(f"--- Per-car read rates ---")
+    print("--- Per-car read rates ---")
     if n_cars:
         any_pct = 100 * tracks_with_any_read / n_cars
         high_pct = 100 * tracks_with_high_read / n_cars
@@ -160,22 +160,22 @@ def main() -> int:
     print(f"  conf >= {CONF_THRESHOLD} aliasing-free (any):  {tracks_with_real_read}/{n_cars} ({real_pct:.1f}%)  <-- Step 7 method")
     print(f"  conf >= {CONF_THRESHOLD} aliasing-free (top):  {tracks_with_real_top_read}/{n_cars} ({real_top_pct:.1f}%)  <-- strict: best read must be non-ghost")
     print()
-    print(f"  Step 7 baseline (aliased):       91.5% (366/400)")
-    print(f"  Step 8 predicted (aliasing-free):>=95%")
+    print("  Step 7 baseline (aliased):       91.5% (366/400)")
+    print("  Step 8 predicted (aliasing-free):>=95%")
     print()
-    print(f"--- Ghost-plate distribution (top 10 by distinct-track count) ---")
+    print("--- Ghost-plate distribution (top 10 by distinct-track count) ---")
     for plate, n in plate_track_counts.most_common(10):
         flag = "  <-- GHOST" if n >= GHOST_TRACK_MIN else ""
         print(f"  {plate:<10}  {n} tracks{flag}")
     print()
-    print(f"  Step 7 worst:    FD61PVX in 363/410 tracks (massive aliasing)")
+    print("  Step 7 worst:    FD61PVX in 363/410 tracks (massive aliasing)")
     n_ghosts = len(ghosts)
     if ghosts:
         print(f"  Step 8 ghosts (>= {GHOST_TRACK_MIN} tracks):     {n_ghosts} plates -- {sorted(ghosts)[:10]}")
     else:
         print(f"  Step 8 ghosts (>= {GHOST_TRACK_MIN} tracks):     0  (clean)")
     print()
-    print(f"--- snap_stats (from _meta.json) ---")
+    print("--- snap_stats (from _meta.json) ---")
     lat = snap_stats.get("latency", {})
     print(f"  HTTP attempts/successes/failures: "
           f"{snap_stats.get('attempts')}/{snap_stats.get('successes')}/"

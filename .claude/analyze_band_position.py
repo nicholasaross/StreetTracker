@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import sys
-from collections import defaultdict
 from pathlib import Path
 
 from streettracker.analysis.dvsa import is_canonical_uk_plate
