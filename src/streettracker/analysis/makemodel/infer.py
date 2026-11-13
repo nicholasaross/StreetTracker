@@ -46,27 +46,21 @@ not yet tuned.
 from __future__ import annotations
 
 import dataclasses
-import json
 from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import torch
 
-from streettracker.analysis.alpr.fullframe import load_road_polygon
-from streettracker.analysis.makemodel.cropper import VehicleCropper
-from streettracker.analysis.makemodel.dataset import (
-    IMAGENET_MEAN,
-    IMAGENET_STD,
-    SurveillanceLabels,
-)
-from streettracker.analysis.makemodel.model import load_checkpoint
-from streettracker.analysis.snap_assets import discover_vehicle_snaps, read_image
-from streettracker.analysis.vehicle_locator import SnapVehicleLocator, resolve_crop_settings
-from streettracker.common.fileio import atomic_write_text
+from streettracker.analysis.makemodel.dataset import SurveillanceLabels
+from streettracker.analysis.makemodel.session_infer import Box, SessionInference, SnapClassifier
 
 if TYPE_CHECKING:
+    import argparse
+
     import numpy as np
+
+    from streettracker.analysis.vehicle_locator import SnapVehicleLocator
 
 # Conventional bundled-checkpoint location (gitignored via *.pt), mirroring
 # alpr's DEFAULT_BESPOKE_MODEL. Copy a trained best.pt here, or pass --model.
@@ -75,9 +69,6 @@ DEFAULT_MODEL = Path(__file__).resolve().parent / "models" / "makemodel_b0.pt"
 # Inference pad for checkpoints that don't record their training pad (every
 # model before 2026-09). Kept as-is so their predictions don't shift.
 LEGACY_PAD_FRAC = 0.25
-
-_MEAN = torch.tensor(IMAGENET_MEAN).view(3, 1, 1)
-_STD = torch.tensor(IMAGENET_STD).view(3, 1, 1)
 
 
 @dataclasses.dataclass(slots=True)
@@ -92,7 +83,7 @@ class Candidate:
     conf: float
 
 
-class MakeModelClassifier:
+class MakeModelClassifier(SnapClassifier):
     """Loaded checkpoint + cropper + preprocessing, ready to classify
     a 4K snap given the tracked vehicle's bbox.
 
@@ -114,57 +105,42 @@ class MakeModelClassifier:
         input_size: int | None = None,
         crop_mode: str = "auto",
     ) -> None:
-        self.device = torch.device(device)
-        self.model, meta = load_checkpoint(checkpoint, map_location=self.device)
+        # The crop edge must match the model's training resolution, and the
+        # crop mode + pad follow the checkpoint's training corpus when it
+        # recorded them; legacy checkpoints keep hint crops at pad 0.25.
+        super().__init__(
+            checkpoint,
+            device=device,
+            pad_frac=pad_frac,
+            input_size=input_size,
+            crop_mode=crop_mode,
+            legacy_pad_frac=LEGACY_PAD_FRAC,
+        )
         # Detect the checkpoint kind by its head set: the UK net has only a
         # "make" head, the CompCars net also has a fine "model" head.
         self.make_only: bool = "model" not in self.model.head_sizes
         self.labels: SurveillanceLabels | None
         if self.make_only:
-            self.make_names: tuple[str, ...] = tuple(meta.get("make_names") or ())
+            self.make_names: tuple[str, ...] = tuple(self.meta.get("make_names") or ())
             if not self.make_names:
                 raise ValueError("make-only checkpoint is missing 'make_names' metadata")
             self.labels = None
         else:
-            self.labels = SurveillanceLabels.from_metadata(meta["labels"])
+            self.labels = SurveillanceLabels.from_metadata(self.meta["labels"])
             self.make_names = ()
         self.top_k = top_k
-        # The crop edge must match the model's training resolution. The UK
-        # checkpoint records "input_size"; fall back to the explicit arg, then
-        # the 224 default (CompCars / older checkpoints).
-        self.input_size: int = input_size or int(meta.get("input_size") or 224)
-        # Crop mode + pad follow the checkpoint's training corpus when it
-        # recorded them; legacy checkpoints keep hint crops at pad 0.25.
-        self.crop_mode, self.pad_frac = resolve_crop_settings(
-            meta, crop_mode, pad_frac, LEGACY_PAD_FRAC
-        )
-        self._cropper = VehicleCropper(pad_frac=self.pad_frac, output_size=self.input_size)
-        self._mean = _MEAN.to(self.device)
-        self._std = _STD.to(self.device)
-
-    def _preprocess(self, crop_bgr: np.ndarray) -> torch.Tensor:
-        import numpy as np
-
-        # cropper outputs an NxN BGR uint8 crop -> RGB CHW float, ImageNet norm.
-        rgb = np.ascontiguousarray(crop_bgr[:, :, ::-1])
-        tensor = torch.from_numpy(rgb).to(self.device).permute(2, 0, 1).float().div_(255.0)
-        return (tensor - self._mean) / self._std
 
     @torch.no_grad()
-    def classify(
-        self, image_bgr: np.ndarray, bbox_hint: tuple[int, int, int, int] | None
-    ) -> list[Candidate]:
+    def classify(self, image_bgr: np.ndarray, bbox_hint: Box | None) -> list[Candidate]:
         """Top-k (make, [model, year], conf) for the hinted vehicle.
 
         Returns ``[]`` when there's no usable bbox (no hint, or a
         degenerate crop) -- make/model needs the car localised; the
         full 4K frame isn't a single-vehicle crop.
         """
-        crop = self._cropper.crop(image_bgr, bbox_hint)
-        if crop is None:
+        logits = self._logits(image_bgr, bbox_hint)
+        if logits is None:
             return []
-        tensor = self._preprocess(crop).unsqueeze(0)
-        logits = self.model(tensor)
 
         if self.make_only:
             probs = torch.softmax(logits["make"], dim=1)[0]
@@ -233,132 +209,65 @@ def aggregate_by_track(
     return tracks
 
 
+class _MakeInference(SessionInference[MakeModelClassifier]):
+    tag = "makemodel"
+    default_conf_threshold = 0.4
+    train_command = "streettracker makemodel-train-uk ..."
+    pad_help = "crop context pad (default: the checkpoint's training pad, else 0.25)"
+    input_size_help = (
+        "crop edge px fed to the model (default: the checkpoint's recorded "
+        "input_size, else 224). The UK B0@512 model wants 512."
+    )
+    progress_every = 100
+
+    def default_model(self) -> Path:
+        return DEFAULT_MODEL
+
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--top-k", type=int, default=5)
+
+    def load(self, args: argparse.Namespace, device: str) -> MakeModelClassifier:
+        return MakeModelClassifier(
+            args.model,
+            device=device,
+            top_k=args.top_k,
+            pad_frac=args.pad_frac,
+            input_size=args.input_size,
+            crop_mode=args.crop_mode,
+        )
+
+    def describe(self, clf: MakeModelClassifier) -> str:
+        if clf.labels is None:
+            return f"{len(clf.make_names)} makes (make-only)"
+        return f"{clf.labels.n_makes} makes / {clf.labels.n_models} models"
+
+    def predict(
+        self, clf: MakeModelClassifier, image: np.ndarray | None, box: Box | None
+    ) -> dict[str, Any]:
+        cands = clf.classify(image, box) if image is not None else []
+        return {"top_k": [dataclasses.asdict(c) for c in cands]}
+
+    def aggregate(self, rows: list[dict[str, Any]], conf_threshold: float) -> list[dict[str, Any]]:
+        return aggregate_by_track(rows, conf_threshold)
+
+    def summary(
+        self,
+        by_track: list[dict[str, Any]],
+        conf_threshold: float,
+        n_no_box: int,
+        locator: SnapVehicleLocator,
+    ) -> str:
+        n_conf = sum(1 for t in by_track if t["make"] is not None)
+        return (
+            f"{len(by_track)} tracks classified, {n_conf} above conf "
+            f"{conf_threshold} ({n_no_box} snaps had no vehicle box; crop sources "
+            f"{dict(locator.source_counts)})"
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry: ``streettracker makemodel <session_dir>``."""
-    import argparse
-
-    parser = argparse.ArgumentParser(prog="streettracker makemodel")
-    parser.add_argument("session_dir", type=Path, help="closed session directory")
-    parser.add_argument("--model", type=Path, default=DEFAULT_MODEL, help="checkpoint .pt")
-    parser.add_argument("--top-k", type=int, default=5)
-    parser.add_argument("--conf-threshold", type=float, default=0.4)
-    parser.add_argument(
-        "--pad-frac",
-        type=float,
-        default=None,
-        help="crop context pad (default: the checkpoint's training pad, else 0.25)",
-    )
-    parser.add_argument(
-        "--crop-mode",
-        choices=("auto", "hint", "fullframe"),
-        default="auto",
-        help="where to crop the car: auto (default) = what the checkpoint was trained "
-        "on (fullframe for plate-anchored corpora, legacy hint otherwise); fullframe = "
-        "plate-anchored / nearest on-road vehicle; hint = stale fire-time bbox",
-    )
-    parser.add_argument(
-        "--road-polygon",
-        type=Path,
-        default=Path(".claude/triggers_proposal.json"),
-        help="road outline (vertices_frac) for the fullframe on-road filter",
-    )
-    parser.add_argument(
-        "--input-size",
-        type=int,
-        default=None,
-        help="crop edge px fed to the model (default: the checkpoint's recorded "
-        "input_size, else 224). The UK B0@512 model wants 512.",
-    )
-    parser.add_argument("--limit", type=int, default=0, help="first N snaps only (0=all)")
-    parser.add_argument("--cpu", action="store_true", help="force CPU even if CUDA present")
-    args = parser.parse_args(argv)
-
-    if not args.session_dir.is_dir():
-        print(f"[makemodel] not a directory: {args.session_dir}")
-        return 2
-    if not args.model.exists():
-        print(
-            f"[makemodel] checkpoint not found: {args.model}\n"
-            f"            train one (`streettracker makemodel-train-uk ...`) and copy its "
-            f"best.pt here, or pass --model <path>."
-        )
-        return 1
-
-    device = "cuda" if (torch.cuda.is_available() and not args.cpu) else "cpu"
-    clf = MakeModelClassifier(
-        args.model,
-        device=device,
-        top_k=args.top_k,
-        pad_frac=args.pad_frac,
-        input_size=args.input_size,
-        crop_mode=args.crop_mode,
-    )
-
-    snaps = discover_vehicle_snaps(args.session_dir)
-    if not snaps:
-        print(f"[makemodel] no vehicle_*_main_*.jpg snaps in {args.session_dir}")
-        return 1
-    if args.limit > 0:
-        snaps = snaps[: args.limit]
-    locator = SnapVehicleLocator(
-        args.session_dir,
-        clf.crop_mode,
-        road_polygon_frac=(
-            load_road_polygon(args.road_polygon, log_prefix="[makemodel]")
-            if clf.crop_mode == "fullframe"
-            else None
-        ),
-    )
-    head_desc = (
-        f"{len(clf.make_names)} makes (make-only)"
-        if clf.make_only
-        else f"{clf.labels.n_makes} makes / {clf.labels.n_models} models"  # type: ignore[union-attr]
-    )
-    print(
-        f"[makemodel] {len(snaps)} snaps; {locator.n_bboxes} per-snap bboxes; "
-        f"device={device}; {head_desc}; input={clf.input_size}px; "
-        f"crop={clf.crop_mode} pad={clf.pad_frac}"
-    )
-
-    per_image: list[dict[str, Any]] = []
-    n_no_hint = 0
-    for i, (path, tid, snap_index, _cls) in enumerate(snaps, 1):
-        image = read_image(path)
-        box, source = locator.locate(path, tid, snap_index, image)
-        if box is None:
-            n_no_hint += 1
-        cands = clf.classify(image, box) if image is not None else []
-        per_image.append(
-            {
-                "track_id": tid,
-                "snap_index": snap_index,
-                "image": path.name,
-                "has_bbox": box is not None,
-                "crop_source": source,
-                "top_k": [dataclasses.asdict(c) for c in cands],
-            }
-        )
-        if i % 100 == 0 or i == len(snaps):
-            print(f"  {i}/{len(snaps)} classified")
-
-    locator.close()
-    by_track = aggregate_by_track(per_image, args.conf_threshold)
-
-    label = args.session_dir.name
-    img_path = args.session_dir / f"{label}_makemodel.json"
-    track_path = args.session_dir / f"{label}_makemodel_by_track.json"
-    atomic_write_text(img_path, json.dumps(per_image, indent=2))
-    atomic_write_text(track_path, json.dumps({"tracks": by_track}, indent=2))
-
-    n_conf = sum(1 for t in by_track if t["make"] is not None)
-    print(f"[makemodel] wrote {img_path}")
-    print(f"[makemodel] wrote {track_path}")
-    print(
-        f"[makemodel] {len(by_track)} tracks classified, {n_conf} above conf "
-        f"{args.conf_threshold} ({n_no_hint} snaps had no vehicle box; crop sources "
-        f"{dict(locator.source_counts)})"
-    )
-    return 0
+    return _MakeInference().main(argv)
 
 
 if __name__ == "__main__":

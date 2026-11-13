@@ -1,9 +1,10 @@
 """Run the learned colour classifier over a closed session's 4K snaps.
 
 The off-device batch counterpart to ``makemodel-train-uk --target colour``.
-Sibling to :mod:`infer` (make) and :mod:`bodytype_infer` (body type) -- same
-crop + preprocessing machinery, a single ``colour`` head emitting
-white/silver/grey/black/blue/red/green/... .
+Sibling to :mod:`infer` (make) and :mod:`bodytype_infer` (body type): the crop,
+the preprocessing and the command itself are shared
+(:mod:`~streettracker.analysis.makemodel.session_infer`); this module is the
+``colour`` head, emitting white/silver/grey/black/blue/red/green/... .
 
 It exists because the live HSV vote (``common.color.vote_color``) reads a
 *low-res sub-stream* crop with an 8-colour palette and scores ~40 % against
@@ -28,33 +29,23 @@ CLI::
 
 from __future__ import annotations
 
-import json
-from collections import defaultdict
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-import torch
-
-from streettracker.analysis.alpr.fullframe import load_road_polygon
-from streettracker.analysis.makemodel.cropper import VehicleCropper
-from streettracker.analysis.makemodel.dataset import IMAGENET_MEAN, IMAGENET_STD
-from streettracker.analysis.makemodel.model import load_checkpoint
-from streettracker.analysis.snap_assets import discover_vehicle_snaps, read_image
-from streettracker.analysis.vehicle_locator import SnapVehicleLocator, resolve_crop_settings
-from streettracker.common.fileio import atomic_write_text
-
-if TYPE_CHECKING:
-    import numpy as np
+from streettracker.analysis.makemodel.session_infer import (
+    TopOneClassifier,
+    TopOneInference,
+    aggregate_top_one,
+)
 
 DEFAULT_MODEL = Path(__file__).resolve().parent / "models" / "colour_b0.pt"
 
-_MEAN = torch.tensor(IMAGENET_MEAN).view(3, 1, 1)
-_STD = torch.tensor(IMAGENET_STD).view(3, 1, 1)
 
-
-class ColourClassifier:
+class ColourClassifier(TopOneClassifier):
     """Loaded colour checkpoint + cropper + preprocessing."""
 
+    head = "colour"
+    label = "colour"
     # Colour is read from the vehicle's paint, so crop tight (like body type,
     # unlike the make model's looser 0.25) to keep road/sky/adjacent cars out
     # of the vote. MUST match the training corpus crop (makemodel-build-uk
@@ -62,55 +53,10 @@ class ColourClassifier:
     # background in and biases the prediction.
     DEFAULT_PAD_FRAC = 0.1
 
-    def __init__(
-        self,
-        checkpoint: str | Path,
-        *,
-        device: str = "cpu",
-        pad_frac: float | None = None,
-        input_size: int | None = None,
-        crop_mode: str = "auto",
-    ) -> None:
-        self.device = torch.device(device)
-        self.model, meta = load_checkpoint(checkpoint, map_location=self.device)
-        if "colour" not in self.model.head_sizes:
-            raise ValueError(
-                f"checkpoint {checkpoint} is not a colour model "
-                f"(heads: {sorted(self.model.head_sizes)})"
-            )
-        self.colours: tuple[str, ...] = tuple(meta.get("colour_names") or ())
-        if not self.colours:
-            raise ValueError("colour checkpoint is missing 'colour_names' metadata")
-        self.input_size: int = input_size or int(meta.get("input_size") or 224)
-        # Crop mode + pad follow the checkpoint's training corpus when it
-        # recorded them; legacy checkpoints keep hint crops at DEFAULT_PAD_FRAC.
-        self.crop_mode, self.pad_frac = resolve_crop_settings(
-            meta, crop_mode, pad_frac, self.DEFAULT_PAD_FRAC
-        )
-        self._cropper = VehicleCropper(pad_frac=self.pad_frac, output_size=self.input_size)
-        self._mean = _MEAN.to(self.device)
-        self._std = _STD.to(self.device)
-
-    def _preprocess(self, crop_bgr: np.ndarray) -> torch.Tensor:
-        import numpy as np
-
-        rgb = np.ascontiguousarray(crop_bgr[:, :, ::-1])
-        tensor = torch.from_numpy(rgb).to(self.device).permute(2, 0, 1).float().div_(255.0)
-        return (tensor - self._mean) / self._std
-
-    @torch.no_grad()
-    def classify(
-        self, image_bgr: np.ndarray, bbox_hint: tuple[int, int, int, int] | None
-    ) -> tuple[str, float] | None:
-        """Top-1 ``(colour, conf)`` for the hinted vehicle, or ``None`` when
-        there's no usable bbox (colour needs the car localised)."""
-        crop = self._cropper.crop(image_bgr, bbox_hint)
-        if crop is None:
-            return None
-        tensor = self._preprocess(crop).unsqueeze(0)
-        probs = torch.softmax(self.model(tensor)["colour"], dim=1)[0]
-        conf, idx = probs.max(dim=0)
-        return self.colours[int(idx)], float(conf)
+    @property
+    def colours(self) -> tuple[str, ...]:
+        """The head's class names, in the checkpoint's order."""
+        return self.class_names
 
 
 def aggregate_by_track(
@@ -121,158 +67,29 @@ def aggregate_by_track(
     Sums per-colour top-1 confidence across a track's snaps and takes the
     argmax. ``colour`` is emitted only when the winner's best single read
     clears ``conf_threshold`` (else ``None``); ``conf`` is kept regardless."""
-    by_track: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    for row in per_image_rows:
-        if row["colour"] is not None:
-            by_track[row["track_id"]].append(row)
+    return aggregate_top_one(
+        per_image_rows, conf_threshold, field="colour", source_field="colour_source"
+    )
 
-    tracks: list[dict[str, Any]] = []
-    for tid in sorted(by_track):
-        rows = by_track[tid]
-        weight: dict[str, float] = defaultdict(float)
-        best_conf: dict[str, float] = defaultdict(float)
-        n_high = 0
-        for row in rows:
-            col, c = row["colour"], row["conf"]
-            weight[col] += c
-            best_conf[col] = max(best_conf[col], c)
-            if c >= conf_threshold:
-                n_high += 1
-        best = max(weight, key=lambda k: weight[k])
-        conf = best_conf[best]
-        confident = conf >= conf_threshold
-        tracks.append(
-            {
-                "track_id": tid,
-                "colour": best if confident else None,
-                "colour_source": "cnn",
-                "conf": round(conf, 4),
-                "n_high_conf_reads": n_high,
-                "n_reads": len(rows),
-            }
-        )
-    return tracks
+
+class _ColourInference(TopOneInference[ColourClassifier]):
+    tag = "colour"
+    classifier = ColourClassifier
+    source_field = "colour_source"
+    train_command = "makemodel-train-uk ... --target colour"
+    pad_help = (
+        "crop context pad (default: the checkpoint's training pad, else 0.1); "
+        "MUST match the training corpus — a looser "
+        "pad drags background into the vote (see class docstring)"
+    )
+
+    def default_model(self) -> Path:
+        return DEFAULT_MODEL
 
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entry: ``streettracker colour <session_dir>``."""
-    import argparse
-
-    parser = argparse.ArgumentParser(prog="streettracker colour")
-    parser.add_argument("session_dir", type=Path, help="closed session directory")
-    parser.add_argument("--model", type=Path, default=DEFAULT_MODEL, help="checkpoint .pt")
-    parser.add_argument("--conf-threshold", type=float, default=0.5)
-    parser.add_argument(
-        "--pad-frac",
-        type=float,
-        default=None,
-        help="crop context pad (default: the checkpoint's training pad, else 0.1); "
-        "MUST match the training corpus — a looser "
-        "pad drags background into the vote (see class docstring)",
-    )
-    parser.add_argument("--input-size", type=int, default=None)
-    parser.add_argument(
-        "--crop-mode",
-        choices=("auto", "hint", "fullframe"),
-        default="auto",
-        help="where to crop the car: auto (default) = what the checkpoint was trained "
-        "on (fullframe for plate-anchored corpora, legacy hint otherwise); fullframe = "
-        "plate-anchored / nearest on-road vehicle; hint = stale fire-time bbox",
-    )
-    parser.add_argument(
-        "--road-polygon",
-        type=Path,
-        default=Path(".claude/triggers_proposal.json"),
-        help="road outline (vertices_frac) for the fullframe on-road filter",
-    )
-    parser.add_argument("--limit", type=int, default=0, help="first N snaps only (0=all)")
-    parser.add_argument("--cpu", action="store_true")
-    args = parser.parse_args(argv)
-
-    if not args.session_dir.is_dir():
-        print(f"[colour] not a directory: {args.session_dir}")
-        return 2
-    if not args.model.exists():
-        print(
-            f"[colour] checkpoint not found: {args.model}\n"
-            f"         train one (`makemodel-train-uk ... --target colour`) "
-            f"and copy its best.pt here, or pass --model <path>."
-        )
-        return 1
-
-    device = "cuda" if (torch.cuda.is_available() and not args.cpu) else "cpu"
-    clf = ColourClassifier(
-        args.model,
-        device=device,
-        pad_frac=args.pad_frac,
-        input_size=args.input_size,
-        crop_mode=args.crop_mode,
-    )
-
-    snaps = discover_vehicle_snaps(args.session_dir)
-    if not snaps:
-        print(f"[colour] no vehicle_*_main_*.jpg snaps in {args.session_dir}")
-        return 1
-    if args.limit > 0:
-        snaps = snaps[: args.limit]
-    locator = SnapVehicleLocator(
-        args.session_dir,
-        clf.crop_mode,
-        road_polygon_frac=(
-            load_road_polygon(args.road_polygon, log_prefix="[colour]")
-            if clf.crop_mode == "fullframe"
-            else None
-        ),
-    )
-    print(
-        f"[colour] {len(snaps)} snaps; {locator.n_bboxes} per-snap bboxes; device={device}; "
-        f"{len(clf.colours)} classes; input={clf.input_size}px; "
-        f"crop={clf.crop_mode} pad={clf.pad_frac}"
-    )
-
-    per_image: list[dict[str, Any]] = []
-    n_no_hint = 0
-    for i, (path, tid, snap_index, _cls) in enumerate(snaps, 1):
-        image = read_image(path)
-        box, source = locator.locate(path, tid, snap_index, image)
-        if box is None:
-            n_no_hint += 1
-        pred = clf.classify(image, box) if image is not None else None
-        per_image.append(
-            {
-                "track_id": tid,
-                "snap_index": snap_index,
-                "image": path.name,
-                "has_bbox": box is not None,
-                "crop_source": source,
-                "colour": pred[0] if pred else None,
-                "conf": round(pred[1], 4) if pred else None,
-            }
-        )
-        if i % 200 == 0 or i == len(snaps):
-            print(f"  {i}/{len(snaps)} classified")
-
-    locator.close()
-    by_track = aggregate_by_track(per_image, args.conf_threshold)
-
-    label = args.session_dir.name
-    img_path = args.session_dir / f"{label}_colour.json"
-    track_path = args.session_dir / f"{label}_colour_by_track.json"
-    atomic_write_text(img_path, json.dumps(per_image, indent=2))
-    atomic_write_text(track_path, json.dumps({"tracks": by_track}, indent=2))
-
-    n_conf = sum(1 for t in by_track if t["colour"] is not None)
-    dist: dict[str, int] = defaultdict(int)
-    for t in by_track:
-        if t["colour"]:
-            dist[t["colour"]] += 1
-    print(f"[colour] wrote {img_path}")
-    print(f"[colour] wrote {track_path}")
-    print(
-        f"[colour] {len(by_track)} tracks, {n_conf} confident (>= {args.conf_threshold}); "
-        + " ".join(f"{k}={v}" for k, v in sorted(dist.items(), key=lambda x: -x[1]))
-    )
-    return 0
+    return _ColourInference().main(argv)
 
 
 if __name__ == "__main__":
