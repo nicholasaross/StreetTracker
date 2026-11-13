@@ -199,3 +199,45 @@ From the old "Device runtime notes" list.
   pre-fix session shows about 13 times chance, e.g. 479 against 36), with no
   pile of ends at the instant. Sessions recorded before the deploy keep their
   splits.
+
+## Rest of the Orin runtime work from the 2026-11-10 review (2026-11-13)
+
+Three changes to `device/runtime.py`, the remainder of the review's Tranche 3.
+On `main`; not deployed when written (the Orin stayed on `0b817b7`).
+
+- **One sharpness measurement per track per frame.** `process_frame` walked
+  the active tracks three times (trigger, pipeline, door) and measured the
+  Laplacian sharpness of the same box on the same frame in both the trigger
+  and the pipeline pass. It now measures each track once
+  (`_probe_active_tracks`) and the three passes share the result. The passes
+  were kept whole and in their old order on purpose: the snapshotter refuses
+  a submit once `max_concurrent` snaps are in flight, so the order of submits
+  across tracks decides which fire is dropped, and a track-by-track loop
+  would have let one car's pipeline fire take the slot another car's trigger
+  crossing needed. Checked by loading the old and new `runtime.py` side by
+  side and driving both through 600 randomised scenes with the real
+  `SnapPlanner` (road-gate and right-half modes, pipeline on and off, a door
+  zone on half of them, a snapshotter that drops at a cap of 1, 2 or 4):
+  7,601 fire attempts, 1,899 drops and 2,745 blur skips, with every submit,
+  drop, counter and record identical. `process_frame` was split into
+  `_update_ir` and `_plan_snaps` and no longer carries `# noqa: C901`.
+- **The shutdown drain runs on the event loop.** `_drain_active` used to run
+  in a worker thread under `asyncio.wait_for`. A finalise-time rescue fire
+  there would have called `asyncio.create_task` off the loop and raised, and
+  the exception would have left `run_session`'s `finally` block before
+  `write_session_outputs`, so the session would have ended with no
+  `_data.json`. It never happened live (the road gate never rescues, and
+  `batch` has no snapshotter). A thread that outlived its timeout would also
+  have gone on appending records while the outputs were written. The drain
+  now runs on the loop, yields between tracks, stops at `shutdown_grace_s`
+  (logging how many tracks it did not reach), and logs a track that fails to
+  finalise instead of abandoning the rest. `IRDetector.open_period_start_unix`
+  replaces the runtime's reach into the detector's private field.
+- **End-of-session JSON is atomic, `_data.json` last.** `save_data_json`,
+  `save_meta_json` and the hourly rollup go through
+  `common.fileio.atomic_write_json`, in the order hourly, meta, data (it was
+  data, meta, hourly, each written in place). `pull` decides a session needs
+  rebuilding by a missing `_data.json`, so a shutdown killed part-way
+  (systemd's stop timeout) is now always rebuilt; before, a kill after
+  `_data.json` left a session that looked finalised with no meta or hourly
+  file. File contents are byte-for-byte what they were.

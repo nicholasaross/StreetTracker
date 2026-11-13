@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import signal
 import threading
@@ -56,6 +55,7 @@ from streettracker.common.coco import class_name
 from streettracker.common.color import vote_color
 from streettracker.common.config import StreetTrackerConfig
 from streettracker.common.door_zone import DoorZone
+from streettracker.common.fileio import atomic_write_json
 from streettracker.common.hourly import build_hourly_rollup
 from streettracker.common.output import EventLog, IREventLog, format_wall, save_json
 from streettracker.common.schema import IRPeriod, SessionMeta, TrackRecord
@@ -744,48 +744,40 @@ def write_session_outputs(ctx: SessionContext, *, no_html: bool, no_json: bool) 
 
     Idempotent: callable from a ``finally:`` block even if the loop
     body never completed a full frame -- empty lists serialize cleanly.
+
+    Each JSON file is replaced in one step and ``_data.json`` is written
+    last, so a session that has a ``_data.json`` has all three files whole.
+    A shutdown killed part-way (systemd's ``TimeoutStopSec``) leaves no
+    ``_data.json``, which is the sign ``pull`` looks for before rebuilding
+    the set from the events log (``common/recover.py``).
     """
     paths = session_paths(ctx.output_dir.parent, ctx.session_label)
     if not no_html:
         write_html(ctx)
     if not no_json:
         records_widened = cast("list[TrackRecord | dict[str, Any]]", list(ctx.records))
+        ir_widened = cast("list[IRPeriod | dict[str, Any]]", list(ctx.ir_periods))
+        atomic_write_json(paths["hourly_json"], build_hourly_rollup(records_widened, ir_widened))
         save_json(
             records_widened,
             build_session_meta(ctx),
             paths["data_json"],
             paths["meta_json"],
         )
-        ir_widened = cast("list[IRPeriod | dict[str, Any]]", list(ctx.ir_periods))
-        hourly = build_hourly_rollup(records_widened, ir_widened)
-        paths["hourly_json"].write_text(json.dumps(hourly, indent=2), encoding="utf-8")
 
 
 # ----------------------------------------------------------------------
 # Per-frame body.
 
 
-async def process_frame(  # noqa: C901
-    ctx: SessionContext, frame_idx: int, source_t: float, frame: np.ndarray
-) -> None:
-    """One frame's worth of work; mutates ``ctx`` in place.
+def _update_ir(ctx: SessionContext, frame: np.ndarray) -> bool:
+    """Feed the frame to the IR detector and handle a day/night transition.
 
-    Awaits the inference call (``run_in_executor``) so the event loop
-    can service other tasks (snapshotter HTTP, dashboard, cleanup)
-    during the ~10-50 ms inference window. Everything else is fast and
-    happens inline.
+    Returns ``True`` while the camera is in IR mode, when the frame must not
+    be inferred. The same wall time goes to the detector and to the sidecar
+    IREventLog, so the transition timestamps round-trip exactly even if a
+    SIGKILL lands right after one is recorded.
     """
-    ctx.frames_processed += 1
-    if ctx.frame_h == 0:
-        ctx.frame_h = int(frame.shape[0])
-        ctx.frame_w = int(frame.shape[1])
-
-    session_t = _compute_session_t(ctx, source_t)
-
-    # IR check + day/night transition handling. The same wall_time is
-    # used for the detector update and the sidecar IREventLog so the
-    # transition timestamps round-trip exactly even if a SIGKILL lands
-    # right after one is recorded.
     wall_time = time.time()
     was_in_ir = ctx.ir.in_ir_mode
     closed = ctx.ir.update(frame, wall_time)
@@ -804,7 +796,173 @@ async def process_frame(  # noqa: C901
         # Cut active tracks cleanly across the day/night boundary.
         for tr in ctx.buffer.flush():
             finalize_track(ctx, tr)
-    if ctx.ir.in_ir_mode:
+    return ctx.ir.in_ir_mode
+
+
+@dataclass(slots=True, frozen=True)
+class _TrackProbe:
+    """One active track's latest box on this frame, and the sharpness of the
+    frame inside it (``None`` when the blur gate is off or the box is empty).
+
+    Measured once per frame and shared by the trigger, pipeline and door
+    decisions, which all look at the same box on the same frame.
+    """
+
+    track: BufferedTrack
+    bbox: tuple[float, float, float, float]
+    sharpness: float | None
+
+
+def _probe_active_tracks(ctx: SessionContext, frame: np.ndarray) -> list[_TrackProbe]:
+    """Latest box and sharpness for every active track that has a point."""
+    measure = ctx.config.snapshot.min_sharpness > 0.0
+    probes: list[_TrackProbe] = []
+    for tr in ctx.buffer.active():
+        if not tr.points:
+            continue
+        p = tr.points[-1]
+        bbox = (p.x1, p.y1, p.x2, p.y2)
+        probes.append(
+            _TrackProbe(tr, bbox, _bbox_center_sharpness(frame, bbox) if measure else None)
+        )
+    return probes
+
+
+def _fire_triggers(
+    ctx: SessionContext, planner: SnapPlanner, probes: list[_TrackProbe], frame_idx: int
+) -> None:
+    """Trigger decisions: at most one fire per trigger per track."""
+    min_sharpness = ctx.config.snapshot.min_sharpness
+    for probe in probes:
+        tr = probe.track
+        decision = planner.consider(
+            track_id=tr.id,
+            bbox=probe.bbox,
+            frame_idx=frame_idx,
+            sharpness=probe.sharpness,
+        )
+        if not decision.should_fire or decision.snap_index is None:
+            # Surface blur-gate rejections with per-track throttle so
+            # the journal carries enough signal to correlate against
+            # capture coverage without flooding on a fast vehicle
+            # (which can stay blurred for its whole visible span).
+            # Mirrors NanoTracker (nano_tracker.py:1514-1519); my PR
+            # 3e port silently dropped these.
+            if decision.reason == "blur_gate":
+                ctx.blur_skip_count += 1
+                now_mono = time.monotonic()
+                if now_mono - tr.last_blur_skip_logged_mono >= 5.0:
+                    logger.info(
+                        "[snap] track %d blur skip (sharpness=%.0f < min=%.0f)",
+                        tr.id,
+                        probe.sharpness if probe.sharpness is not None else 0.0,
+                        min_sharpness,
+                    )
+                    tr.last_blur_skip_logged_mono = now_mono
+            continue
+        logger.info(
+            "[snap] track %d fire %d reason=%s score=%.3f",
+            tr.id,
+            decision.snap_index,
+            decision.reason,
+            decision.score,
+        )
+        _fire_snap(ctx, tr, decision.snap_index)
+
+
+def _fire_pipeline(
+    ctx: SessionContext,
+    planner: SnapPlanner,
+    probes: list[_TrackProbe],
+    frame_idx: int,
+    wall_ms: float,
+) -> None:
+    """Pipeline (continuous in-band) decisions. A disabled pipeline
+    (interval 0) costs almost nothing: ``consider_pipeline`` returns on its
+    interval check."""
+    for probe in probes:
+        tr = probe.track
+        decision = planner.consider_pipeline(
+            track_id=tr.id,
+            bbox=probe.bbox,
+            frame_idx=frame_idx,
+            wall_ms=wall_ms,
+            sharpness=probe.sharpness,
+        )
+        if not decision.should_fire or decision.snap_index is None:
+            if decision.reason == "pipeline_throttled":
+                ctx.pipeline_throttled += 1
+            elif decision.reason == "pipeline_budget_exhausted":
+                ctx.pipeline_budget_exhausted += 1
+            continue
+        ctx.pipeline_fires_total += 1
+        logger.info("[snap] track %d pipeline fire %d", tr.id, decision.snap_index)
+        _fire_snap(ctx, tr, decision.snap_index)
+
+
+def _fire_door(
+    ctx: SessionContext, planner: SnapPlanner, probes: list[_TrackProbe], wall_ms: float
+) -> None:
+    """Door-zone decisions. The door sits outside the road polygon, so the
+    trigger and pipeline paths never fire there; without this pass door users
+    bank no 4K imagery at all."""
+    for probe in probes:
+        tr = probe.track
+        decision = planner.consider_door(
+            track_id=tr.id,
+            bbox=probe.bbox,
+            wall_ms=wall_ms,
+            is_person=class_name(tr.class_id) == "person",
+        )
+        if not decision.should_fire or decision.snap_index is None:
+            continue
+        ctx.door_fires_total += 1
+        logger.info("[snap] track %d door fire %d", tr.id, decision.snap_index)
+        _fire_snap(ctx, tr, decision.snap_index)
+
+
+def _plan_snaps(ctx: SessionContext, frame: np.ndarray, frame_idx: int) -> None:
+    """Decide and submit this frame's 4K snaps.
+
+    Each track's box and sharpness are measured once
+    (:func:`_probe_active_tracks`), then three decision passes run over them
+    in a fixed order: every track's trigger, then every track's pipeline
+    fire, then the door zone. The passes stay separate on purpose. The
+    snapshotter drops a submit once ``max_concurrent`` snaps are in flight,
+    so the order of submits across tracks decides which fire is lost: with
+    whole passes, one car's pipeline fire on this frame can never take the
+    slot another car's trigger crossing needed.
+    """
+    _maybe_lazy_init_planner(ctx)
+    planner = ctx.planner
+    if planner is None or ctx.snapshotter is None:
+        return
+    probes = _probe_active_tracks(ctx, frame)
+    _fire_triggers(ctx, planner, probes, frame_idx)
+    wall_ms = time.monotonic() * 1000.0
+    _fire_pipeline(ctx, planner, probes, frame_idx, wall_ms)
+    if ctx.door_zone is not None:
+        _fire_door(ctx, planner, probes, wall_ms)
+
+
+async def process_frame(
+    ctx: SessionContext, frame_idx: int, source_t: float, frame: np.ndarray
+) -> None:
+    """One frame's worth of work; mutates ``ctx`` in place.
+
+    Awaits the inference call (``run_in_executor``) so the event loop
+    can service other tasks (snapshotter HTTP, dashboard, cleanup)
+    during the ~10-50 ms inference window. Everything else is fast and
+    happens inline.
+    """
+    ctx.frames_processed += 1
+    if ctx.frame_h == 0:
+        ctx.frame_h = int(frame.shape[0])
+        ctx.frame_w = int(frame.shape[1])
+
+    session_t = _compute_session_t(ctx, source_t)
+
+    if _update_ir(ctx, frame):
         return
 
     # Inference off the event loop.
@@ -817,107 +975,7 @@ async def process_frame(  # noqa: C901
     for tr in expired:
         finalize_track(ctx, tr)
 
-    # SnapPlanner walk.
-    _maybe_lazy_init_planner(ctx)
-    if ctx.planner is not None and ctx.snapshotter is not None:
-        cfg = ctx.config.snapshot
-        for tr in ctx.buffer.active():
-            if not tr.points:
-                continue
-            p = tr.points[-1]
-            bbox = (p.x1, p.y1, p.x2, p.y2)
-            sharpness: float | None = None
-            if cfg.min_sharpness > 0.0:
-                sharpness = _bbox_center_sharpness(frame, bbox)
-            decision = ctx.planner.consider(
-                track_id=tr.id,
-                bbox=bbox,
-                frame_idx=frame_idx,
-                sharpness=sharpness,
-            )
-            if not decision.should_fire or decision.snap_index is None:
-                # Surface blur-gate rejections with per-track throttle so
-                # the journal carries enough signal to correlate against
-                # capture coverage without flooding on a fast vehicle
-                # (which can stay blurred for its whole visible span).
-                # Mirrors NanoTracker (nano_tracker.py:1514-1519); my PR
-                # 3e port silently dropped these.
-                if decision.reason == "blur_gate":
-                    ctx.blur_skip_count += 1
-                    now_mono = time.monotonic()
-                    if now_mono - tr.last_blur_skip_logged_mono >= 5.0:
-                        logger.info(
-                            "[snap] track %d blur skip (sharpness=%.0f < min=%.0f)",
-                            tr.id,
-                            sharpness if sharpness is not None else 0.0,
-                            cfg.min_sharpness,
-                        )
-                        tr.last_blur_skip_logged_mono = now_mono
-                continue
-            logger.info(
-                "[snap] track %d fire %d reason=%s score=%.3f",
-                tr.id,
-                decision.snap_index,
-                decision.reason,
-                decision.score,
-            )
-            _fire_snap(ctx, tr, decision.snap_index)
-
-        # Pipeline (continuous in-band) decision path -- evaluated
-        # separately so trigger crossings retain priority on the
-        # snap_index ordering, and so a disabled pipeline (interval=0)
-        # is a near-zero-cost no-op (consider_pipeline returns
-        # immediately on the interval check).
-        wall_ms = time.monotonic() * 1000.0
-        for tr in ctx.buffer.active():
-            if not tr.points:
-                continue
-            p = tr.points[-1]
-            bbox = (p.x1, p.y1, p.x2, p.y2)
-            sharpness = None
-            if cfg.min_sharpness > 0.0:
-                sharpness = _bbox_center_sharpness(frame, bbox)
-            pipe_dec = ctx.planner.consider_pipeline(
-                track_id=tr.id,
-                bbox=bbox,
-                frame_idx=frame_idx,
-                wall_ms=wall_ms,
-                sharpness=sharpness,
-            )
-            if not pipe_dec.should_fire or pipe_dec.snap_index is None:
-                if pipe_dec.reason == "pipeline_throttled":
-                    ctx.pipeline_throttled += 1
-                elif pipe_dec.reason == "pipeline_budget_exhausted":
-                    ctx.pipeline_budget_exhausted += 1
-                continue
-            ctx.pipeline_fires_total += 1
-            logger.info(
-                "[snap] track %d pipeline fire %d",
-                tr.id,
-                pipe_dec.snap_index,
-            )
-            _fire_snap(ctx, tr, pipe_dec.snap_index)
-
-    # Door-zone snapping. Third pass, and deliberately outside the
-    # `snap_gate`/pipeline enable checks above: the door sits outside the
-    # road polygon, so those paths never fire there and door users banked
-    # no 4K imagery at all. Only runs when a door zone is configured.
-    if ctx.planner is not None and ctx.door_zone is not None and ctx.snapshotter is not None:
-        for tr in ctx.buffer.active():
-            if not tr.points:
-                continue
-            p = tr.points[-1]
-            door_dec = ctx.planner.consider_door(
-                track_id=tr.id,
-                bbox=(p.x1, p.y1, p.x2, p.y2),
-                wall_ms=wall_ms,
-                is_person=class_name(tr.class_id) == "person",
-            )
-            if not door_dec.should_fire or door_dec.snap_index is None:
-                continue
-            ctx.door_fires_total += 1
-            logger.info("[snap] track %d door fire %d", tr.id, door_dec.snap_index)
-            _fire_snap(ctx, tr, door_dec.snap_index)
+    _plan_snaps(ctx, frame, frame_idx)
 
     # Idle HTML regen. Rendered here (cheap), written by a worker thread.
     now = time.monotonic()
@@ -1177,15 +1235,7 @@ async def run_session(
             # Stop the producer first so no new frames arrive during drain.
             producer_stop.set()
             # Drain any still-active tracks, bounded by shutdown_grace_s.
-            try:
-                await asyncio.wait_for(
-                    asyncio.to_thread(_drain_active, ctx), timeout=shutdown_grace_s
-                )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "[runtime] drain exceeded %.0fs; forcing shutdown",
-                    shutdown_grace_s,
-                )
+            await _drain_active(ctx, grace_s=shutdown_grace_s)
             # Close any open IR period so meta reflects a complete history.
             _close_open_ir_period(ctx)
             # Let a background page write finish first, so it can't land
@@ -1253,10 +1303,39 @@ async def _consumer_loop(
             logger.exception("[runtime] frame %d processing failed", frame_idx)
 
 
-def _drain_active(ctx: SessionContext) -> None:
-    """Finalize all in-flight tracks at shutdown. Sync, off-thread."""
-    for tr in ctx.buffer.flush():
-        finalize_track(ctx, tr)
+async def _drain_active(ctx: SessionContext, *, grace_s: float) -> None:
+    """Finalise the tracks still in flight at shutdown, on the event loop.
+
+    It runs on the loop because finalising can submit a snapshot (the
+    planner's finalise rescue), which creates an asyncio task and so only
+    works on the loop's thread. Until 2026-11 the drain ran in a worker
+    thread: a rescue there would have raised, and the exception left the
+    ``finally`` block before the session's final outputs were written. (The
+    live road gate never rescues, so it never happened.) A thread that
+    outlived its timeout would also have kept appending records while the
+    outputs were being written.
+
+    Yields between tracks so snap callbacks keep running. Bounded by
+    ``grace_s`` (checked between tracks) so systemd doesn't SIGKILL the
+    process mid-write: tracks not reached by then are dropped, and one track
+    failing to finalise does not cost the rest, or the session's outputs.
+    """
+    deadline = time.monotonic() + grace_s
+    tracks = ctx.buffer.flush()
+    for done, tr in enumerate(tracks):
+        if time.monotonic() >= deadline:
+            logger.warning(
+                "[runtime] drain exceeded %.0fs; %d of %d tracks not finalised",
+                grace_s,
+                len(tracks) - done,
+                len(tracks),
+            )
+            return
+        try:
+            finalize_track(ctx, tr)
+        except Exception:
+            logger.exception("[runtime] finalising track %d at shutdown failed", tr.id)
+        await asyncio.sleep(0)
 
 
 def _close_open_ir_period(ctx: SessionContext) -> None:
@@ -1265,20 +1344,13 @@ def _close_open_ir_period(ctx: SessionContext) -> None:
 
     The detector itself only emits an :class:`IRPeriod` on the IR->day
     edge, but a session shutdown mid-night should still record what
-    happened. We probe the detector's private start timestamp via a
-    one-off update with a wall-time frame that should NOT flip the
-    state (so it doesn't pollute the period).
+    happened, so the open period is closed here at the current time.
 
     Also records the synthetic close on the IR events sidecar so a
     subsequent SIGKILL during ``write_session_outputs`` still leaves
     a complete on-disk transition history.
     """
-    if not ctx.ir.in_ir_mode:
-        return
-    # The detector's history may not all be IR; we just need the
-    # period start. Reach into the dataclass: this is the same module
-    # family, not an external API, so the coupling is OK.
-    start_unix = getattr(ctx.ir, "_ir_period_start_unix", None)
+    start_unix = ctx.ir.open_period_start_unix
     if start_unix is None:
         return
     end_unix = time.time()

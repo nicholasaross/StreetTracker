@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+from streettracker.common import output as output_mod
 from streettracker.common.output import (
     EventLog,
     IREventLog,
@@ -75,6 +78,55 @@ def test_save_json_writes_both(
     save_json([sample_track], sample_session_meta, data, meta)
     assert data.exists()
     assert meta.exists()
+
+
+def test_save_json_writes_meta_before_data(
+    tmp_path: Path,
+    sample_track: TrackRecord,
+    sample_session_meta: SessionMeta,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # _data.json marks a session as finalised, so it must not exist before
+    # the meta beside it does.
+    data = tmp_path / "data.json"
+    meta = tmp_path / "meta.json"
+    seen: list[tuple[str, bool]] = []
+    real = output_mod.atomic_write_json
+
+    def recording(path: Path, obj: object) -> None:
+        seen.append((path.name, data.exists()))
+        real(path, obj)
+
+    monkeypatch.setattr(output_mod, "atomic_write_json", recording)
+    save_json([sample_track], sample_session_meta, data, meta)
+    assert seen == [("meta.json", False), ("data.json", False)]
+    assert data.exists()
+
+
+@pytest.mark.parametrize("which", ["data", "meta"])
+def test_session_json_is_replaced_in_one_step(
+    which: str,
+    tmp_path: Path,
+    sample_track: TrackRecord,
+    sample_session_meta: SessionMeta,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A write that can't complete leaves the file as it was. Writing in
+    place would have truncated it first."""
+    p = tmp_path / f"{which}.json"
+    p.write_text('"previous"', encoding="utf-8")
+
+    def refuse(src: object, dst: object) -> None:
+        raise OSError("the rename never happened")
+
+    monkeypatch.setattr("streettracker.common.fileio.os.replace", refuse)
+    with pytest.raises(OSError):
+        if which == "data":
+            save_data_json([sample_track], p)
+        else:
+            save_meta_json(sample_session_meta, p)
+    assert p.read_text(encoding="utf-8") == '"previous"'
+    assert [f.name for f in tmp_path.iterdir()] == [p.name]  # no temp file left
 
 
 def test_read_events_jsonl_skips_blank_lines(tmp_path: Path, sample_track: TrackRecord) -> None:

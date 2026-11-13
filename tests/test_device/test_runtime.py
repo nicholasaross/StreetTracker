@@ -37,8 +37,10 @@ from typing import Any, cast
 import numpy as np
 import pytest
 
+from streettracker.common import output as output_mod
 from streettracker.common import summary as summary_mod
 from streettracker.common.config import StreetTrackerConfig
+from streettracker.common.door_zone import DoorZone
 from streettracker.common.output import EventLog, read_trajectories_jsonl
 from streettracker.common.schema import TrackRecord
 from streettracker.common.types import Detection
@@ -49,6 +51,7 @@ from streettracker.device.runtime import (
     _bbox_center_sharpness,
     _close_open_ir_period,
     _consumer_loop,
+    _drain_active,
     _fire_snap,
     _main_snap_path,
     _produce_frames,
@@ -64,7 +67,7 @@ from streettracker.device.runtime import (
     write_html,
     write_session_outputs,
 )
-from streettracker.device.snap_planner import SnapPlanner, SnapPlannerConfig
+from streettracker.device.snap_planner import SnapDecision, SnapPlanner, SnapPlannerConfig
 from streettracker.device.snapshotter import SnapshotStats
 from streettracker.device.track_buffer import BufferedTrack, MotionPoint, TrackBuffer
 
@@ -1548,3 +1551,362 @@ def test_write_html_covers_records_added_behind_its_back(
     assert len(ctx.summary_rows) == 1
     assert ctx.html_writes == 1
     assert _row_ids(ctx) == [42]
+
+
+# ----------------------------------------------------------------------
+# Snap planning: each track is measured once per frame, and the three
+# decision passes (trigger, pipeline, door) run whole, in that order.
+
+
+class _RecordingPlanner:
+    """Stands in for SnapPlanner: records every decision it is asked for and
+    fires where the test says to. ``fire`` maps (pass, track id) to the snap
+    index to fire with."""
+
+    road_gate = None
+
+    def __init__(self, fire: dict[tuple[str, int], int] | None = None) -> None:
+        self.fire = fire or {}
+        self.calls: list[tuple[str, int, float | None]] = []
+
+    def _decide(self, kind: str, track_id: int, sharpness: float | None) -> SnapDecision:
+        self.calls.append((kind, track_id, sharpness))
+        index = self.fire.get((kind, track_id))
+        if index is None:
+            return SnapDecision(False, "tracking", 0.0)
+        return SnapDecision(True, "trigger_crossing", 1.0, index)
+
+    def consider(self, *, track_id: int, sharpness: float | None = None, **_: Any) -> SnapDecision:
+        return self._decide("trigger", track_id, sharpness)
+
+    def consider_pipeline(
+        self, *, track_id: int, sharpness: float | None = None, **_: Any
+    ) -> SnapDecision:
+        return self._decide("pipeline", track_id, sharpness)
+
+    def consider_door(self, *, track_id: int, **_: Any) -> SnapDecision:
+        return self._decide("door", track_id, None)
+
+    def on_track_finalize(self, track_id: int) -> SnapDecision:
+        return self._decide("finalize", track_id, None)
+
+    def forget(self, track_id: int) -> None:
+        pass
+
+
+class _CappedSnapshotter:
+    """Refuses a submit once ``cap`` snaps are in flight, as the real one
+    does. Nothing ever lands, so every accepted snap stays in flight."""
+
+    def __init__(self, cap: int) -> None:
+        self.cap = cap
+        self.stats = SnapshotStats()
+        self.accepted: list[str] = []
+        self.refused: list[str] = []
+
+    def submit(self, path: Path) -> Any:
+        if len(self.accepted) >= self.cap:
+            self.refused.append(path.name)
+            return None
+        self.accepted.append(path.name)
+
+        class _InFlight:
+            def add_done_callback(self, _cb: Any) -> None:
+                pass
+
+        return _InFlight()
+
+
+_TWO_CARS = [
+    Detection(100.0, 100.0, 200.0, 200.0, 0.9, 2, track_id=1),
+    Detection(300.0, 100.0, 400.0, 200.0, 0.9, 2, track_id=2),
+]
+_DOOR_ZONE = DoorZone(polygon_frac=[[0.76, 0.0], [1.0, 0.0], [1.0, 1.0], [0.76, 1.0]])
+
+
+def _planning_ctx(
+    tmp_path: Path, planner: _RecordingPlanner, *, min_sharpness: float, cap: int = 4
+) -> SessionContext:
+    ctx = _build_ctx(tmp_path)
+    ctx.config = dataclasses.replace(
+        ctx.config,
+        snapshot=dataclasses.replace(ctx.config.snapshot, min_sharpness=min_sharpness),
+    )
+    ctx.frame_w, ctx.frame_h = _FRAME_W, _FRAME_H
+    ctx.planner = cast("Any", planner)
+    ctx.snapshotter = cast("Any", _CappedSnapshotter(cap))
+    ctx.door_zone = _DOOR_ZONE
+    ctx.yolo = _StubYolo(returns=list(_TWO_CARS))
+    return ctx
+
+
+async def test_each_track_is_measured_once_per_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The trigger and pipeline decisions used to measure the same box on the
+    same frame separately. Now one measurement per track serves both."""
+    planner = _RecordingPlanner()
+    ctx = _planning_ctx(tmp_path, planner, min_sharpness=50.0)
+    measured: list[tuple[float, float, float, float]] = []
+
+    def counting(_frame: np.ndarray, bbox: tuple[float, float, float, float]) -> float:
+        measured.append(bbox)
+        return 100.0 * len(measured)  # a different value on every call
+
+    monkeypatch.setattr(runtime_mod, "_bbox_center_sharpness", counting)
+    await process_frame(ctx, frame_idx=0, source_t=0.0, frame=_frame())
+
+    assert measured == [(100.0, 100.0, 200.0, 200.0), (300.0, 100.0, 400.0, 200.0)]
+    # Whole passes in a fixed order, both blur-gated passes seeing the one
+    # measurement; the door pass has no blur gate.
+    assert planner.calls == [
+        ("trigger", 1, 100.0),
+        ("trigger", 2, 200.0),
+        ("pipeline", 1, 100.0),
+        ("pipeline", 2, 200.0),
+        ("door", 1, None),
+        ("door", 2, None),
+    ]
+
+
+async def test_no_sharpness_is_measured_with_the_blur_gate_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    planner = _RecordingPlanner()
+    ctx = _planning_ctx(tmp_path, planner, min_sharpness=0.0)
+
+    def must_not_run(_frame: np.ndarray, _bbox: Any) -> float:
+        raise AssertionError("sharpness was measured although min_sharpness is 0")
+
+    monkeypatch.setattr(runtime_mod, "_bbox_center_sharpness", must_not_run)
+    await process_frame(ctx, frame_idx=0, source_t=0.0, frame=_frame())
+    assert [c[2] for c in planner.calls] == [None] * 6
+
+
+async def test_door_pass_only_runs_with_a_door_zone(tmp_path: Path) -> None:
+    planner = _RecordingPlanner()
+    ctx = _planning_ctx(tmp_path, planner, min_sharpness=0.0)
+    ctx.door_zone = None
+    await process_frame(ctx, frame_idx=0, source_t=0.0, frame=_frame())
+    assert [c[0] for c in planner.calls] == ["trigger", "trigger", "pipeline", "pipeline"]
+
+
+async def test_a_trigger_fire_is_not_dropped_for_another_tracks_pipeline_fire(
+    tmp_path: Path,
+) -> None:
+    """With one snapshot slot free, the earlier track's pipeline fire and the
+    later track's trigger crossing compete for it. The trigger must win: that
+    is why the passes run whole instead of track by track."""
+    planner = _RecordingPlanner(fire={("pipeline", 1): 1, ("trigger", 2): 1})
+    ctx = _planning_ctx(tmp_path, planner, min_sharpness=0.0, cap=1)
+    await process_frame(ctx, frame_idx=0, source_t=0.0, frame=_frame())
+
+    snapshotter = cast("Any", ctx.snapshotter)
+    assert snapshotter.accepted == ["vehicle_2_main_1.jpg"]
+    assert snapshotter.refused == ["vehicle_1_main_1.jpg"]
+    assert ctx.pipeline_fires_total == 1  # counted when decided, as before
+
+
+# ----------------------------------------------------------------------
+# Shutdown drain. It runs on the event loop: a finalise-time rescue fire
+# creates an asyncio task, which only works on the loop's thread. In a worker
+# thread (where the drain ran until 2026-11) it raised, and the exception left
+# run_session's ``finally`` block before the session's outputs were written.
+
+
+def _ctx_with_active_tracks(tmp_path: Path, track_ids: list[int]) -> SessionContext:
+    """A context whose buffer holds moving tracks that finalise into records."""
+    ctx = _build_ctx(tmp_path)
+    ctx.frame_w, ctx.frame_h = _FRAME_W, _FRAME_H
+    for i, x in enumerate([100.0, 300.0, 500.0]):
+        dets = [Detection(x - 50, 150.0, x + 50, 250.0, 0.9, 2, track_id=tid) for tid in track_ids]
+        ctx.buffer.ingest(dets, i, float(i), _frame())
+    assert len(ctx.buffer.active()) == len(track_ids)
+    return ctx
+
+
+class _TaskSnapshotter:
+    """Like the real snapshotter, ``submit`` creates an asyncio task, so it
+    raises RuntimeError when called off the event loop's thread."""
+
+    def __init__(self) -> None:
+        self.stats = SnapshotStats()
+        self.tasks: list[asyncio.Task[bool]] = []
+        self.paths: list[str] = []
+
+    def submit(self, path: Path) -> asyncio.Task[bool]:
+        async def _snap() -> bool:
+            return False
+
+        self.paths.append(path.name)
+        task = asyncio.create_task(_snap())
+        self.tasks.append(task)
+        return task
+
+
+async def test_drain_can_fire_a_finalise_rescue(tmp_path: Path) -> None:
+    ctx = _ctx_with_active_tracks(tmp_path, [7])
+    ctx.planner = cast("Any", _RecordingPlanner(fire={("finalize", 7): 1}))
+    snapshotter = _TaskSnapshotter()
+    ctx.snapshotter = cast("Any", snapshotter)
+
+    await _drain_active(ctx, grace_s=5.0)
+
+    assert snapshotter.paths == ["vehicle_7_main_1.jpg"]
+    assert [r.track_id for r in ctx.records] == [7]
+    assert ctx.buffer.active() == []
+    await asyncio.gather(*snapshotter.tasks)
+
+
+async def test_drain_survives_a_track_that_fails_to_finalise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    ctx = _ctx_with_active_tracks(tmp_path, [1, 2, 3])
+    real = runtime_mod.finalize_track
+
+    def failing_for_2(c: SessionContext, tr: BufferedTrack) -> None:
+        if tr.id == 2:
+            raise OSError(28, "No space left on device")
+        real(c, tr)
+
+    monkeypatch.setattr(runtime_mod, "finalize_track", failing_for_2)
+    with caplog.at_level(logging.ERROR, logger="streettracker.device.runtime"):
+        await _drain_active(ctx, grace_s=5.0)
+
+    assert [r.track_id for r in ctx.records] == [1, 3]
+    assert any("finalising track 2 at shutdown failed" in r.getMessage() for r in caplog.records)
+
+
+async def test_drain_stops_at_its_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The drain must hand back in time for the outputs to be written before
+    systemd's stop timeout: tracks it has not reached by then are dropped."""
+    ctx = _ctx_with_active_tracks(tmp_path, [1, 2, 3])
+    real = runtime_mod.finalize_track
+
+    def slow(c: SessionContext, tr: BufferedTrack) -> None:
+        time.sleep(0.2)
+        real(c, tr)
+
+    monkeypatch.setattr(runtime_mod, "finalize_track", slow)
+    with caplog.at_level(logging.WARNING, logger="streettracker.device.runtime"):
+        await _drain_active(ctx, grace_s=0.1)
+
+    assert [r.track_id for r in ctx.records] == [1]
+    assert any("2 of 3 tracks not finalised" in r.getMessage() for r in caplog.records)
+
+
+def _colour_frame() -> np.ndarray:
+    """A frame the IR detector reads as daylight."""
+    frame = np.zeros((_FRAME_H, _FRAME_W, 3), dtype=np.uint8)
+    frame[:, :, 1] = 128
+    frame[:, :, 2] = 255
+    return frame
+
+
+async def _run_one_frame_session(tmp_path: Path) -> Path:
+    """run_session over one frame that leaves track 5 active at end of file.
+    Returns the session directory. (One frame, because the frame queue drops
+    the oldest of more than two waiting items.)"""
+    from streettracker.device.runtime import run_session
+
+    source = _FakeSource([(0, 0.0, _colour_frame())])
+    rc = await run_session(
+        _load_example_config(),
+        cast("Any", source),
+        output_root=tmp_path / "out",
+        no_html=True,
+        yolo=_StubYolo(returns=[Detection(100.0, 100.0, 200.0, 200.0, 0.9, 2, track_id=5)]),
+        ir_detector=IRDetector(),
+        enable_snapshotter=False,
+        enable_dashboard=False,
+        shutdown_grace_s=5.0,
+    )
+    assert rc == 0
+    (session_dir,) = (tmp_path / "out").iterdir()
+    return session_dir
+
+
+async def test_run_session_drains_active_tracks_on_the_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = runtime_mod.finalize_track
+    drained: list[tuple[int, bool]] = []
+
+    def recording(c: SessionContext, tr: BufferedTrack) -> None:
+        try:
+            asyncio.get_running_loop()
+            on_loop = True
+        except RuntimeError:
+            on_loop = False
+        drained.append((tr.id, on_loop))
+        real(c, tr)
+
+    monkeypatch.setattr(runtime_mod, "finalize_track", recording)
+    await _run_one_frame_session(tmp_path)
+    assert drained == [(5, True)]
+
+
+async def test_run_session_writes_its_outputs_when_a_drain_finalise_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def failing(c: SessionContext, tr: BufferedTrack) -> None:
+        raise RuntimeError("no running event loop")
+
+    monkeypatch.setattr(runtime_mod, "finalize_track", failing)
+    session_dir = await _run_one_frame_session(tmp_path)
+
+    files = session_paths(session_dir.parent, session_dir.name)
+    assert json.loads(files["data_json"].read_text(encoding="utf-8")) == []
+    assert files["meta_json"].exists()
+    assert files["hourly_json"].exists()
+
+
+# ----------------------------------------------------------------------
+# End-of-session JSON: each file replaced in one step, _data.json last, so a
+# session with a _data.json has all three whole (common/recover.py relies on
+# a missing _data.json to spot a session that never finished shutting down).
+
+
+def test_write_session_outputs_writes_data_json_last(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _build_ctx(tmp_path)
+    ctx.frame_h = _FRAME_H
+    finalize_track(ctx, _moving_track())
+    order: list[str] = []
+    real = runtime_mod.atomic_write_json
+
+    def recording(path: Path, obj: Any, **kwargs: Any) -> None:
+        order.append(path.name)
+        real(path, obj, **kwargs)
+
+    monkeypatch.setattr(runtime_mod, "atomic_write_json", recording)
+    monkeypatch.setattr(output_mod, "atomic_write_json", recording)
+    write_session_outputs(ctx, no_html=True, no_json=False)
+
+    assert order == [
+        "session_test_hourly.json",
+        "session_test_meta.json",
+        "session_test_data.json",
+    ]
+
+
+def test_session_outputs_cut_short_leave_no_data_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _build_ctx(tmp_path)
+    ctx.frame_h = _FRAME_H
+    finalize_track(ctx, _moving_track())
+
+    def dies_on_meta(meta: Any, path: Path) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(output_mod, "save_meta_json", dies_on_meta)
+    with pytest.raises(OSError):
+        write_session_outputs(ctx, no_html=True, no_json=False)
+
+    paths = session_paths(tmp_path, "session_test")
+    assert paths["hourly_json"].exists()
+    assert not paths["data_json"].exists()

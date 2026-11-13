@@ -40,7 +40,10 @@ Session files:
   shutdown; after a power cut or crash, `pull` rebuilds them from
   `_events.jsonl` + the meta embedded in `_summary.html` (or run
   `recover-session`), and the meta then carries a `recovered` block
-  (2026-10-23)
+  (2026-10-23). The runtime replaces each of the three in one step and
+  writes `_data.json` last, so a session that has a `_data.json` has all
+  three whole (code of 2026-11-13; an earlier runtime wrote them in place,
+  data first)
 - `{session}_hourly.json` — per-hour rollup
 - `{session}_summary.html` + `index.html` — dashboard + auto-redirect
 - `{session}_alpr.json` + `{session}_alpr_by_track.json` — per-image
