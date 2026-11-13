@@ -16,7 +16,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from streettracker.common.fileio import iter_jsonl
+from streettracker.common.fileio import atomic_write_json, iter_jsonl
 from streettracker.common.schema import SessionMeta, TrackRecord
 
 logger = logging.getLogger(__name__)
@@ -72,12 +72,12 @@ def save_data_json(records: list[TrackRecord | dict[str, Any]], path: Path) -> N
     even a 24h session is a few MB.
     """
     payload = [r.to_json_dict() if isinstance(r, TrackRecord) else r for r in records]
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    atomic_write_json(path, payload)
 
 
 def save_meta_json(meta: SessionMeta | dict[str, Any], path: Path) -> None:
     payload = meta.to_json_dict() if isinstance(meta, SessionMeta) else meta
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    atomic_write_json(path, payload)
 
 
 def save_json(
@@ -86,10 +86,14 @@ def save_json(
     data_path: Path,
     meta_path: Path,
 ) -> None:
-    """Convenience wrapper: write both data and meta JSON in one call.
-    Matches NanoTracker's `save_json` signature."""
-    save_data_json(records, data_path)
+    """Convenience wrapper: write both meta and data JSON in one call.
+    Matches NanoTracker's `save_json` signature.
+
+    Meta first, data last: ``_data.json`` is what marks a session as
+    finalised (``common.recover.needs_recovery``), so it must not exist
+    before the file beside it does."""
     save_meta_json(meta, meta_path)
+    save_data_json(records, data_path)
 
 
 def read_data_json(path: Path) -> list[TrackRecord]:

@@ -192,6 +192,21 @@ def test_period_emitted_on_ir_to_day_with_correct_bounds() -> None:
     assert isinstance(period.end, str) and "T" in period.end
 
 
+def test_open_period_start_is_set_only_while_in_ir() -> None:
+    """The runtime closes an IR period itself when a session ends at night,
+    so it needs the time that period began."""
+    det = IRDetector(hysteresis_frames=3)
+    assert det.open_period_start_unix is None
+    for i in range(3):
+        det.update(_ir_frame(), wall_time=_T0 + float(i))
+    # The period starts at the frame that completed the IR window.
+    assert det.open_period_start_unix == _T0 + 2.0
+    for i in range(10, 13):
+        det.update(_day_frame(), wall_time=_T0 + float(i))
+    assert det.in_ir_mode is False
+    assert det.open_period_start_unix is None
+
+
 def test_detector_resets_after_period_emission() -> None:
     """After a full day -> IR -> day cycle, the detector should be
     ready to detect the next IR period without leaking state."""

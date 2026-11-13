@@ -112,6 +112,14 @@ class IRDetector:
         """``True`` while inference should be skipped."""
         return self._in_ir_mode
 
+    @property
+    def open_period_start_unix(self) -> float | None:
+        """Unix time the current IR period began; ``None`` in day mode.
+
+        For a caller that has to close the period itself, because the
+        session is ending before the camera returns to day."""
+        return self._ir_period_start_unix
+
     def update(self, frame: np.ndarray, wall_time: float) -> IRPeriod | None:
         """Feed a frame; return a closed :class:`IRPeriod` on day-resume.
 
