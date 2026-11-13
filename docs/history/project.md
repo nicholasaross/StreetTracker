@@ -214,6 +214,25 @@ From the old "Device runtime notes" list.
 Three changes to `device/runtime.py`, the remainder of the review's Tranche 3.
 On `main`; not deployed when written (the Orin stayed on `0b817b7`).
 
+**Deployed 2026-11-13.** The Orin went from `0b817b7` to `e894211` (`git
+pull`; no dependency or config-schema change, so no `uv sync`), which also
+brought the CLI command table the service starts through. Checked on the
+device before the restart: the runtime imports, the live `camera.json`
+parses and `streettracker run --help` dispatches. A panel roll restarted the
+service at 08:02 GMT: the old code closed `session_20261113_065513` (85
+tracks) and the new code opened `session_20261113_080245`, with the stream
+open, the engine loaded and the snap planner in road-gate mode within ten
+seconds, and nothing in the journal beyond the two usual start-up warnings.
+The old session's shutdown was still the old code's, so the new drain and
+write order are first used when `session_20261113_080245` is rolled.
+Rollback: `git checkout 0b817b7` + restart.
+
+Checked again 4.5 h later (12:34 GMT): the service had not restarted, the
+session held 597 finalised tracks and 2,144 4K snaps, all three snap passes
+had fired (65 trigger crossings, 2,170 pipeline fires, 531 door fires), the
+summary page was current, no temp file was left behind, and the journal had
+no traceback, failed frame or failed page write.
+
 - **One sharpness measurement per track per frame.** `process_frame` walked
   the active tracks three times (trigger, pipeline, door) and measured the
   Laplacian sharpness of the same box on the same frame in both the trigger
@@ -301,3 +320,57 @@ now skips such an entry. `alpr-run` as a whole still stops on that file:
 `snap_assets.load_bbox_index` and `load_done_bbox_index`, which run first
 and are shared with the classifier commands, call `.get` on each entry
 unguarded. The runtime never writes such a file.
+
+## `/stats` remembers each session (2026-11-13)
+
+From the 2026-11-10 review (Tranche 4). `build_stats` was one 320-line
+function that re-read every session's files on every showcase refresh: about
+10 s for 59 sessions (125,853 car journeys, 105,642 person tracks), 7 s of it
+JSON decoding and 2.7 s the plate-support scan, although a closed session's
+files never change.
+
+It is now a per-session tally plus a merge. `_tally_session` computes
+everything one session contributes, from that session's files alone;
+`_Tally.merge` adds tallies up; `build_stats` folds them in session order and
+finishes the page. Each tally is kept (`common/filememo.py`, `FileMemo`)
+against the modification time, size and file id of the five files it is
+computed from, and recomputed when one of them changes, appears or
+disappears. `build_stats` dropped its `# noqa: C901`.
+
+The tallies have to add up to exactly what one pass over every record gives,
+and order is part of that: a tie in a chart goes to whichever value was seen
+first, a mean depends on the order its floats were summed in, and the
+dicts' own order reaches the page. So lists are joined in session order and
+dict keys keep first-seen order. A session keeps only its own eight fastest
+tracks, which is enough for the overall eight.
+
+Two related costs went with it. `load_plate_support` found the rollup files
+by globbing inside every session directory (tens of thousands of snaps
+each), over a second per call even when its cache hit; it now builds each
+path from the directory name and remembers each file's counts separately,
+so one re-enriched session costs one file. A rollup whose name does not
+match its directory is no longer counted; none exists (57 found either way).
+The fastest-cars board's best reads are remembered per rollup too.
+
+Measured on the dev box, on the real `output/`:
+
+| | Before | After |
+| --- | --- | --- |
+| First build in a process | 9-11 s | 7-9 s |
+| A repeat build, nothing changed | 9-11 s | 0.3-0.5 s |
+| A repeat build after six sessions changed (frozen copy) | 9-11 s | 1.1 s |
+
+Checked three ways. The old and new code, run back to back on the live
+`output/`, give the same SHA-256 of the stats JSON in px/s and in mph, key
+order included. On a frozen copy of every session's JSON (403 files, 508
+MB), the new code built once, six sessions were then changed the way real
+jobs change them (records dropped, labels halved, a people file removed,
+colours re-inferred, a rollup rewritten, a session removed), and the warm
+rebuild re-read exactly the five that still existed and matched what the
+old code computes from scratch on the changed copy. And a test holds the
+adding-up property itself: the same 400 random records give the same page
+whether they sit in one session or are cut across four.
+
+The showcase gallery (`build_showcase`) is not memoised and still rebuilds
+in full on a refresh. The running showcase needs a task restart to pick the
+change up.

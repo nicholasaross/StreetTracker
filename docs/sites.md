@@ -38,7 +38,11 @@ uv run streettracker showcase --output-root output   # http://127.0.0.1:8090/
   personal tags). `--host 0.0.0.0` opts into LAN exposure. `POST /api/refresh`
   re-aggregates in place after new sessions are pulled. Images are served from
   the output root through a `.jpg`-only, single-segment-validated route.
-- **Statistics page** (`/stats`, `web/stats.build_stats`) — traffic analytics
+- **Statistics page** (`/stats`, `web/stats.build_stats`) — each session's
+  contribution is computed once and kept until one of that session's files
+  changes (`_tally_session`, `common/filememo.py`), so a refresh re-reads only
+  the sessions that changed; the first build after a start reads them all.
+  Traffic analytics
   over **all** vehicle tracks (`class_name=="car"`, not just the plated subset;
   bucketed by camera-local `time_start`, so a multi-date session splits
   correctly): daily L→R/R→L journeys (click a day → its 15-min profile),
