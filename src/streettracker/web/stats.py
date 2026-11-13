@@ -46,15 +46,17 @@ from __future__ import annotations
 import json
 import statistics
 from collections import Counter, defaultdict
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from streettracker.analysis.alpr.gate import PlateGate, load_plate_support, plate_gate, read_passes
 from streettracker.analysis.dvsa import is_canonical_uk_plate
 from streettracker.analysis.makemodel.bodytype import body_type_for
 from streettracker.analysis.makemodel.colour import colour_class_for
+from streettracker.common.filememo import FileMemo
 from streettracker.common.session_files import SessionFiles
 from streettracker.web.aggregate import discover_sessions, resolve_image_urls
 from streettracker.web.uk_makes import make_benchmark
@@ -477,258 +479,439 @@ def _empty_stats(unit: str) -> Stats:
     )
 
 
-def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:  # noqa: C901
-    """Aggregate traffic stats across all sessions under ``output_root``."""
-    factor = _speed_factor(m_per_px)
-    unit = "mph" if factor is not None else "px/s"
+def _dir_counts() -> dict[str, int]:
+    return {"l2r": 0, "r2l": 0, "total": 0}
 
-    sessions = discover_sessions(output_root)
-    if not sessions:
-        return _empty_stats(unit)
 
-    daily: dict[str, dict[str, int]] = defaultdict(lambda: {"l2r": 0, "r2l": 0, "total": 0})
-    dow = {d: {"l2r": 0, "r2l": 0, "total": 0} for d in _DOW}
-    by_day_15: dict[str, list[dict[str, int]]] = defaultdict(
-        lambda: [{"l2r": 0, "r2l": 0} for _ in range(96)]
-    )
-    heatmap = [[0] * 24 for _ in range(7)]
-    quarter_profile = [0] * 96  # time-of-day 15-min totals, summed over all days
-    hour_totals = [0] * 24
+def _dow_counts() -> dict[str, dict[str, int]]:
+    return {d: _dir_counts() for d in _DOW}
 
-    speeds_l2r: list[float] = []
-    speeds_r2l: list[float] = []
-    all_speeds: list[float] = []
-    colours: Counter[str] = Counter()
-    bodytypes: Counter[str] = Counter()
-    makes_by_plate: dict[str, str] = {}
-    years_by_plate: dict[str, int | None] = {}  # DVSA year of first registration
-    # Per-track speeds grouped for the "fastest by make / colour" boards.
-    # Same detection guard as the individual fastest board.
-    speeds_by_make: dict[str, list[float]] = defaultdict(list)
-    speeds_by_colour: dict[str, list[float]] = defaultdict(list)
-    fastest_raw: list[tuple[float, str, dict[str, Any]]] = []
-    total = 0
-    dates: set[str] = set()
-    # Per-weekday (date, minute-of-day) arrival (R->L) / departure (L->R) points
-    # for the YMCA class-schedule miner (_infer_schedules).
-    sched_arr: dict[int, list[tuple[str, int]]] = defaultdict(list)
-    sched_dep: dict[int, list[tuple[str, int]]] = defaultdict(list)
 
-    # People accumulators (person tracks; separate date set so the car
-    # per-day mean keeps its existing denominator).
-    p_total = 0
-    p_dates: set[str] = set()
-    p_dow = {d: {"l2r": 0, "r2l": 0, "total": 0} for d in _DOW}
-    p_heatmap = [[0] * 24 for _ in range(7)]
-    p_hour = [0] * 24
-    p_dir = {"l2r": 0, "r2l": 0}
-    p_durations: list[float] = []
-    p_kinds = _empty_kinds()
+def _week_grid() -> list[list[int]]:
+    return [[0] * 24 for _ in range(7)]
+
+
+def _kind_counts() -> dict[str, int]:
+    return dict.fromkeys(("walkers", "joggers", "cyclists", "dog_walks", "classified", "walks"), 0)
+
+
+@dataclass(slots=True)
+class _Tally:
+    """The running totals behind the stats page, for one session or for all.
+
+    Everything here adds up: :meth:`merge` folds another tally in, and folding
+    every session's tally in session order gives exactly what one pass over
+    every record in that order would. That is what lets ``build_stats``
+    remember each session's tally and redo only the sessions whose files
+    changed.
+
+    Order is part of the result, so ``merge`` keeps it. Ties in a chart go to
+    whichever value was seen first, a mean depends on the order its floats were
+    summed in, and the dicts' own order reaches the page. Lists are therefore
+    joined in session order and dict keys keep first-seen order.
+    """
+
+    # Cars. One record ~= one pass.
+    total: int = 0
+    dates: set[str] = field(default_factory=set)
+    daily: dict[str, dict[str, int]] = field(default_factory=dict)
+    dow: dict[str, dict[str, int]] = field(default_factory=_dow_counts)
+    by_day_15: dict[str, list[dict[str, int]]] = field(default_factory=dict)
+    heatmap: list[list[int]] = field(default_factory=_week_grid)
+    quarter_profile: list[int] = field(default_factory=lambda: [0] * 96)
+    hour_totals: list[int] = field(default_factory=lambda: [0] * 24)
+    speeds_all: list[float] = field(default_factory=list)
+    speeds_l2r: list[float] = field(default_factory=list)
+    speeds_r2l: list[float] = field(default_factory=list)
+    colours: Counter[str] = field(default_factory=Counter)
+    bodytypes: Counter[str] = field(default_factory=Counter)
+    # plate -> DVSA make / year of first registration. The first session to
+    # carry a plate decides both.
+    makes_by_plate: dict[str, str] = field(default_factory=dict)
+    years_by_plate: dict[str, int | None] = field(default_factory=dict)
+    # Per-track speeds for the "fastest by make / colour" boards.
+    speeds_by_make: dict[str, list[float]] = field(default_factory=dict)
+    speeds_by_colour: dict[str, list[float]] = field(default_factory=dict)
+    # (speed, session name, record) candidates for the fastest-cars board. A
+    # session's tally keeps only its own top N_FASTEST: no other record of
+    # that session can reach the overall top N_FASTEST.
+    fastest: list[tuple[float, str, dict[str, Any]]] = field(default_factory=list)
+    # weekday -> (date, minute-of-day) of each R->L arrival / L->R departure,
+    # for the class-schedule miner (_infer_schedules).
+    sched_arr: dict[int, list[tuple[str, int]]] = field(default_factory=dict)
+    sched_dep: dict[int, list[tuple[str, int]]] = field(default_factory=dict)
+
+    # People. A separate date set, so the cars' per-day mean keeps its own
+    # denominator.
+    p_total: int = 0
+    p_dates: set[str] = field(default_factory=set)
+    p_dow: dict[str, dict[str, int]] = field(default_factory=_dow_counts)
+    p_heatmap: list[list[int]] = field(default_factory=_week_grid)
+    p_hour: list[int] = field(default_factory=lambda: [0] * 24)
+    p_dir: dict[str, int] = field(default_factory=lambda: {"l2r": 0, "r2l": 0})
+    p_durations: list[float] = field(default_factory=list)
+    p_kinds: dict[str, int] = field(default_factory=_kind_counts)
     # (category, dkey) -> (date, minute-of-day, away_minutes|None) per walk,
-    # for the recurring-pattern miner; away gaps pooled for the tile median.
-    p_habit: dict[tuple[str, str], list[tuple[str, int, float | None]]] = defaultdict(list)
-    p_away_gaps: list[float] = []
-    p_round_trips = 0
-    # Chance-match floor, summed over sessions whose sidecar carries the
-    # time-shift control (analysis/people.chance_round_trips); the
-    # likely-genuine trip count is raw minus this.
-    p_rt_chance = 0
-    p_rt_chance_known = False
+    # for the recurring-pattern miner (_habitual_slots).
+    p_habit: dict[tuple[str, str], list[tuple[str, int, float | None]]] = field(
+        default_factory=dict
+    )
+    p_away_gaps: list[float] = field(default_factory=list)
+    p_round_trips: int = 0
+    # Chance-match floor, summed over the sessions whose sidecar carries the
+    # time-shift control (analysis/people.chance_round_trips).
+    p_rt_chance: int = 0
+    p_rt_chance_known: bool = False
 
-    for d in sessions:
-        name = d.name
-        files = SessionFiles(d)
-        try:
-            data = json.loads(files.data.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            data = []
+    def merge(self, other: _Tally) -> None:
+        """Add ``other`` to this tally. ``other`` is left untouched and nothing
+        of it is shared afterwards (a remembered tally must never change)."""
+        self.total += other.total
+        self.dates |= other.dates
+        for date, counts in other.daily.items():
+            _add_counts(self.daily.setdefault(date, _dir_counts()), counts)
+        _add_nested(self.dow, other.dow)
+        for date, quarters in other.by_day_15.items():
+            mine = self.by_day_15.setdefault(date, [{"l2r": 0, "r2l": 0} for _ in range(96)])
+            for into, add in zip(mine, quarters, strict=True):
+                _add_counts(into, add)
+        _add_grid(self.heatmap, other.heatmap)
+        _add_row(self.quarter_profile, other.quarter_profile)
+        _add_row(self.hour_totals, other.hour_totals)
+        self.speeds_all.extend(other.speeds_all)
+        self.speeds_l2r.extend(other.speeds_l2r)
+        self.speeds_r2l.extend(other.speeds_r2l)
+        self.colours.update(other.colours)
+        self.bodytypes.update(other.bodytypes)
+        for plate, make in other.makes_by_plate.items():
+            if plate not in self.makes_by_plate:
+                self.makes_by_plate[plate] = make
+                self.years_by_plate[plate] = other.years_by_plate[plate]
+        _extend_lists(self.speeds_by_make, other.speeds_by_make)
+        _extend_lists(self.speeds_by_colour, other.speeds_by_colour)
+        self.fastest.extend(other.fastest)
+        _extend_lists(self.sched_arr, other.sched_arr)
+        _extend_lists(self.sched_dep, other.sched_dep)
 
-        # Per-track body type for the mix chart: prefer the DVSA-model-derived
-        # class (reliable, plated cars) and fall back to the confident CNN
-        # prediction (the unreadable majority). Built here so the car loop can
-        # count it. Also harvests makes_by_plate from the same DVSA read.
-        # Per-track colour for the mix chart follows the same DVSA-first
-        # precedence: DVSA register colour (ground truth, plated cars) ->
-        # confident colour CNN -> "unknown". The low-res HSV vote (`color`
-        # field) is never used: it scores ~40% grouped vs DVSA and drifts
-        # light cars to black/blue (78% of the tracks it would colour came
-        # out black or blue, vs ~39% from DVSA or the CNN; review R11/E0.8).
-        track_body: dict[int, str] = {}
-        track_colour: dict[int, str] = {}
-        track_make: dict[int, str] = {}
-        dl = files.dvsa_labels
-        if dl.exists():
-            try:
-                labels = json.loads(dl.read_text(encoding="utf-8")).get("labels", {})
-            except (OSError, json.JSONDecodeError):
-                labels = {}
-            for plate, row in labels.items():
-                make = (row.get("make") or "").strip()
-                # Only plates still attributed to a track count as cars: labels
-                # are cached forever, and the plate gate / parked-beacon
-                # suppression / re-enrichment orphan them by clearing
-                # track_ids (review R13/E0.2).
-                if make and row.get("track_ids") and plate not in makes_by_plate:
-                    makes_by_plate[plate] = make
-                    year = row.get("year")
-                    years_by_plate[plate] = year if isinstance(year, int) else None
-                bt: str | None = body_type_for(row.get("make"), row.get("model"))
-                col = colour_class_for(row.get("primary_colour"))
-                for tid in row.get("track_ids", []):
-                    if bt:
-                        track_body[int(tid)] = bt
-                    if col:
-                        track_colour[int(tid)] = col
-                    if make:
-                        track_make[int(tid)] = make.upper()
-        bp = files.bodytype_by_track
-        if bp.exists():
-            try:
-                bt_tracks = json.loads(bp.read_text(encoding="utf-8")).get("tracks", [])
-            except (OSError, json.JSONDecodeError):
-                bt_tracks = []
-            for t in bt_tracks:
-                tid, bt = t.get("track_id"), t.get("body_type")
-                if bt and tid is not None and tid not in track_body:  # DVSA wins
-                    track_body[int(tid)] = bt
-        cp = files.colour_by_track
-        if cp.exists():
-            try:
-                col_tracks = json.loads(cp.read_text(encoding="utf-8")).get("tracks", [])
-            except (OSError, json.JSONDecodeError):
-                col_tracks = []
-            for t in col_tracks:
-                tid, col = t.get("track_id"), t.get("colour")
-                if col and tid is not None and int(tid) not in track_colour:  # DVSA wins
-                    track_colour[int(tid)] = col
+        self.p_total += other.p_total
+        self.p_dates |= other.p_dates
+        _add_nested(self.p_dow, other.p_dow)
+        _add_grid(self.p_heatmap, other.p_heatmap)
+        _add_row(self.p_hour, other.p_hour)
+        _add_counts(self.p_dir, other.p_dir)
+        self.p_durations.extend(other.p_durations)
+        _add_counts(self.p_kinds, other.p_kinds)
+        _extend_lists(self.p_habit, other.p_habit)
+        self.p_away_gaps.extend(other.p_away_gaps)
+        self.p_round_trips += other.p_round_trips
+        self.p_rt_chance += other.p_rt_chance
+        self.p_rt_chance_known = self.p_rt_chance_known or other.p_rt_chance_known
 
-        for r in data:
-            cls = r.get("class_name")
-            if cls not in ("car", "person"):
-                continue
-            # Kinematics guardrail: tracks whose voted class is
-            # contradicted by bbox geometry (today: car-shaped
-            # "persons" -- persistently misclassified parked cars)
-            # count as neither people nor cars.
-            if r.get("class_suspect"):
-                continue
-            ts = r.get("time_start")
-            if not ts:
-                continue
-            try:
-                dt = datetime.fromisoformat(ts)
-            except ValueError:
-                continue
-            date = dt.date().isoformat()
-            wd = dt.weekday()
-            q = (dt.hour * 60 + dt.minute) // 15  # 0..95
-            direction = r.get("direction")
-            dkey = "l2r" if direction == _L2R else "r2l" if direction == _R2L else None
 
-            if cls == "person":
-                p_total += 1
-                p_dates.add(date)
-                p_dow[_DOW[wd]]["total"] += 1
-                p_heatmap[wd][dt.hour] += 1
-                p_hour[dt.hour] += 1
-                if dkey:
-                    p_dow[_DOW[wd]][dkey] += 1
-                    p_dir[dkey] += 1
-                dur = float(r.get("duration_visible") or 0.0)
-                if dur > 0:
-                    p_durations.append(dur)
-                continue
+def _add_counts(into: dict[str, int], add: dict[str, int]) -> None:
+    for key, n in add.items():
+        into[key] = into.get(key, 0) + n
 
-            total += 1
-            dates.add(date)
-            daily[date]["total"] += 1
-            dow[_DOW[wd]]["total"] += 1
-            heatmap[wd][dt.hour] += 1
-            hour_totals[dt.hour] += 1
-            tid = r.get("track_id")
-            cnn_col = track_colour.get(int(tid)) if tid is not None else None
-            colours[cnn_col or "unknown"] += 1
-            bt = track_body.get(r.get("track_id"))
+
+def _add_nested(into: dict[str, dict[str, int]], add: dict[str, dict[str, int]]) -> None:
+    for key, counts in add.items():
+        _add_counts(into[key], counts)
+
+
+def _add_row(into: list[int], add: list[int]) -> None:
+    for i, n in enumerate(add):
+        into[i] += n
+
+
+def _add_grid(into: list[list[int]], add: list[list[int]]) -> None:
+    for row, add_row in zip(into, add, strict=True):
+        _add_row(row, add_row)
+
+
+_K = TypeVar("_K")
+_V = TypeVar("_V")
+
+
+def _extend_lists(into: dict[_K, list[_V]], add: dict[_K, list[_V]]) -> None:
+    for key, values in add.items():
+        into.setdefault(key, []).extend(values)
+
+
+@dataclass(slots=True)
+class _TrackAttributes:
+    """What a session's sidecars say about its tracks, by track id.
+
+    Body type and colour take the DVSA register's value where the track has a
+    gated plate read (ground truth for a correctly read plate) and fall back
+    to the confident CNN prediction for the unread majority. The low-res HSV
+    vote (the record's ``color`` field) is never used: it scores about 40 %
+    grouped against DVSA and drifts light cars to black or blue (review
+    R11/E0.8).
+    """
+
+    body: dict[int, str] = field(default_factory=dict)
+    colour: dict[int, str] = field(default_factory=dict)
+    make: dict[int, str] = field(default_factory=dict)
+
+
+def _read_dvsa_attributes(path: Path, tally: _Tally, attrs: _TrackAttributes) -> None:
+    """Fold a session's DVSA labels into ``attrs`` and the tally's makes."""
+    if not path.exists():
+        return
+    try:
+        labels = json.loads(path.read_text(encoding="utf-8")).get("labels", {})
+    except (OSError, json.JSONDecodeError):
+        labels = {}
+    for plate, row in labels.items():
+        make = (row.get("make") or "").strip()
+        # Only plates still attributed to a track count as cars: labels
+        # are cached forever, and the plate gate / parked-beacon
+        # suppression / re-enrichment orphan them by clearing
+        # track_ids (review R13/E0.2).
+        if make and row.get("track_ids") and plate not in tally.makes_by_plate:
+            tally.makes_by_plate[plate] = make
+            year = row.get("year")
+            tally.years_by_plate[plate] = year if isinstance(year, int) else None
+        bt: str | None = body_type_for(row.get("make"), row.get("model"))
+        col = colour_class_for(row.get("primary_colour"))
+        for tid in row.get("track_ids", []):
             if bt:
-                bodytypes[bt] += 1
-            if dkey:
-                daily[date][dkey] += 1
-                dow[_DOW[wd]][dkey] += 1
-                by_day_15[date][q][dkey] += 1
-                quarter_profile[q] += 1
-                minute = dt.hour * 60 + dt.minute
-                (sched_arr if dkey == "r2l" else sched_dep)[wd].append((date, minute))
+                attrs.body[int(tid)] = bt
+            if col:
+                attrs.colour[int(tid)] = col
+            if make:
+                attrs.make[int(tid)] = make.upper()
 
-            sp = float(r.get("speed_px_s") or 0.0)
-            all_speeds.append(sp)
-            if direction == _L2R:
-                speeds_l2r.append(sp)
-            elif direction == _R2L:
-                speeds_r2l.append(sp)
-            if (r.get("num_detections") or 0) >= _FASTEST_MIN_DETECTIONS:
-                fastest_raw.append((sp, name, r))
-                if sp > 0:
-                    mk = track_make.get(int(tid)) if tid is not None else None
-                    if mk:
-                        speeds_by_make[mk].append(sp)
-                    if cnn_col:
-                        speeds_by_colour[cnn_col].append(sp)
 
-        pp = files.people
-        if pp.exists():
-            try:
-                pdoc = json.loads(pp.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                pdoc = {}
-            psum = pdoc.get("summary", {})
-            p_kinds["walkers"] += int(psum.get("walkers") or 0)
-            p_kinds["joggers"] += int(psum.get("joggers") or 0)
-            p_kinds["cyclists"] += int(psum.get("cyclists") or 0)
-            p_kinds["dog_walks"] += int(psum.get("dog_walkers") or 0)
-            p_kinds["classified"] += int(psum.get("n_person_tracks") or 0)
-            # Sidecars written before walk dedup lack "walks" -- count
-            # their tracks 1:1 so the walks total stays comparable.
-            p_kinds["walks"] += int(psum.get("walks") or psum.get("n_person_tracks") or 0)
-            if psum.get("round_trips_chance") is not None:
-                p_rt_chance += int(psum["round_trips_chance"])
-                p_rt_chance_known = True
+def _read_cnn_body_types(path: Path, attrs: _TrackAttributes) -> None:
+    if not path.exists():
+        return
+    try:
+        tracks = json.loads(path.read_text(encoding="utf-8")).get("tracks", [])
+    except (OSError, json.JSONDecodeError):
+        tracks = []
+    for t in tracks:
+        tid, bt = t.get("track_id"), t.get("body_type")
+        if bt and tid is not None and tid not in attrs.body:  # DVSA wins
+            attrs.body[int(tid)] = bt
 
-            # Per-walk rows feed round-trip pooling + the pattern miner.
-            # Sidecars written before round trips lack these fields --
-            # they just contribute no pairs / no away times.
-            walks = _walks_from_people_rows(pdoc.get("people") or [])
-            away_by_walk: dict[int, float] = {}
-            rt_groups: dict[int, list[dict[str, Any]]] = defaultdict(list)
-            for w in walks:
-                if w["round_trip_id"] is not None:
-                    rt_groups[w["round_trip_id"]].append(w)
-            for pair in rt_groups.values():
-                if len(pair) != 2:
-                    continue
-                pair.sort(key=lambda w: w["start_unix"])
-                gap_min = (pair[1]["start_unix"] - pair[0]["end_unix"]) / 60.0
-                p_round_trips += 1
-                p_away_gaps.append(gap_min)
-                away_by_walk[pair[0]["walk_id"]] = gap_min  # outbound leg only
-            for w in walks:
-                if w["cat"] and w["dkey"]:
-                    p_habit[(w["cat"], w["dkey"])].append(
-                        (w["date"], w["minute"], away_by_walk.get(w["walk_id"]))
-                    )
 
-    daily_list = [{"date": dt, **counts} for dt, counts in sorted(daily.items())]
+def _read_cnn_colours(path: Path, attrs: _TrackAttributes) -> None:
+    if not path.exists():
+        return
+    try:
+        tracks = json.loads(path.read_text(encoding="utf-8")).get("tracks", [])
+    except (OSError, json.JSONDecodeError):
+        tracks = []
+    for t in tracks:
+        tid, col = t.get("track_id"), t.get("colour")
+        if col and tid is not None and int(tid) not in attrs.colour:  # DVSA wins
+            attrs.colour[int(tid)] = col
+
+
+def _tally_person(tally: _Tally, r: dict[str, Any], dt: datetime, dkey: str | None) -> None:
+    wd = dt.weekday()
+    tally.p_total += 1
+    tally.p_dates.add(dt.date().isoformat())
+    tally.p_dow[_DOW[wd]]["total"] += 1
+    tally.p_heatmap[wd][dt.hour] += 1
+    tally.p_hour[dt.hour] += 1
+    if dkey:
+        tally.p_dow[_DOW[wd]][dkey] += 1
+        tally.p_dir[dkey] += 1
+    dur = float(r.get("duration_visible") or 0.0)
+    if dur > 0:
+        tally.p_durations.append(dur)
+
+
+def _tally_car(
+    tally: _Tally,
+    session_name: str,
+    r: dict[str, Any],
+    dt: datetime,
+    dkey: str | None,
+    attrs: _TrackAttributes,
+) -> None:
+    date = dt.date().isoformat()
+    wd = dt.weekday()
+    tally.total += 1
+    tally.dates.add(date)
+    day = tally.daily.setdefault(date, _dir_counts())
+    day["total"] += 1
+    tally.dow[_DOW[wd]]["total"] += 1
+    tally.heatmap[wd][dt.hour] += 1
+    tally.hour_totals[dt.hour] += 1
+    tid = r.get("track_id")
+    colour = attrs.colour.get(int(tid)) if tid is not None else None
+    tally.colours[colour or "unknown"] += 1
+    bt = attrs.body.get(tid) if tid is not None else None
+    if bt:
+        tally.bodytypes[bt] += 1
+    if dkey:
+        day[dkey] += 1
+        tally.dow[_DOW[wd]][dkey] += 1
+        minute = dt.hour * 60 + dt.minute
+        quarters = tally.by_day_15.setdefault(date, [{"l2r": 0, "r2l": 0} for _ in range(96)])
+        quarters[minute // 15][dkey] += 1
+        tally.quarter_profile[minute // 15] += 1
+        sched = tally.sched_arr if dkey == "r2l" else tally.sched_dep
+        sched.setdefault(wd, []).append((date, minute))
+
+    sp = float(r.get("speed_px_s") or 0.0)
+    tally.speeds_all.append(sp)
+    if dkey == "l2r":
+        tally.speeds_l2r.append(sp)
+    elif dkey == "r2l":
+        tally.speeds_r2l.append(sp)
+    # Same detection guard for the fastest-cars board and the by-make /
+    # by-colour boards: see _FASTEST_MIN_DETECTIONS.
+    if (r.get("num_detections") or 0) >= _FASTEST_MIN_DETECTIONS:
+        tally.fastest.append((sp, session_name, r))
+        if sp > 0:
+            make = attrs.make.get(int(tid)) if tid is not None else None
+            if make:
+                tally.speeds_by_make.setdefault(make, []).append(sp)
+            if colour:
+                tally.speeds_by_colour.setdefault(colour, []).append(sp)
+
+
+def _tally_records(
+    tally: _Tally, session_name: str, data: list[dict[str, Any]], attrs: _TrackAttributes
+) -> None:
+    for r in data:
+        cls = r.get("class_name")
+        if cls not in ("car", "person"):
+            continue
+        # Kinematics guardrail: tracks whose voted class is
+        # contradicted by bbox geometry (today: car-shaped
+        # "persons" -- persistently misclassified parked cars)
+        # count as neither people nor cars.
+        if r.get("class_suspect"):
+            continue
+        ts = r.get("time_start")
+        if not ts:
+            continue
+        try:
+            dt = datetime.fromisoformat(ts)
+        except ValueError:
+            continue
+        direction = r.get("direction")
+        dkey = "l2r" if direction == _L2R else "r2l" if direction == _R2L else None
+        if cls == "person":
+            _tally_person(tally, r, dt, dkey)
+        else:
+            _tally_car(tally, session_name, r, dt, dkey, attrs)
+
+
+def _tally_people_sidecar(tally: _Tally, path: Path) -> None:
+    """Fold a session's ``_people.json`` into the tally: the kind counts, the
+    round-trip pairs and the points the pattern miner works from."""
+    if not path.exists():
+        return
+    try:
+        pdoc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        pdoc = {}
+    psum = pdoc.get("summary", {})
+    kinds = tally.p_kinds
+    kinds["walkers"] += int(psum.get("walkers") or 0)
+    kinds["joggers"] += int(psum.get("joggers") or 0)
+    kinds["cyclists"] += int(psum.get("cyclists") or 0)
+    kinds["dog_walks"] += int(psum.get("dog_walkers") or 0)
+    kinds["classified"] += int(psum.get("n_person_tracks") or 0)
+    # Sidecars written before walk dedup lack "walks" -- count
+    # their tracks 1:1 so the walks total stays comparable.
+    kinds["walks"] += int(psum.get("walks") or psum.get("n_person_tracks") or 0)
+    if psum.get("round_trips_chance") is not None:
+        tally.p_rt_chance += int(psum["round_trips_chance"])
+        tally.p_rt_chance_known = True
+
+    # Per-walk rows feed round-trip pooling + the pattern miner.
+    # Sidecars written before round trips lack these fields --
+    # they just contribute no pairs / no away times.
+    walks = _walks_from_people_rows(pdoc.get("people") or [])
+    away_by_walk: dict[int, float] = {}
+    rt_groups: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for w in walks:
+        if w["round_trip_id"] is not None:
+            rt_groups[w["round_trip_id"]].append(w)
+    for pair in rt_groups.values():
+        if len(pair) != 2:
+            continue
+        pair.sort(key=lambda w: w["start_unix"])
+        gap_min = (pair[1]["start_unix"] - pair[0]["end_unix"]) / 60.0
+        tally.p_round_trips += 1
+        tally.p_away_gaps.append(gap_min)
+        away_by_walk[pair[0]["walk_id"]] = gap_min  # outbound leg only
+    for w in walks:
+        if w["cat"] and w["dkey"]:
+            tally.p_habit.setdefault((w["cat"], w["dkey"]), []).append(
+                (w["date"], w["minute"], away_by_walk.get(w["walk_id"]))
+            )
+
+
+def _stats_files(session_dir: Path) -> list[Path]:
+    """The files a session's tally is computed from."""
+    files = SessionFiles(session_dir)
+    return [
+        files.data,
+        files.dvsa_labels,
+        files.bodytype_by_track,
+        files.colour_by_track,
+        files.people,
+    ]
+
+
+def _tally_session(session_dir: Path) -> _Tally:
+    """Everything one session adds to the stats.
+
+    Reads only that session's files (:func:`_stats_files`) and depends on
+    nothing else: not the other sessions, not the speed calibration, not the
+    plate gate. That is what makes it safe to remember.
+    """
+    files = SessionFiles(session_dir)
+    tally = _Tally()
+    try:
+        data = json.loads(files.data.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        data = []
+    attrs = _TrackAttributes()
+    _read_dvsa_attributes(files.dvsa_labels, tally, attrs)
+    _read_cnn_body_types(files.bodytype_by_track, attrs)
+    _read_cnn_colours(files.colour_by_track, attrs)
+    _tally_records(tally, session_dir.name, data, attrs)
+    _tally_people_sidecar(tally, files.people)
+    # Stable, so equal speeds keep record order, as they would in one sort
+    # over every session's records.
+    tally.fastest = sorted(tally.fastest, key=lambda x: x[0], reverse=True)[:N_FASTEST]
+    return tally
+
+
+# A session's tally, remembered until one of its files changes. Sessions
+# closed weeks ago never change, so a refresh re-reads only what did.
+_SESSION_TALLIES: FileMemo[_Tally] = FileMemo()
+
+
+def _session_tally(session_dir: Path) -> _Tally:
+    return _SESSION_TALLIES.get(
+        str(session_dir), _stats_files(session_dir), lambda: _tally_session(session_dir)
+    )
+
+
+def _overall(tally: _Tally, n_sessions: int) -> dict[str, Any]:
+    daily, dates = tally.daily, tally.dates
     n_days = len(dates)
     sum_l2r = sum(c["l2r"] for c in daily.values())
     sum_r2l = sum(c["r2l"] for c in daily.values())
     directed = sum_l2r + sum_r2l
 
     busiest = max(daily.items(), key=lambda kv: kv[1]["total"], default=None)
-    bh = max(range(24), key=lambda h: hour_totals[h]) if total else None
+    hour_totals, quarter_profile = tally.hour_totals, tally.quarter_profile
+    bh = max(range(24), key=lambda h: hour_totals[h]) if tally.total else None
     pq = max(range(96), key=lambda q: quarter_profile[q]) if directed else None
-
-    overall = {
-        "total_journeys": total,
-        "n_sessions": len(sessions),
+    return {
+        "total_journeys": tally.total,
+        "n_sessions": n_sessions,
         "n_days": n_days,
         "date_from": min(dates) if dates else None,
         "date_to": max(dates) if dates else None,
@@ -739,67 +922,87 @@ def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:  
         "peak_quarter": (
             {"start": _quarter_label(pq), "total": quarter_profile[pq]} if pq is not None else None
         ),
-        "per_day_mean": round(total / n_days, 1) if n_days else 0,
+        "per_day_mean": round(tally.total / n_days, 1) if n_days else 0,
     }
 
-    speed = {
-        "hist": _speed_hist(all_speeds, factor),
-        "avg_all": _disp(sum(all_speeds) / len(all_speeds), factor) if all_speeds else 0,
-        "avg_l2r": _disp(sum(speeds_l2r) / len(speeds_l2r), factor) if speeds_l2r else 0,
-        "avg_r2l": _disp(sum(speeds_r2l) / len(speeds_r2l), factor) if speeds_r2l else 0,
-        "unit": unit,
-        "fastest": _build_fastest(output_root, fastest_raw, factor, unit, gate=plate_gate()),
-    }
 
-    makes = [[m, n] for m, n in Counter(makes_by_plate.values()).most_common(N_TOP_MAKES)]
-    makes_benchmark = make_benchmark(makes_by_plate, years_by_plate, makes)
-    colours_out = [[c, n] for c, n in colours.most_common(N_TOP_COLOURS)]
-    bodytypes_out = [[b, n] for b, n in bodytypes.most_common()]
-    fastest_makes = _speed_ranking(speeds_by_make, factor, unit)
-    fastest_colours = _speed_ranking(speeds_by_colour, factor, unit)
+def _people_block(tally: _Tally) -> dict[str, Any]:
+    kinds = {**_empty_kinds(), **tally.p_kinds}
+    if kinds["classified"]:
+        for k in ("walkers", "joggers", "cyclists"):
+            kinds[f"pct_{k}"] = round(100 * kinds[k] / kinds["classified"])
+    kinds["round_trips"] = tally.p_round_trips
+    kinds["round_trips_est"] = (
+        max(0, tally.p_round_trips - tally.p_rt_chance) if tally.p_rt_chance_known else None
+    )
+    away_gaps = sorted(tally.p_away_gaps)
+    kinds["away_min_median"] = round(away_gaps[len(away_gaps) // 2], 1) if away_gaps else None
 
+    p_dir, p_hour, p_total, p_dates = tally.p_dir, tally.p_hour, tally.p_total, tally.p_dates
     p_directed = p_dir["l2r"] + p_dir["r2l"]
     p_bh = max(range(24), key=lambda h: p_hour[h]) if p_total else None
-    if p_kinds["classified"]:
-        for k in ("walkers", "joggers", "cyclists"):
-            p_kinds[f"pct_{k}"] = round(100 * p_kinds[k] / p_kinds["classified"])
-    p_kinds["round_trips"] = p_round_trips
-    p_kinds["round_trips_est"] = max(0, p_round_trips - p_rt_chance) if p_rt_chance_known else None
-    p_away_gaps.sort()
-    p_kinds["away_min_median"] = (
-        round(p_away_gaps[len(p_away_gaps) // 2], 1) if p_away_gaps else None
-    )
-    people = {
+    return {
         "total": p_total,
         "n_days": len(p_dates),
         "per_day_mean": round(p_total / len(p_dates), 1) if p_dates else 0,
         "pct_l2r": round(100 * p_dir["l2r"] / p_directed) if p_directed else 0,
         "pct_r2l": round(100 * p_dir["r2l"] / p_directed) if p_directed else 0,
         "busiest_hour": ({"hour": p_bh, "total": p_hour[p_bh]} if p_bh is not None else None),
-        "dow": p_dow,
-        "heatmap": p_heatmap,
-        "dwell": _dwell_stats(p_durations),
-        "kinds": p_kinds,
-        "habitual": _habitual_slots(p_habit),
+        "dow": tally.p_dow,
+        "heatmap": tally.p_heatmap,
+        "dwell": _dwell_stats(tally.p_durations),
+        "kinds": kinds,
+        "habitual": _habitual_slots(tally.p_habit),
     }
 
-    schedules = _infer_schedules(sched_arr, sched_dep)
 
+def build_stats(output_root: Path, *, m_per_px: float | None = None) -> Stats:
+    """Aggregate traffic stats across all sessions under ``output_root``.
+
+    Each session's contribution is computed once (:func:`_tally_session`) and
+    remembered until one of that session's files changes, so calling this
+    again costs the changed sessions plus the merge. The first call in a
+    process reads every session.
+    """
+    factor = _speed_factor(m_per_px)
+    unit = "mph" if factor is not None else "px/s"
+
+    sessions = discover_sessions(output_root)
+    if not sessions:
+        return _empty_stats(unit)
+
+    # A fresh tally every call: the remembered ones are only ever read.
+    tally = _Tally()
+    for d in sessions:
+        tally.merge(_session_tally(d))
+
+    all_speeds, speeds_l2r, speeds_r2l = tally.speeds_all, tally.speeds_l2r, tally.speeds_r2l
+    speed = {
+        "hist": _speed_hist(all_speeds, factor),
+        "avg_all": _disp(sum(all_speeds) / len(all_speeds), factor) if all_speeds else 0,
+        "avg_l2r": _disp(sum(speeds_l2r) / len(speeds_l2r), factor) if speeds_l2r else 0,
+        "avg_r2l": _disp(sum(speeds_r2l) / len(speeds_r2l), factor) if speeds_r2l else 0,
+        "unit": unit,
+        "fastest": _build_fastest(output_root, tally.fastest, factor, unit, gate=plate_gate()),
+    }
+
+    makes_by_plate = tally.makes_by_plate
+    makes = [[m, n] for m, n in Counter(makes_by_plate.values()).most_common(N_TOP_MAKES)]
     return Stats(
-        overall=overall,
-        daily=daily_list,
-        dow=dow,
-        by_day_15min=dict(by_day_15),
-        heatmap=heatmap,
+        overall=_overall(tally, len(sessions)),
+        daily=[{"date": dt, **counts} for dt, counts in sorted(tally.daily.items())],
+        dow=tally.dow,
+        by_day_15min=tally.by_day_15,
+        heatmap=tally.heatmap,
         speed=speed,
         makes=makes,
-        makes_benchmark=makes_benchmark,
-        colours=colours_out,
-        bodytypes=bodytypes_out,
-        fastest_makes=fastest_makes,
-        fastest_colours=fastest_colours,
-        people=people,
-        schedules=schedules,
+        makes_benchmark=make_benchmark(makes_by_plate, tally.years_by_plate, makes),
+        colours=[[c, n] for c, n in tally.colours.most_common(N_TOP_COLOURS)],
+        bodytypes=[[b, n] for b, n in tally.bodytypes.most_common()],
+        fastest_makes=_speed_ranking(tally.speeds_by_make, factor, unit),
+        fastest_colours=_speed_ranking(tally.speeds_by_colour, factor, unit),
+        people=_people_block(tally),
+        schedules=_infer_schedules(tally.sched_arr, tally.sched_dep),
         speed_unit=unit,
     )
 
@@ -893,6 +1096,23 @@ def _track_snap(
     return None
 
 
+def _best_reads_by_track(path: Path) -> dict[int, dict[str, Any]]:
+    """``track_id -> best preferred read`` from one ``_alpr_by_track.json``
+    (empty when the file is missing or unreadable)."""
+    if not path.exists():
+        return {}
+    try:
+        tracks = json.loads(path.read_text(encoding="utf-8")).get("tracks", [])
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return {t["track_id"]: t["best_preferred"] for t in tracks if t.get("best_preferred")}
+
+
+# A session's best reads, remembered until its rollup changes. Only the
+# sessions that hold one of the fastest tracks are ever loaded.
+_BEST_READS: FileMemo[dict[int, dict[str, Any]]] = FileMemo(max_entries=64)
+
+
 def _build_fastest(
     output_root: Path,
     fastest_raw: list[tuple[float, str, dict[str, Any]]],
@@ -918,26 +1138,16 @@ def _build_fastest(
         return []
     support = load_plate_support(output_root) if gate.needs_support else None
 
-    # Best read for the top tracks from each session's alpr_by_track, loaded
-    # once per session involved.
-    best_reads: dict[tuple[str, int], dict[str, Any]] = {}
+    # Best reads of each session that holds one of the top tracks.
+    best_reads: dict[str, dict[int, dict[str, Any]]] = {}
     for sess in {s for _sp, s, _r in top}:
-        p = SessionFiles(output_root / sess).alpr_by_track
-        if not p.exists():
-            continue
-        try:
-            tracks = json.loads(p.read_text(encoding="utf-8")).get("tracks", [])
-        except (OSError, json.JSONDecodeError):
-            continue
-        for t in tracks:
-            best = t.get("best_preferred")
-            if best:
-                best_reads[(sess, t["track_id"])] = best
+        path = SessionFiles(output_root / sess).alpr_by_track
+        best_reads[sess] = _BEST_READS.get(str(path), [path], partial(_best_reads_by_track, path))
 
     out: list[dict[str, Any]] = []
     for sp, sess, r in top:
         tid = r["track_id"]
-        best = best_reads.get((sess, tid), {})
+        best = best_reads[sess].get(tid, {})
         plate = None
         plate_raw = best.get("ocr_text")
         if plate_raw and read_passes(gate, best, support):

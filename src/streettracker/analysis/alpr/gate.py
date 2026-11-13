@@ -27,10 +27,13 @@ import json
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 from streettracker.analysis.alpr import base
+from streettracker.common.filememo import FileMemo, FileStamp, file_stamp
+from streettracker.common.session_files import SessionFiles
 
 GATE_MODES = ("conf", "combined")
 DEFAULT_SUPPORTED_CONF = 0.8
@@ -131,40 +134,64 @@ def plate_gate(override_conf: float | None = None) -> PlateGate:
     return resolve_plate_gate(override_conf)[0]
 
 
-# (output_root, ((file, mtime_ns), ...)) -> support counts.
-_SUPPORT_CACHE: dict[tuple[str, tuple[tuple[str, int], ...]], Counter[str]] = {}
+# One rollup file's support counts, remembered until that file changes.
+_FILE_SUPPORT: FileMemo[Counter[str]] = FileMemo()
+# (output_root, ((file, stamp), ...)) -> the summed counts, so a call that
+# finds nothing changed hands back the same Counter without re-adding.
+_SUPPORT_CACHE: dict[tuple[str, tuple[tuple[str, FileStamp], ...]], Counter[str]] = {}
+
+
+def _rollup_files(output_root: Path) -> list[Path]:
+    """Each session directory's own ``<session>_alpr_by_track.json``.
+
+    Built from the directory names, not by globbing inside them: a session
+    directory holds tens of thousands of snaps, and listing every one of them
+    cost over a second per call across the dev box's sessions.
+    """
+    try:
+        session_dirs = sorted(d for d in output_root.glob("session_*") if d.is_dir())
+    except OSError:
+        return []
+    return [SessionFiles(d).alpr_by_track for d in session_dirs]
+
+
+def _file_support(path: Path) -> Counter[str]:
+    """``plate -> number of tracks`` in one rollup file."""
+    from streettracker.analysis.dvsa import is_canonical_uk_plate
+
+    support: Counter[str] = Counter()
+    try:
+        tracks = json.loads(path.read_text(encoding="utf-8")).get("tracks", [])
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return support
+    for t in tracks:
+        best = t.get("best_preferred") if isinstance(t, dict) else None
+        if not isinstance(best, dict):
+            continue
+        plate = str(best.get("ocr_text") or "").replace(" ", "").upper()
+        if plate and is_canonical_uk_plate(plate):
+            support[plate] += 1
+    return support
 
 
 def load_plate_support(output_root: Path) -> Counter[str]:
     """``plate -> number of tracks`` whose UK-shaped best read is that plate,
     over every ``session_*/<session>_alpr_by_track.json`` under
-    ``output_root``. Cached until any rollup file changes."""
-    from streettracker.analysis.dvsa import is_canonical_uk_plate
+    ``output_root``.
 
-    files = sorted(output_root.glob("session_*/session_*_alpr_by_track.json"))
-    key_files: list[tuple[str, int]] = []
-    for f in files:
-        try:
-            key_files.append((str(f), f.stat().st_mtime_ns))
-        except OSError:
-            continue
-    key = (str(output_root.resolve()), tuple(key_files))
+    Each file's counts are remembered until that file changes, so after one
+    session is re-enriched only its rollup is read again. Treat the result as
+    read-only: it is shared with later callers until a rollup changes.
+    """
+    stamped = [(f, file_stamp(f)) for f in _rollup_files(output_root)]
+    present = [(f, stamp) for f, stamp in stamped if stamp is not None]
+    key = (str(output_root.resolve()), tuple((str(f), stamp) for f, stamp in present))
     hit = _SUPPORT_CACHE.get(key)
     if hit is not None:
         return hit
     support: Counter[str] = Counter()
-    for name, _m in key_files:
-        try:
-            tracks = json.loads(Path(name).read_text(encoding="utf-8")).get("tracks", [])
-        except (OSError, json.JSONDecodeError, AttributeError):
-            continue
-        for t in tracks:
-            best = t.get("best_preferred") if isinstance(t, dict) else None
-            if not isinstance(best, dict):
-                continue
-            plate = str(best.get("ocr_text") or "").replace(" ", "").upper()
-            if plate and is_canonical_uk_plate(plate):
-                support[plate] += 1
+    for f, _stamp in present:
+        support.update(_FILE_SUPPORT.get(str(f), [f], partial(_file_support, f)))
     _SUPPORT_CACHE.clear()  # one output root in practice; keep only the newest
     _SUPPORT_CACHE[key] = support
     return support
