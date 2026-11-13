@@ -163,11 +163,12 @@ publishes `makemodel-<run>`.
    and E2.7; the E3.1 hand count, then the night A/B (E2.8); and the retrain (E2.5) last.
 2. **Low-light shutter schedule.** Waiting on the operator's decision (see Plate reading).
 3. **Code-quality roadmap** (2026-11-10 review). Done: showcase rebuild speed, CI checks, the
-   shared file helpers, the stall fix, this file's split, the CLI command table and the rest of
-   the Orin runtime work (2026-11-13: one sharpness measurement per track, the shutdown drain on
-   the event loop, atomic end-of-session JSON). The runtime part is on `main` but not on the
-   Orin; it goes out with the next code deploy and needs no config change. The rest are
-   unapproved proposals; ask before starting one.
+   shared file helpers, the stall fix, this file's split, the CLI command table, end-to-end
+   tests for `alpr-run` and the preferred pipeline, and the rest of the Orin runtime work
+   (2026-11-13: one sharpness measurement per track, the shutdown drain on the event loop, atomic
+   end-of-session JSON). The runtime part is on `main` but not on the Orin; it goes out with the
+   next code deploy and needs no config change. The rest are unapproved proposals; ask before
+   starting one.
 4. **JetPack 7.** Blocked until `scripts/check_jp7_wheel.ps1` exits 0. Stay on JetPack 6; the
    plan is in [`docs/deployment.md`](docs/deployment.md#jetpack-7-upgrade-plan).
 
@@ -393,7 +394,7 @@ sees them. Either run from PowerShell / cmd, or prefix with
 
 ## Tests and CI
 
-Tests at HEAD (2026-11-10): **about 1,300 passing on the dev box, on Python 3.10.**
+Tests at HEAD (2026-11-13): **about 1,600 passing on the dev box, on Python 3.10.**
 CI runs them in two jobs: `test` (no torch; the 8 torch-gated classifier modules
 skip there) and `test-torch` (those 8 modules, 92 tests, on CPU wheels). CI also
 enforces `ruff check`, `ruff format --check`, `mypy` (`[tool.mypy]` in
