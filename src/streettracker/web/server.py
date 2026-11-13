@@ -12,7 +12,9 @@ Design:
 * **Aggregate once, cache in memory.** :func:`build_showcase` +
   :func:`build_stats` read every session under the output root; on the current
   corpus (~20+ sessions, thousands of cars) a full rebuild is ~60-90 s, not the
-  ~1-2 s this once was. The result is cached in a :class:`_State` holder on the
+  ~1-2 s this once was. (:func:`build_stats` keeps each session's tally until
+  that session's files change, so its share of a later refresh is small; the
+  car gallery is still rebuilt in full.) The result is cached in a :class:`_State` holder on the
   app. ``POST /api/refresh`` re-aggregates *in place* (so we never mutate the
   app mapping after start, which aiohttp deprecates) to pick up newly pulled
   sessions. Because that rebuild is slow, the refresh handler runs it in a

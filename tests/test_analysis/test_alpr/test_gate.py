@@ -122,3 +122,54 @@ def test_read_passes_uses_the_reads_own_agreement() -> None:
     assert not read_passes(g, {**read, "n_agree": 0}, {})
     assert read_passes(g, {**read, "n_agree": 0}, {"AB12CDE": 2})
     assert not read_passes(g, read, {}, n_agree=0)  # explicit override wins
+
+
+def test_load_plate_support_rereads_only_the_rollup_that_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from streettracker.analysis.alpr import gate as gate_mod
+
+    read: list[str] = []
+    real = gate_mod._file_support
+
+    def counting(path: Path):  # type: ignore[no-untyped-def]
+        read.append(path.parent.name)
+        return real(path)
+
+    monkeypatch.setattr(gate_mod, "_file_support", counting)
+    _rollup(tmp_path, "session_20260101_000000", [(1, "AB12CDE")])
+    p = _rollup(tmp_path, "session_20260102_000000", [(1, "AB12CDE"), (2, "LA68EWY")])
+    assert load_plate_support(tmp_path) == {"AB12CDE": 2, "LA68EWY": 1}
+    assert read == ["session_20260101_000000", "session_20260102_000000"]
+
+    assert load_plate_support(tmp_path) == {"AB12CDE": 2, "LA68EWY": 1}
+    assert len(read) == 2  # nothing changed, nothing read
+
+    _rollup(tmp_path, "session_20260102_000000", [(1, "LA68EWY")])
+    st = p.stat()
+    os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+    assert load_plate_support(tmp_path) == {"AB12CDE": 1, "LA68EWY": 1}
+    assert read[2:] == ["session_20260102_000000"]
+
+
+def test_load_plate_support_follows_sessions_coming_and_going(tmp_path: Path) -> None:
+    import shutil
+
+    _rollup(tmp_path, "session_20260101_000000", [(1, "AB12CDE")])
+    assert load_plate_support(tmp_path) == {"AB12CDE": 1}
+    _rollup(tmp_path, "session_20260102_000000", [(1, "AB12CDE")])
+    assert load_plate_support(tmp_path) == {"AB12CDE": 2}
+    shutil.rmtree(tmp_path / "session_20260101_000000")
+    assert load_plate_support(tmp_path) == {"AB12CDE": 1}
+
+
+def test_load_plate_support_reads_each_sessions_own_rollup(tmp_path: Path) -> None:
+    """The rollup is found by the session directory's name, without listing
+    the directory. A session with none, and a directory that isn't a session,
+    contribute nothing."""
+    _rollup(tmp_path, "session_20260101_000000", [(1, "AB12CDE")])
+    (tmp_path / "session_20260102_000000").mkdir()  # pulled, not yet enriched
+    stray = _rollup(tmp_path, "notes", [(1, "AB12CDE")])
+    assert stray.is_file()
+    assert load_plate_support(tmp_path) == {"AB12CDE": 1}
+    assert load_plate_support(tmp_path / "missing") == {}

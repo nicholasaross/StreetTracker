@@ -973,3 +973,237 @@ async def test_api_stats_includes_people(client: TestClient) -> None:
     data = await (await client.get("/api/stats")).json()
     assert "people" in data
     assert {"total", "dow", "heatmap", "dwell", "habitual"} <= data["people"].keys()
+
+
+# ----------------------------------------------------------------------
+# Remembering each session's contribution.
+#
+# build_stats keeps a session's tally until one of that session's files
+# changes. The page must be exactly what one pass over every record would
+# give, and a change to any input must show on the next build.
+
+
+@pytest.fixture
+def session_reads(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Names of the sessions build_stats actually read, in order."""
+    from streettracker.web import stats as stats_mod
+
+    reads: list[str] = []
+    real = stats_mod._tally_session
+
+    def counting(session_dir: Path):  # type: ignore[no-untyped-def]
+        reads.append(session_dir.name)
+        return real(session_dir)
+
+    monkeypatch.setattr(stats_mod, "_tally_session", counting)
+    return reads
+
+
+def _two_sessions(root: Path) -> tuple[Path, Path]:
+    a = _mk_session(
+        root,
+        "session_20260526_090000",
+        [_track(1, speed=120.0), _track(2, direction="right to left", speed=90.0)],
+        dvsa={"labels": {"AB12CDE": {"make": "FORD", "model": "FOCUS", "track_ids": [1]}}},
+    )
+    b = _mk_session(
+        root,
+        "session_20260527_090000",
+        [_track(1, date="2026-05-27", speed=110.0), _track(2, date="2026-05-27", cls="person")],
+    )
+    return a, b
+
+
+def _later(path: Path) -> None:
+    """Move a file's modification time forward, as a later write would."""
+    import os
+
+    st = path.stat()
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+
+
+def test_unchanged_sessions_are_read_once(tmp_path: Path, session_reads: list[str]) -> None:
+    _two_sessions(tmp_path)
+    first = build_stats(tmp_path).to_json_dict()
+    assert session_reads == ["session_20260526_090000", "session_20260527_090000"]
+
+    again = build_stats(tmp_path).to_json_dict()
+    assert again == first
+    assert len(session_reads) == 2  # nothing read again
+
+
+def test_speed_calibration_does_not_reread_sessions(
+    tmp_path: Path, session_reads: list[str]
+) -> None:
+    _two_sessions(tmp_path)
+    pxs = build_stats(tmp_path)
+    mph = build_stats(tmp_path, m_per_px=0.05)
+    assert len(session_reads) == 2
+    assert pxs.speed_unit == "px/s" and mph.speed_unit == "mph"
+    assert mph.speed["avg_all"] == pytest.approx(pxs.speed["avg_all"] * 0.05 * MPH_PER_M_S, abs=0.1)
+
+
+def test_only_the_changed_session_is_read_again(tmp_path: Path, session_reads: list[str]) -> None:
+    a, _b = _two_sessions(tmp_path)
+    assert build_stats(tmp_path).overall["total_journeys"] == 3
+    session_reads.clear()
+
+    (a / f"{a.name}_data.json").write_text(json.dumps([asdict(_track(1, speed=120.0))]))
+    assert build_stats(tmp_path).overall["total_journeys"] == 2
+    assert session_reads == [a.name]
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "_data.json",
+        "_dvsa_labels.json",
+        "_bodytype_by_track.json",
+        "_colour_by_track.json",
+        "_people.json",
+    ],
+)
+def test_each_input_file_is_watched(tmp_path: Path, session_reads: list[str], suffix: str) -> None:
+    """Touching any file a session's tally is computed from re-reads that
+    session, and no other."""
+    a, _b = _two_sessions(tmp_path)
+    for name in ("_bodytype_by_track.json", "_colour_by_track.json"):
+        (a / f"{a.name}{name}").write_text(json.dumps({"tracks": []}))
+    (a / f"{a.name}_people.json").write_text(json.dumps({"summary": {}, "people": []}))
+    build_stats(tmp_path)
+    session_reads.clear()
+
+    _later(a / f"{a.name}{suffix}")
+    build_stats(tmp_path)
+    assert session_reads == [a.name]
+
+
+def test_a_sidecar_appearing_or_disappearing_is_noticed(
+    tmp_path: Path, session_reads: list[str]
+) -> None:
+    a, _b = _two_sessions(tmp_path)
+    assert dict(build_stats(tmp_path).colours) == {"unknown": 3}
+
+    _colour_sidecar(a, {2: "red"})
+    assert dict(build_stats(tmp_path).colours) == {"unknown": 2, "red": 1}
+
+    (a / f"{a.name}_colour_by_track.json").unlink()
+    session_reads.clear()
+    assert dict(build_stats(tmp_path).colours) == {"unknown": 3}
+    assert session_reads == [a.name]
+
+
+def test_sessions_can_come_and_go(tmp_path: Path, session_reads: list[str]) -> None:
+    _a, b = _two_sessions(tmp_path)
+    assert build_stats(tmp_path).overall["n_sessions"] == 2
+    session_reads.clear()
+
+    _mk_session(tmp_path, "session_20260528_090000", [_track(1, date="2026-05-28")])
+    s = build_stats(tmp_path)
+    assert (s.overall["n_sessions"], s.overall["total_journeys"]) == (3, 4)
+    assert session_reads == ["session_20260528_090000"]
+
+    (b / f"{b.name}_data.json").unlink()  # no longer a session
+    s = build_stats(tmp_path)
+    assert (s.overall["n_sessions"], s.overall["total_journeys"]) == (2, 3)
+    assert s.people["total"] == 0
+    assert len(session_reads) == 1  # dropping a session reads nothing
+
+
+def test_a_result_can_be_changed_without_touching_what_is_remembered(tmp_path: Path) -> None:
+    """Each build returns its own lists and dicts. A caller that edits one
+    must not corrupt the tallies the next build is made from."""
+    _two_sessions(tmp_path)
+    first = build_stats(tmp_path)
+    expected = build_stats(tmp_path).to_json_dict()
+
+    first.daily.clear()
+    first.dow["Tue"]["total"] = 999
+    first.heatmap[1][9] = 999
+    first.by_day_15min.clear()
+    first.colours.append(["purple", 5])
+    first.speed["fastest"].clear()
+    first.people["dow"]["Wed"]["total"] = 999
+    first.people["heatmap"][2][9] = 999
+    first.people["kinds"]["walkers"] = 999
+    first.overall["total_journeys"] = 999
+
+    assert build_stats(tmp_path).to_json_dict() == expected
+
+
+def test_the_fastest_board_spans_sessions_with_ties_in_record_order(tmp_path: Path) -> None:
+    """Each session keeps only its own top eight, which must still give the
+    overall top eight, with equal speeds in session-then-record order."""
+    _mk_session(
+        tmp_path,
+        "session_a",
+        [_track(i, speed=float(100 + i % 3), hhmmss=f"09:{i:02d}:00") for i in range(1, 13)],
+    )
+    _mk_session(
+        tmp_path,
+        "session_b",
+        [_track(i, speed=float(100 + i % 3), hhmmss=f"10:{i:02d}:00") for i in range(1, 13)],
+    )
+    fastest = build_stats(tmp_path).speed["fastest"]
+    # Speed 102 belongs to track ids 2, 5, 8, 11 in each session: all eight
+    # places, session_a's first.
+    assert [(f["session"], f["track_id"]) for f in fastest] == [
+        ("session_a", 2),
+        ("session_a", 5),
+        ("session_a", 8),
+        ("session_a", 11),
+        ("session_b", 2),
+        ("session_b", 5),
+        ("session_b", 8),
+        ("session_b", 11),
+    ]
+
+
+def _random_records(seed: int, n: int) -> list[TrackRecord]:
+    import random
+
+    rng = random.Random(seed)
+    directions = ["left to right", "right to left", "left to right", "unknown"]
+    records = []
+    for tid in range(1, n + 1):
+        hour, minute, second = rng.randrange(6, 22), rng.randrange(60), rng.randrange(60)
+        records.append(
+            _track(
+                tid,
+                date=f"2026-06-{rng.randrange(1, 15):02d}",
+                hhmmss=f"{hour:02d}:{minute:02d}:{second:02d}",
+                direction=rng.choice(directions),
+                # Few distinct speeds, so the fastest board is decided by ties
+                # and the means are sums of many repeated floats.
+                speed=rng.choice([0.0, 37.5, 80.1, 80.1, 120.3, 150.7, 150.7]),
+                ndet=rng.choice([3, 8, 20]),
+                cls=rng.choice(["car", "car", "car", "person"]),
+            )
+        )
+    return records
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_splitting_records_across_sessions_changes_nothing(tmp_path: Path, seed: int) -> None:
+    """The same records in the same order give the same page, however they are
+    divided into sessions. This is the property the per-session tallies rest
+    on: adding them up in session order is one pass over every record."""
+    records = _random_records(seed, 400)
+    one = tmp_path / "one"
+    _mk_session(one, "session_all", records, images=False)
+    many = tmp_path / "many"
+    cuts = [0, 57, 58, 230, 400]  # uneven on purpose, one session a single record
+    for i, (lo, hi) in enumerate(zip(cuts, cuts[1:], strict=False)):
+        _mk_session(many, f"session_part{i}", records[lo:hi], images=False)
+
+    whole = build_stats(one).to_json_dict()
+    split = build_stats(many).to_json_dict()
+
+    assert whole["overall"].pop("n_sessions") == 1
+    assert split["overall"].pop("n_sessions") == 4
+    # The fastest board names the session each car is in; everything else
+    # about it (which cars, in which order) must match.
+    for stats in (whole, split):
+        for row in stats["speed"]["fastest"]:
+            del row["session"]
+    assert split == whole

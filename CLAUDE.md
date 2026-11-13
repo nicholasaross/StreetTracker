@@ -32,11 +32,15 @@ and append the dated account (numbers, method, what it replaced) to the matching
 
 ### Live on the Orin
 
-- **Code `0b817b7`**, pulled 2026-11-10 and started by a panel roll at 17:18 GMT. Rollback:
-  `git checkout 6707789` + restart. JetPack 6, Python 3.10.
+- **Code `e894211`**, pulled 2026-11-13 and started by a panel roll at 08:02 GMT. Rollback:
+  `git checkout 0b817b7` + restart. JetPack 6, Python 3.10.
 - **`session_20261110_171836`** is the first session recorded with the summary-page stall fix
   (see [Device runtime notes](#device-runtime-notes-orin-nano-8gb-super)). The fix is confirmed
   on it (2026-11-13): tracks ending at a rebuild are at chance level, 29 against 21 expected.
+- **`session_20261113_080245`** is the first session recorded with the 2026-11-13 runtime changes
+  (one sharpness measurement per track, the shutdown drain on the event loop, atomic
+  end-of-session JSON). Its roll will be the first shutdown to use the new drain and write order:
+  check then that `_hourly.json`, `_meta.json` and `_data.json` all land, in that order.
 - **Config.** `vehicle_classes = [0,1,2,3,5,7,16]` (person, bicycle, car, motorcycle, bus, truck,
   dog). The snap gate is the road polygon with six triggers, plus pipeline mode (400 ms, 15 per
   track) with per-direction bands. The live block is under
@@ -164,10 +168,10 @@ publishes `makemodel-<run>`.
 2. **Low-light shutter schedule.** Waiting on the operator's decision (see Plate reading).
 3. **Code-quality roadmap** (2026-11-10 review). Done: showcase rebuild speed, CI checks, the
    shared file helpers, the stall fix, this file's split, the CLI command table, end-to-end
-   tests for `alpr-run` and the preferred pipeline, and the rest of the Orin runtime work
+   tests for `alpr-run` and the preferred pipeline, per-session memoised `/stats`, and the rest
+   of the Orin runtime work
    (2026-11-13: one sharpness measurement per track, the shutdown drain on the event loop, atomic
-   end-of-session JSON). The runtime part is on `main` but not on the Orin; it goes out with the
-   next code deploy and needs no config change. The rest are unapproved proposals; ask before
+   end-of-session JSON; deployed the same day). The rest are unapproved proposals; ask before
    starting one.
 4. **JetPack 7.** Blocked until `scripts/check_jp7_wheel.ps1` exits 0. Stay on JetPack 6; the
    plan is in [`docs/deployment.md`](docs/deployment.md#jetpack-7-upgrade-plan).
@@ -238,6 +242,7 @@ src/streettracker/
 │   ├── hourly.py           # build_hourly_rollup()
 │   ├── output.py           # EventLog, save_json, JSONL readers
 │   ├── fileio.py           # atomic_write_json/text/bytes, read_json, iter_jsonl
+│   ├── filememo.py         # FileMemo: a value kept until one of its files changes
 │   └── session_files.py    # SessionFiles(session_dir): every per-session file path
 ├── inference/              # YOLO + BotSORT via Ultralytics
 ├── sources/                # RTSP (FFmpeg), file (NVDEC on Orin)
@@ -429,6 +434,13 @@ make, model, year and colour, a per-car metadata editor and the `/stats` traffic
 - **`/stats` counts every car track**, not just plated ones. One track is about one pass, and
   `class_suspect` tracks are excluded. Speed is in px/s unless `configs/showcase.json` sets a
   calibration; mph is approximate (one global factor, no perspective).
+- **`/stats` remembers each session.** `build_stats` computes one tally per session
+  (`web/stats._tally_session`) and keeps it until one of that session's files changes, so a
+  refresh re-reads only the sessions that changed (under 0.5 s against about 10 s for all 59). Two
+  rules follow. A tally may depend only on its own session's files: anything read per session
+  must be listed in `_stats_files`, or a change to it goes unnoticed. And the tallies must add
+  up to exactly one pass over every record, order included (`_Tally.merge`); the test
+  `test_splitting_records_across_sessions_changes_nothing` holds that.
 
 ## Operator control panel
 
