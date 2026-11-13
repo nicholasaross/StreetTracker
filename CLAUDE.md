@@ -167,8 +167,11 @@ publishes `makemodel-<run>`.
    and E2.7; the E3.1 hand count, then the night A/B (E2.8); and the retrain (E2.5) last.
 3. **Low-light shutter schedule.** Waiting on the operator's decision (see Plate reading).
 4. **Code-quality roadmap** (2026-11-10 review). Done: showcase rebuild speed, CI checks, the
-   shared file helpers, the stall fix and this file's split. The rest are unapproved proposals;
-   ask before starting one.
+   shared file helpers, the stall fix, this file's split and the rest of the Orin runtime work
+   (2026-11-13: one sharpness measurement per track, the shutdown drain on the event loop, atomic
+   end-of-session JSON). That last part is on `main` but not on the Orin; it goes out with the
+   next code deploy and needs no config change. The rest are unapproved proposals; ask before
+   starting one.
 5. **JetPack 7.** Blocked until `scripts/check_jp7_wheel.ps1` exits 0. Stay on JetPack 6; the
    plan is in [`docs/deployment.md`](docs/deployment.md#jetpack-7-upgrade-plan).
 
@@ -254,9 +257,9 @@ rename; on Windows the rename retries while the showcase or panel has the
 target open), not a plain `write_text`. Build per-session paths with
 `SessionFiles(session_dir).<name>` (`common/session_files.py`) instead of an
 `f"{label}_<suffix>"` literal; a new per-session file gets a property there
-and a line in `tests/test_common/test_session_files.py`. The device-side
-writers (`common/output.py` `save_*`, `common/summary.py`, `device/runtime.py`)
-still write in place.
+and a line in `tests/test_common/test_session_files.py`. The device's summary
+page and end-of-session JSON use the same helpers; only its image saves (4K
+snaps, thumbnails) and the append-only logs write in place.
 
 ### Device runtime notes (Orin Nano 8GB Super)
 
@@ -285,6 +288,15 @@ still write in place.
   recorded before `session_20261110_171836` keep those splits, more of them late in a long
   session. Don't put per-session work back on the loop.
   Measurements: [`docs/history/project.md`](docs/history/project.md).
+- **Snap decisions run as three whole passes** over the active tracks: every track's trigger,
+  then every track's pipeline fire, then the door zone (`runtime._plan_snaps`). Each track's box
+  and sharpness are measured once per frame and shared. Keep the passes whole: the snapshotter
+  drops a submit once `max_concurrent` snaps are in flight, so going track by track would let one
+  car's pipeline fire take the slot another car's trigger needed.
+- **Shutdown.** The drain that finalises the active tracks runs on the event loop
+  (`runtime._drain_active`), because a finalise can submit a snapshot. The three end-of-session
+  JSON files are each replaced in one step, `_data.json` last, so a session with a `_data.json`
+  has all three whole and one without is rebuilt by `pull`.
 - **Track class and file prefix.** A track's class is the `argmax` of confidence-weighted votes
   (`BufferedTrack.class_votes`), not the last detection. Its file prefix is locked at finalise
   and snaps saved under another prefix are renamed, so file names always agree with
