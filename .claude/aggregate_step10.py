@@ -123,7 +123,7 @@ def main() -> int:
         data,
     )
 
-    print(f"=== Step 10 (mask + padding cap) vs Step 9 (bbox-pipe only) ===")
+    print("=== Step 10 (mask + padding cap) vs Step 9 (bbox-pipe only) ===")
     print(f"Session: {SESSION}  ({step9['n_cars']} car-class tracks)\n")
 
     rows = [

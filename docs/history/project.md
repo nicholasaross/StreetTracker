@@ -374,3 +374,28 @@ whether they sit in one session or are cut across four.
 The showcase gallery (`build_showcase`) is not memoised and still rebuilds
 in full on a refresh. The running showcase needs a task restart to pick the
 change up.
+
+## CI check of the `.claude` scripts (2026-11-13)
+
+From the 2026-11-10 review (Tranche 5). The 58 tracked `.claude/*.py`
+scripts are the record of how the numbers in these docs were produced, and
+28 of them import the package, but nothing linted or exercised them, so a
+refactor could rename what they use unnoticed.
+
+They can't be run in CI (they need session data, a GPU or the camera), so
+they are checked from source:
+
+- `tests/test_claude_scripts.py` compiles each tracked script and checks
+  every name it takes from `streettracker`: 105 imports by name of 58
+  distinct names, and attributes reached through a module alias. Package
+  modules are read as source too, so it runs without torch or the `alpr`
+  extra. Shown to work by renaming `snap_assets.load_bbox_index` and
+  `vehicles._colour_group`: eight scripts' tests failed, each naming the
+  script, the line and the missing name.
+- CI runs `ruff check --select F .claude/` (pyflakes only, not the
+  package's style rules). Getting there took 24 fixes across ten scripts,
+  all trivial: 21 f-strings with no placeholders and three unused
+  `collections` imports.
+
+The four refactors merged earlier the same day (#148 to #151) had broken
+none of the scripts. Untracked scripts on the dev box are left alone.

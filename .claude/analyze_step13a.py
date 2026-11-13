@@ -138,14 +138,14 @@ def main() -> int:
             f"{s13_fwd:6.2f}    "
             f"({(s13_fwd / s11_fwd - 1) * 100:+.1f}%)"
             if s11_fwd
-            else f"  R->L: insufficient Step 11 data"
+            else "  R->L: insufficient Step 11 data"
         )
         print(
             f"  L->R mean snaps:    {s11_rev:6.2f}                   "
             f"{s13_rev:6.2f}    "
             f"({(s13_rev / s11_rev - 1) * 100:+.1f}%)"
             if s11_rev
-            else f"  L->R: insufficient Step 11 data"
+            else "  L->R: insufficient Step 11 data"
         )
         print()
         print(

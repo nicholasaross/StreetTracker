@@ -26,7 +26,7 @@ import random
 import re
 import sys
 import urllib.request
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 
 OLLAMA = "http://127.0.0.1:11434/api/chat"

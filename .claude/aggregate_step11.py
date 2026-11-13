@@ -134,7 +134,7 @@ def main() -> int:
     s10 = _compute(STEP10)
     s11 = _compute(STEP11)
 
-    print(f"=== Step 11 (post-trim) vs Step 10 ===")
+    print("=== Step 11 (post-trim) vs Step 10 ===")
     print(f"Step 10: {STEP10}  ({s10['n_cars']} cars, t_usable=[0.10, 0.67])")
     print(f"Step 11: {STEP11}  ({s11['n_cars']} cars, t_usable=[0.10, 0.45])\n")
 

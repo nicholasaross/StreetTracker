@@ -50,6 +50,13 @@ jobs:
       - name: Lint
         run: uv run --no-sync ruff check src/ tests/
 
+      - name: Lint the analysis scripts
+        # .claude/*.py are the record of how published numbers were produced.
+        # They are held to pyflakes only (undefined names, unused imports),
+        # not to the package's style rules. tests/test_claude_scripts.py
+        # checks that what they use from the package still exists.
+        run: uv run --no-sync ruff check --select F .claude/
+
       - name: Format
         run: uv run --no-sync ruff format --check src/ tests/
 
