@@ -250,3 +250,21 @@ On `main`; not deployed when written (the Orin stayed on `0b817b7`).
   (systemd's stop timeout) is now always rebuilt; before, a kill after
   `_data.json` left a session that looked finalised with no meta or hourly
   file. File contents are byte-for-byte what they were.
+
+## CLI command table (2026-11-13)
+
+From the 2026-11-10 review (Tranche 4). The subcommand list was kept in three
+places in `cli/__init__.py`: the module docstring, the `_HELP` string and a
+27-branch `if` chain. They had drifted (`colour` was missing from the
+docstring). `cli/commands.py` now holds one table, `COMMANDS` (name, one-line
+summary, `module:function` target), and the help text and the dispatch are
+both built from it. Targets are strings, so a command's module is still
+imported only when that command runs.
+
+Checked by parsing the old `_HELP` and `if` chain from `main` with `ast` and
+comparing them with the table: 27 commands, with the same names, order,
+summaries and targets. The one visible change is that the help columns line
+up (the hand-written columns were uneven). `main` dropped its
+`# noqa: C901`. The tests check every target against its module's source, so
+they run where torch is not installed, and check that the control panel's
+job-kind tables only name commands the CLI has.

@@ -163,11 +163,11 @@ publishes `makemodel-<run>`.
    and E2.7; the E3.1 hand count, then the night A/B (E2.8); and the retrain (E2.5) last.
 2. **Low-light shutter schedule.** Waiting on the operator's decision (see Plate reading).
 3. **Code-quality roadmap** (2026-11-10 review). Done: showcase rebuild speed, CI checks, the
-   shared file helpers, the stall fix, this file's split and the rest of the Orin runtime work
-   (2026-11-13: one sharpness measurement per track, the shutdown drain on the event loop, atomic
-   end-of-session JSON). That last part is on `main` but not on the Orin; it goes out with the
-   next code deploy and needs no config change. The rest are unapproved proposals; ask before
-   starting one.
+   shared file helpers, the stall fix, this file's split, the CLI command table and the rest of
+   the Orin runtime work (2026-11-13: one sharpness measurement per track, the shutdown drain on
+   the event loop, atomic end-of-session JSON). The runtime part is on `main` but not on the
+   Orin; it goes out with the next code deploy and needs no config change. The rest are
+   unapproved proposals; ask before starting one.
 4. **JetPack 7.** Blocked until `scripts/check_jp7_wheel.ps1` exits 0. Stay on JetPack 6; the
    plan is in [`docs/deployment.md`](docs/deployment.md#jetpack-7-upgrade-plan).
 
@@ -246,6 +246,12 @@ src/streettracker/
 ```
 
 Single import root: `from streettracker.common.schema import TrackRecord`.
+
+**CLI commands.** Every subcommand is one `Command(...)` line in `cli/commands.py`
+(`COMMANDS`: name, one-line summary, `module:function` target). The top-level
+help and the dispatch are both built from that table, so add a subcommand
+there and nowhere else. A command's module is imported only when it runs;
+keep `cli/__init__.py` and `cli/commands.py` free of heavy imports.
 
 **Session files (2026-11-10).** Write any file that outlives the command with
 `common.fileio.atomic_write_json` / `atomic_write_text` (temp file, then
