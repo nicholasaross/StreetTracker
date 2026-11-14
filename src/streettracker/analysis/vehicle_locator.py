@@ -22,6 +22,12 @@ This module locates the car on the full frame instead. Modes:
   non-static canonical plate read, else the nearest on-road vehicle to
   the stale hint (``fullframe.rank_vehicle_candidates`` rank 0).
 
+In the last two modes a vehicle stopped in the road is not a candidate for
+a track that is only passing it, and nor is a box hidden behind one
+(:mod:`streettracker.analysis.stationary`). Which vehicles are stopped is
+read from every snap's boxes, so it is only fully known once the whole
+session has been through the detector: see :meth:`SnapVehicleLocator.settle`.
+
 Full-frame vehicle detection is the expensive step (YOLOv8m @1920, ~0.1 s
 per 4K snap), so boxes are cached per session in
 ``<session>_vehicle_boxes.json`` and shared by the corpus builder and all
@@ -32,17 +38,42 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from streettracker.analysis.alpr.base import parse_snap_filename
 from streettracker.analysis.alpr.fullframe import (
     DEFAULT_MIN_VEHICLE_H_PX,
     DEFAULT_VEHICLE_IMGSZ,
     rank_vehicle_candidates,
 )
-from streettracker.analysis.snap_assets import load_bbox_index, resolve_bbox_hint
-from streettracker.common.fileio import atomic_write_text
+from streettracker.analysis.snap_assets import (
+    load_bbox_index,
+    load_done_bbox_index,
+    load_snap_times,
+    resolve_bbox_hint,
+)
+from streettracker.analysis.stationary import (
+    HIDDEN_FRAC,
+    MAX_GAP_S,
+    MIN_GAP_S,
+    MIN_TRACKS,
+    NEIGHBOUR_TRACKS,
+    OWN_BOX_IOU,
+    SAME_BOX_IOU,
+    SAME_VEHICLE_IOU,
+    SnapSighting,
+    find_stationary_vehicles,
+    group_refused,
+    same_vehicle,
+    sits_on,
+    taken_by,
+)
+from streettracker.common.fileio import atomic_write_json, atomic_write_text
+from streettracker.common.session_files import SessionFiles
 
 if TYPE_CHECKING:
     import numpy as np
@@ -218,11 +249,29 @@ class VehicleBoxCache:
                 self.save()
         return [(b[0], b[1], b[2], b[3]) for b in cached]
 
+    def known(self) -> dict[str, list[Box]]:
+        """Every snap's boxes held so far, by snap filename."""
+        return {
+            name: [(b[0], b[1], b[2], b[3]) for b in boxes] for name, boxes in self._boxes.items()
+        }
+
     def save(self) -> None:
         if not self._dirty:
             return
         atomic_write_text(self.path, json.dumps({"params": self._params, "boxes": self._boxes}))
         self._dirty = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _Located:
+    """What :meth:`SnapVehicleLocator.locate` was given for one snap, and the
+    box it returned: enough to choose again without the pixels."""
+
+    name: str
+    size: tuple[int, int]
+    hint: IntBox | None
+    plate: str | None
+    box: IntBox | None
 
 
 class SnapVehicleLocator:
@@ -231,6 +280,13 @@ class SnapVehicleLocator:
     ``locate`` returns ``(box, source)``: the integer box in snap pixel
     coords (or ``None`` -- skip this snap) and which rule produced it
     (``"hint"`` / ``"plate"`` / ``"trajectory"``).
+
+    Outside ``hint`` mode, a stationary vehicle is not a candidate for a
+    track that is passing it, and nor is a box hidden behind one. A locator
+    starts out knowing the stationary vehicles in whatever the box cache
+    already holds; :meth:`settle` works them out again from every snap
+    located and says which crops change. ``stationary_guard=False`` turns
+    this off.
     """
 
     def __init__(
@@ -241,16 +297,30 @@ class SnapVehicleLocator:
         road_polygon_frac: list[tuple[float, float]] | None = None,
         cache: VehicleBoxCache | None = None,
         min_vehicle_h_px: int = DEFAULT_MIN_VEHICLE_H_PX,
+        stationary_guard: bool = True,
     ) -> None:
         if mode not in CROP_MODES:
             raise ValueError(f"crop mode must be one of {CROP_MODES}, got {mode!r}")
         self.mode = mode
+        self._session_dir = session_dir
         self._bbox_index, self._sub_size = load_bbox_index(session_dir)
         self._poly = road_polygon_frac
         self._min_h = min_vehicle_h_px
         self._reads = load_alpr_reads(session_dir) if mode != "hint" else {}
         self._cache = cache if cache is not None or mode == "hint" else VehicleBoxCache(session_dir)
         self.source_counts: dict[str, int] = defaultdict(int)
+        self._sources: dict[tuple[int, int], str] = {}
+
+        self._guard = stationary_guard and mode != "hint"
+        self._done_index = load_done_bbox_index(session_dir) if self._guard else {}
+        self._snap_times = load_snap_times(session_dir) if self._guard else {}
+        self._located: dict[tuple[int, int], _Located] = {}
+        self._stationary: dict[tuple[int, int], list[Box]] = {}
+        #: Set by :meth:`settle`: the crops a stationary vehicle would have
+        #: taken, and how many of those snaps were left with no crop at all.
+        self.n_refused = 0
+        self.n_left_without = 0
+        self._find_stationary()
 
     @property
     def n_bboxes(self) -> int:
@@ -272,32 +342,54 @@ class SnapVehicleLocator:
         *,
         plate: str | None = None,
     ) -> tuple[IntBox | None, str | None]:
+        key = (track_id, snap_index)
         hint = resolve_bbox_hint(path, track_id, snap_index, self._bbox_index, self._sub_size)
         if self.mode == "hint":
             # The legacy path never needed pixels (callers skip unreadable
             # images themselves), so keep that behaviour exactly.
-            return self._count(hint, "hint")
+            return self._count(key, hint, "hint")
 
         if self.mode == "plate" and plate is None:
             raise ValueError("plate mode needs the car's plate")
         if image is None:
-            return self._count(None, None)
+            return self._count(key, None, None)
         assert self._cache is not None  # noqa: S101 - set for every non-hint mode
         h, w = image.shape[:2]
         boxes = self._cache.boxes(path.name, image)
+        box, source = self._choose(key, boxes, (w, h), hint, plate)
+        self._located[key] = _Located(path.name, (w, h), hint, plate, box)
+        return self._count(key, box, source)
 
-        anchor = self.plate_bbox(track_id, snap_index, plate)
+    def _choose(
+        self,
+        key: tuple[int, int],
+        boxes: list[Box],
+        size: tuple[int, int],
+        hint: IntBox | None,
+        plate: str | None,
+        *,
+        guard: bool = True,
+    ) -> tuple[IntBox | None, str | None]:
+        """The tracked vehicle among one snap's ``boxes``. ``guard=False``
+        is the choice with stationary vehicles left in."""
+        others = self._stationary_others(key, size, hint) if guard else []
+        anchor = self.plate_bbox(key[0], key[1], plate)
         if anchor is not None:
-            box = plate_anchored_box(boxes, anchor)
+            # A plate inside the box says the car is in view, so a box partly
+            # behind a stationary vehicle stays. One that *is* a stationary
+            # vehicle does not: it is often the tighter box round the plate
+            # of a car passing in front of it.
+            mine = [b for b in boxes if same_vehicle(b, others) is None]
+            box = plate_anchored_box(mine, anchor)
             if box is not None:
-                return self._count(_to_int_box(box), "plate")
+                return _to_int_box(box), "plate"
         if self.mode == "plate":
-            return self._count(None, None)
+            return None, None
 
         ranked = rank_vehicle_candidates(
-            boxes,
-            w,
-            h,
+            [b for b in boxes if taken_by(b, others) is None],
+            size[0],
+            size[1],
             bbox_hint=hint,
             road_polygon_frac=self._poly,
             min_vehicle_h_px=self._min_h,
@@ -305,11 +397,124 @@ class SnapVehicleLocator:
         # No hint means no anchor for "which car" -- the largest on-road
         # vehicle is a guess, so skip rather than mislabel the track.
         if not ranked or hint is None:
-            return self._count(None, None)
-        return self._count(_to_int_box(ranked[0]), "trajectory")
+            return None, None
+        return _to_int_box(ranked[0]), "trajectory"
 
-    def _count(self, box: IntBox | None, source: str | None) -> tuple[IntBox | None, str | None]:
-        self.source_counts[source or "none"] += 1
+    def _stationary_others(
+        self, key: tuple[int, int], size: tuple[int, int], hint: IntBox | None
+    ) -> list[Box]:
+        """The stationary vehicles around a snap that its track is not on."""
+        vehicles = self._stationary.get(key)
+        if not vehicles:
+            return []
+        own: list[Box | IntBox | None] = [hint]
+        done = self._done_index.get(key)
+        if done is not None and self._sub_size is not None:
+            sx, sy = size[0] / self._sub_size[0], size[1] / self._sub_size[1]
+            own.append((done[0] * sx, done[1] * sy, done[2] * sx, done[3] * sy))
+        return [v for v in vehicles if not sits_on(v, own)]
+
+    def _find_stationary(self) -> None:
+        """Work out the stationary vehicles from the boxes cached so far."""
+        if not self._guard or self._cache is None:
+            return
+        sightings = []
+        for name, boxes in self._cache.known().items():
+            parsed = parse_snap_filename(name)
+            if parsed is None:
+                continue
+            key = (parsed[1], parsed[2])
+            when = self._snap_times.get(key)
+            if when is not None:
+                sightings.append(SnapSighting(key[0], key[1], when, tuple(boxes)))
+        self._stationary = find_stationary_vehicles(sightings)
+
+    def settle(self) -> list[tuple[int, int]]:
+        """Call once every snap has been through :meth:`locate`.
+
+        A stopped vehicle shows as one only against the snaps around it, and
+        on a session's first pass the later ones had not been through the
+        detector when the earlier ones were located. This works the
+        stationary vehicles out again from every snap and returns the
+        ``(track_id, snap_index)`` of each snap whose crop is now a
+        different box. Locate those again; the answer is then final.
+
+        It also counts what the guard did (:attr:`n_refused`,
+        :attr:`n_left_without`) and writes the vehicles that would have
+        taken a crop to ``<session>_stationary_vehicles.json``.
+        """
+        if not self._guard or self._cache is None:
+            return []
+        self._find_stationary()
+        known = self._cache.known()
+        changed: list[tuple[int, int]] = []
+        refused: list[tuple[float, int, Sequence[float]]] = []
+        self.n_left_without = 0
+        for key, was in self._located.items():
+            boxes = known[was.name]
+            box, _source = self._choose(key, boxes, was.size, was.hint, was.plate)
+            if box != was.box:
+                changed.append(key)
+            plain, _source = self._choose(key, boxes, was.size, was.hint, was.plate, guard=False)
+            if plain is not None and plain != box:
+                others = self._stationary_others(key, was.size, was.hint)
+                vehicle = taken_by(plain, others) or plain
+                refused.append((self._snap_times[key], key[0], vehicle))
+                self.n_left_without += box is None
+        self.n_refused = len(refused)
+        self._write_stationary(refused)
+        return changed
+
+    def _write_stationary(self, refused: list[tuple[float, int, Sequence[float]]]) -> None:
+        """One entry per stationary vehicle that would have taken a crop:
+        where it stood, when, and how many crops and tracks."""
+
+        def iso(unix: float) -> str:
+            return datetime.fromtimestamp(unix, timezone.utc).isoformat(timespec="seconds")
+
+        vehicles = [
+            {
+                "box": [int(round(v)) for v in group["box"]],
+                "first": iso(group["first_unix"]),
+                "last": iso(group["last_unix"]),
+                "n_crops": group["n_crops"],
+                "n_tracks": group["n_tracks"],
+            }
+            for group in group_refused(refused)
+        ]
+        atomic_write_json(
+            SessionFiles(self._session_dir).stationary_vehicles,
+            {
+                "rule": {
+                    "same_box_iou": SAME_BOX_IOU,
+                    "min_gap_s": MIN_GAP_S,
+                    "neighbour_tracks": NEIGHBOUR_TRACKS,
+                    "max_gap_s": MAX_GAP_S,
+                    "min_tracks": MIN_TRACKS,
+                    "same_vehicle_iou": SAME_VEHICLE_IOU,
+                    "hidden_frac": HIDDEN_FRAC,
+                    "own_box_iou": OWN_BOX_IOU,
+                },
+                "n_snaps": len(self._located),
+                "n_crops_refused": self.n_refused,
+                "n_left_without_crop": self.n_left_without,
+                "vehicles": vehicles,
+            },
+        )
+
+    def _count(
+        self, key: tuple[int, int], box: IntBox | None, source: str | None
+    ) -> tuple[IntBox | None, str | None]:
+        # A snap located a second time (after `settle`) counts once, under
+        # the source it ended with.
+        before = self._sources.pop(key, None)
+        if before is not None:
+            self.source_counts[before] -= 1
+            if not self.source_counts[before]:
+                del self.source_counts[before]
+        name = source or "none"
+        self._sources[key] = name
+        self.source_counts[name] += 1
         return box, source
 
     def close(self) -> None:

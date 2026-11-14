@@ -28,7 +28,7 @@ that matches the task before starting.
 and append the dated account (numbers, method, what it replaced) to the matching file in
 `docs/history/`. Don't add a correction under an old claim here: replace the claim.
 
-## Current state (2026-11-11)
+## Current state (2026-11-14)
 
 ### Live on the Orin
 
@@ -118,12 +118,22 @@ publishes `makemodel-<run>`.
 
 - **These scores are on plated cars.** `/stats` mostly uses the heads on unplated cars, where the
   crop comes from the trajectory rule and accuracy is untested (review E2.6).
-- **A stopped vehicle captures the crops of the cars passing it.** When a vehicle sits in the
-  road at the far end, the trajectory rule picks it for most passing tracks, and all three heads
-  then report its make, colour and body type for them (2026-11-13, 10:00-11:30: about 130 cars
-  came back as one red Citroën hatchback; seven such episodes since 2026-10-01). Plates are
-  protected by the static-plate filter; the heads have no equivalent yet. Distrust a colour or
-  body-type spike confined to an hour or two.
+- **Stationary vehicles are kept out of the crops** (2026-11-14, `analysis/stationary.py`). A
+  vehicle stopped in the road used to take the crop of the cars passing it, and all three heads
+  then reported its make, colour and body type for them (2026-11-13, 10:00-11:30: about 130 cars
+  came back as one red Citroën hatchback). The locator now refuses a vehicle box that the nearest
+  tracks' snaps show both before and after the track, and, for a crop chosen without a plate
+  read, a box a quarter or more hidden behind such a vehicle. The snap takes its next candidate
+  or goes without a crop, so a track can end up "unknown" where it used to be wrong. This changes
+  4.3 % of the trajectory crops since 2026-10-01, crops on which the heads were right about 15 %
+  of the time. Each session's `_stationary_vehicles.json` lists what was refused.
+  - **A session inferred before 2026-11-14 keeps the fault** until the panel's **reinfer**
+    playbook has run over it. Until then, distrust a colour or body-type spike confined to an
+    hour or two.
+  - It doesn't cover the first and the last car to pass a stopped vehicle, and it needs three
+    tracks to have seen the vehicle, so a stop that only one or two cars pass goes unnoticed.
+  - The rule's thresholds are in `stationary.py` with the measurement behind each. Re-measure
+    with `.claude/stationary_vehicle_check.py` before changing one.
 - **Sources.** `make_model_source` and `colour_source` say where a value came from: `"dvsa"` is
   the register (truth for a correctly read plate), `"cnn"` a prediction. `/stats` prefers DVSA,
   then the CNN, then "unknown". The HSV `color` field is not a colour source (about 40 % grouped
@@ -134,6 +144,12 @@ publishes `makemodel-<run>`.
   `colour_infer.py`) holds only its classifier and what differs, so change shared behaviour in
   `session_infer.py`, once. What the commands print and write is pinned by
   `tests/test_analysis/test_makemodel/test_session_infer.py`.
+- **A command looks at some snaps twice.** Which vehicles are stopped is only known once every
+  snap has been through the vehicle detector, so the first command to run on a session
+  (`makemodel`, in the enrich playbook) classifies again the snaps whose crop that changes
+  (`SnapVehicleLocator.settle`). The later commands find the boxes cached and get it right first
+  time. `makemodel-compare` uses the same guard from the cached boxes and never looks twice, so
+  run it on sessions that have been through enrich.
 - **Crops must match training.** Inference with `--crop-mode auto` follows the checkpoint; these
   models infer `fullframe` at pad 0.1. `bodytype` and `colour` need `--pad-frac 0.1` (the CLI
   default): 0.25 skews the shape classifier toward "van".
@@ -176,7 +192,8 @@ publishes `makemodel-<run>`.
 
 1. **Data-integrity plan** (review §4, revised 2026-10-04; its first four steps are done). Next
    is the E1.2 audit set, stratified toward flagged reads, then calibrating the plate-colour
-   check and the combined gate against it. After that: E2.6 (plate-blind test first), E2.1, E2.3
+   check and the combined gate against it. After that: E2.6 (plate-blind test first; its part
+   (f), the stationary-vehicle guard, is done), E2.1, E2.3
    and E2.7; the E3.1 hand count, then the night A/B (E2.8); and the retrain (E2.5) last.
 2. **Low-light shutter schedule.** Waiting on the operator's decision (see Plate reading).
 3. **Code-quality roadmap** (2026-11-10 review). Done: showcase rebuild speed, CI checks, the
@@ -366,6 +383,7 @@ the tracked object) and `{prefix}_{id}_main_{N}.jpg` (4K snaps, `N` from 1; a sn
 | `_vehicles.json` | `vehicles` | per-vehicle aggregation. It can be stale: the showcase rebuilds it live |
 | `_makemodel*.json`, `_bodytype*.json`, `_colour*.json` | the CNN commands | per-image and `_by_track` predictions |
 | `_vehicle_boxes.json` | any fullframe-crop command | cache of 4K vehicle boxes; disposable |
+| `_stationary_vehicles.json` | the CNN commands | the stopped vehicles whose crops were refused: where, when, how many crops and tracks |
 | `_people.json` | `people` | activity per person track |
 
 The output root also holds `cross_session_repeats.json` (`vehicles --across`),
@@ -413,9 +431,9 @@ sees them. Either run from PowerShell / cmd, or prefix with
 
 ## Tests and CI
 
-Tests at HEAD (2026-11-13): **about 1,700 passing on the dev box, on Python 3.10.**
+Tests at HEAD (2026-11-14): **about 1,800 passing on the dev box, on Python 3.10.**
 CI runs them in two jobs: `test` (no torch; the 8 torch-gated classifier modules
-skip there) and `test-torch` (those 8 modules, 92 tests, on CPU wheels). CI also
+skip there) and `test-torch` (those 8 modules, 94 tests, on CPU wheels). CI also
 enforces `ruff check`, `ruff format --check`, `mypy` (`[tool.mypy]` in
 `pyproject.toml`) and a complexity limit of 15: the functions already over it
 carry `# noqa: C901` on their definition, so drop the marker when you split one.

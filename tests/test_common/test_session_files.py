@@ -28,6 +28,7 @@ EXPECTED = {
     "dvsa_labels": "_dvsa_labels.json",
     "vehicles": "_vehicles.json",
     "vehicle_boxes": "_vehicle_boxes.json",
+    "stationary_vehicles": "_stationary_vehicles.json",
     "makemodel": "_makemodel.json",
     "makemodel_by_track": "_makemodel_by_track.json",
     "bodytype": "_bodytype.json",

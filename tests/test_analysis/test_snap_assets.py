@@ -18,6 +18,7 @@ from streettracker.analysis.snap_assets import (
     image_size,
     load_bbox_index,
     load_done_bbox_index,
+    load_snap_times,
     read_image,
     resolve_bbox_hint,
     resolve_bbox_hint_window,
@@ -226,6 +227,47 @@ def test_load_done_bbox_index_empty_for_older_sessions(tmp_path: Path) -> None:
     callers fall back to fire-time windows."""
     sess, idx, sub = _window_session(tmp_path, [[200, 100, 280, 140], [160, 100, 240, 140]])
     assert load_done_bbox_index(sess) == {}
+
+
+def test_load_snap_times_prefers_fire_times_then_the_track_start(tmp_path: Path) -> None:
+    sess = tmp_path / "session_t"
+    sess.mkdir()
+    records = [
+        {"track_id": 1, "main_snaps": [1, 2], "main_snap_fire_unix": [100.5, 101.0]},
+        # Recorded before the field existed: every snap gets the track's start.
+        {"track_id": 2, "main_snaps": [3, 4], "time_start_unix": 200.0},
+        # A list that doesn't line up with the snaps is not trusted.
+        {"track_id": 3, "main_snaps": [1, 2], "main_snap_fire_unix": [1.0], "time_start_unix": 300},
+        # One snap's time missing.
+        {
+            "track_id": 4,
+            "main_snaps": [1, 2],
+            "main_snap_fire_unix": [None, 401.0],
+            "time_start_unix": 400.0,
+        },
+        {"track_id": 5, "main_snaps": [1]},  # no time at all: left out
+        {"track_id": 6, "main_snaps": []},
+    ]
+    sess.joinpath("session_t_data.json").write_text(json.dumps(records))
+
+    assert load_snap_times(sess) == {
+        (1, 1): 100.5,
+        (1, 2): 101.0,
+        (2, 3): 200.0,
+        (2, 4): 200.0,
+        (3, 1): 300.0,
+        (3, 2): 300.0,
+        (4, 1): 400.0,
+        (4, 2): 401.0,
+    }
+
+
+def test_load_snap_times_empty_without_a_readable_data_file(tmp_path: Path) -> None:
+    sess = tmp_path / "session_t"
+    sess.mkdir()
+    assert load_snap_times(sess) == {}
+    sess.joinpath("session_t_data.json").write_text("{not json")
+    assert load_snap_times(sess) == {}
 
 
 def test_window_scales_to_snap_pixels(tmp_path: Path) -> None:

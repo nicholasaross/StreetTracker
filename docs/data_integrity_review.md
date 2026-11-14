@@ -976,6 +976,18 @@ head-to-heads shrink to ~67 cars once corpora share most of their cars.
   the account is in [`history/makemodel.md`](history/makemodel.md). Measure
   how many tracks' crop boxes recur at one place across tracks, and score the
   heads with those tracks left out and left in.
+  *Done 2026-11-14.* 4.3 % of trajectory crops since 2026-10-01 sat on a
+  stationary vehicle or behind one, and on DVSA-labelled tracks the heads
+  were right on 17 % (colour) and 13 % (make) of them, against 81 % and 80 %
+  of the rest. The locator now refuses those crops
+  (`analysis/stationary.py`; method and numbers in
+  [`history/makemodel.md`](history/makemodel.md#the-stationary-vehicle-guard-2026-11-14)).
+  Sessions on disk still need the reinfer playbook. One thing it turned up
+  is left open: the corpus builder doesn't use the guard, and up to 0.4 % of
+  its plate-anchored crops are of a parked car behind the plated one (the
+  tightest box round the plate is the parked car's). Both directions are
+  affected alike (7.4 % of L→R and 6.7 % of R→L trajectory crops in the four
+  worst sessions).
 - *Decision:* `/stats` shows CNN-derived mixes only for slices whose measured
   accuracy clears a bar, labelled as estimates. Everything else shows as
   "unknown".

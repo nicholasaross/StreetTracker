@@ -224,3 +224,244 @@ def test_close_persists_boxes(tmp_path: Path) -> None:
     loc.close()
     data = json.loads((sess / "session_s_vehicle_boxes.json").read_text())
     assert list(data["boxes"]) == ["vehicle_1_main_1.jpg"]
+
+
+# ----------------------------------------------------------------------
+# Stationary vehicles. Five tracks pass a van stopped at the far end, a
+# minute apart. Each track's stale hint sits nearer the van than the car.
+
+_VAN = (300.0, 60.0, 380.0, 130.0, 0.9)
+_HINT_SUB = [320, 60, 448, 156]  # (200, 50, 280, 130) in snap px: beside the van
+_ON_VAN_SUB = [480, 72, 608, 156]  # (300, 60, 380, 130) in snap px: the van itself
+_VAN_BOX = (300, 60, 380, 130)
+
+
+def _mover(track: int) -> tuple[float, float, float, float, float]:
+    """The car a track followed: somewhere different in every track's snap."""
+    x = 10.0 + 12.0 * track
+    return (x, 120.0, x + 120.0, 220.0, 0.9)
+
+
+def _mover_box(track: int) -> tuple[int, int, int, int]:
+    x = 10 + 12 * track
+    return (x, 120, x + 120, 220)
+
+
+class _PerSnapDetector:
+    """Hands out one list of boxes per snap, in the order snaps arrive."""
+
+    def __init__(self, per_snap: list[list[tuple[float, float, float, float, float]]]) -> None:
+        self._per_snap = iter(per_snap)
+
+    def __call__(self, image: np.ndarray) -> list[tuple[float, float, float, float, float]]:
+        return list(next(self._per_snap))
+
+
+def _street(tmp_path: Path, *, records: dict[int, dict] | None = None) -> Path:
+    """Tracks 1-5, one snap each, fired a minute apart. ``records`` overrides
+    fields of a track's record."""
+    sess = tmp_path / "session_s"
+    sess.mkdir()
+    data = []
+    for track in range(1, 6):
+        Image.new("RGB", (_W, _H), (90, 90, 90)).save(sess / f"vehicle_{track}_main_1.jpg")
+        record = {
+            "track_id": track,
+            "main_snaps": [1],
+            "main_snap_bboxes": [_HINT_SUB],
+            "main_snap_fire_unix": [1000.0 + 60.0 * track],
+        }
+        record.update((records or {}).get(track, {}))
+        data.append(record)
+    sess.joinpath("session_s_data.json").write_text(json.dumps(data))
+    sess.joinpath("session_s_meta.json").write_text(json.dumps({"frame_size": [640, 360]}))
+    return sess
+
+
+def _snap_path(sess: Path, track: int) -> Path:
+    return sess / f"vehicle_{track}_main_1.jpg"
+
+
+def _warm_cache(sess: Path, per_snap: list[list]) -> None:
+    """Put every snap through the detector, as an earlier command would have."""
+    cache = VehicleBoxCache(sess, detector=_PerSnapDetector(per_snap))
+    for track in range(1, 6):
+        cache.boxes(f"vehicle_{track}_main_1.jpg", _IMG)
+    cache.save()
+
+
+def _van_and_mover() -> list[list]:
+    return [[_VAN, _mover(track)] for track in range(1, 6)]
+
+
+def test_a_stationary_vehicle_is_not_a_passing_tracks_crop(tmp_path: Path) -> None:
+    sess = _street(tmp_path)
+    _warm_cache(sess, _van_and_mover())
+    loc = SnapVehicleLocator(sess, "fullframe")
+    # The van is nearer the stale hint, but it was there before track 3 came
+    # and after it had gone.
+    assert loc.locate(_snap_path(sess, 3), 3, 1, _IMG) == (_mover_box(3), "trajectory")
+    # Nothing shows the van before track 1 or after track 5, so for all the
+    # locator knows it is their car.
+    assert loc.locate(_snap_path(sess, 1), 1, 1, _IMG) == (_VAN_BOX, "trajectory")
+    assert loc.locate(_snap_path(sess, 5), 5, 1, _IMG) == (_VAN_BOX, "trajectory")
+
+
+def test_the_guard_can_be_turned_off(tmp_path: Path) -> None:
+    sess = _street(tmp_path)
+    _warm_cache(sess, _van_and_mover())
+    loc = SnapVehicleLocator(sess, "fullframe", stationary_guard=False)
+    assert loc.locate(_snap_path(sess, 3), 3, 1, _IMG) == (_VAN_BOX, "trajectory")
+
+
+def test_a_snap_showing_only_the_stationary_vehicle_gets_no_crop(tmp_path: Path) -> None:
+    sess = _street(tmp_path)
+    per_snap = _van_and_mover()
+    per_snap[2] = [_VAN]  # track 3's car was not detected
+    _warm_cache(sess, per_snap)
+    loc = SnapVehicleLocator(sess, "fullframe")
+    assert loc.locate(_snap_path(sess, 3), 3, 1, _IMG) == (None, None)
+    assert dict(loc.source_counts) == {"none": 1}
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"main_snap_bboxes": [_ON_VAN_SUB]},  # on it when the snap fired
+        {"main_snap_bboxes_done": [_ON_VAN_SUB]},  # on it when the snap landed
+    ],
+    ids=["fire-time box", "completion-time box"],
+)
+def test_a_track_on_the_stationary_vehicle_keeps_it(tmp_path: Path, record: dict) -> None:
+    sess = _street(tmp_path, records={3: record})
+    _warm_cache(sess, [[_VAN]] * 5)
+    loc = SnapVehicleLocator(sess, "fullframe")
+    assert loc.locate(_snap_path(sess, 3), 3, 1, _IMG) == (_VAN_BOX, "trajectory")
+    # Track 2 only passed it.
+    assert loc.locate(_snap_path(sess, 2), 2, 1, _IMG) == (None, None)
+
+
+def test_a_plate_is_not_anchored_to_a_stationary_vehicle(tmp_path: Path) -> None:
+    # The passing car's plate sits inside the stopped van's box too (the car
+    # is in front of it), and the van's box is the tighter of the two.
+    sess = _street(tmp_path)
+    in_front = [(100.0 + 30.0 * track, 40.0, 399.0, 250.0, 0.9) for track in range(1, 6)]
+    _warm_cache(sess, [[_VAN, car] for car in in_front])
+    read = _read(1, "AB12CDE", [330, 100, 360, 110], track_id=3)
+    sess.joinpath("session_s_alpr.json").write_text(json.dumps([read]))
+
+    guarded = SnapVehicleLocator(sess, "fullframe")
+    assert guarded.locate(_snap_path(sess, 3), 3, 1, _IMG) == ((190, 40, 399, 250), "plate")
+    unguarded = SnapVehicleLocator(sess, "fullframe", stationary_guard=False)
+    assert unguarded.locate(_snap_path(sess, 3), 3, 1, _IMG) == (_VAN_BOX, "plate")
+    # The mode that takes the car's own plate is guarded too.
+    by_plate = SnapVehicleLocator(sess, "plate")
+    box, src = by_plate.locate(_snap_path(sess, 3), 3, 1, _IMG, plate="AB12CDE")
+    assert (box, src) == ((190, 40, 399, 250), "plate")
+
+
+def _behind_van(track: int) -> tuple[float, float, float, float, float]:
+    """A passing car further up the road, a third or more of it behind the van."""
+    x = 250.0 + 8.0 * track
+    return (x, 30.0, x + 80.0, 110.0, 0.9)
+
+
+def test_a_box_hidden_behind_a_stationary_vehicle_is_not_a_crop(tmp_path: Path) -> None:
+    sess = _street(tmp_path)
+    _warm_cache(sess, [[_VAN, _behind_van(track)] for track in range(1, 6)])
+    # The right box, but a crop of it would show the van across the car.
+    assert SnapVehicleLocator(sess, "fullframe").locate(_snap_path(sess, 3), 3, 1, _IMG) == (
+        None,
+        None,
+    )
+    unguarded = SnapVehicleLocator(sess, "fullframe", stationary_guard=False)
+    assert unguarded.locate(_snap_path(sess, 3), 3, 1, _IMG)[1] == "trajectory"
+
+
+def test_a_plate_read_keeps_a_box_that_is_partly_hidden(tmp_path: Path) -> None:
+    sess = _street(tmp_path)
+    _warm_cache(sess, [[_VAN, _behind_van(track)] for track in range(1, 6)])
+    # The car's plate was read above the van: the car is in view.
+    read = _read(1, "AB12CDE", [285, 45, 300, 52], track_id=3)
+    sess.joinpath("session_s_alpr.json").write_text(json.dumps([read]))
+    loc = SnapVehicleLocator(sess, "fullframe")
+    assert loc.locate(_snap_path(sess, 3), 3, 1, _IMG) == ((274, 30, 354, 110), "plate")
+
+
+def test_settle_finds_the_crops_a_first_pass_got_wrong(tmp_path: Path) -> None:
+    sess = _street(tmp_path)
+    cache = VehicleBoxCache(sess, detector=_PerSnapDetector(_van_and_mover()))
+    loc = SnapVehicleLocator(sess, "fullframe", cache=cache)
+    # First pass over a session: when a snap is located, the later snaps
+    # have not been through the detector, so nothing is known to be stopped.
+    for track in range(1, 6):
+        assert loc.locate(_snap_path(sess, track), track, 1, _IMG) == (_VAN_BOX, "trajectory")
+
+    assert loc.settle() == [(2, 1), (3, 1), (4, 1)]
+    for track in (2, 3, 4):
+        assert loc.locate(_snap_path(sess, track), track, 1, _IMG) == (
+            _mover_box(track),
+            "trajectory",
+        )
+    assert loc.settle() == []  # final
+    # Each snap is counted once, however often it was located.
+    assert dict(loc.source_counts) == {"trajectory": 5}
+
+    written = json.loads((sess / "session_s_stationary_vehicles.json").read_text())
+    assert written["n_snaps"] == 5
+    assert (written["n_crops_refused"], written["n_left_without_crop"]) == (3, 0)
+    assert (loc.n_refused, loc.n_left_without) == (3, 0)
+    assert written["vehicles"] == [
+        {
+            "box": [300, 60, 380, 130],
+            "first": "1970-01-01T00:18:40+00:00",
+            "last": "1970-01-01T00:20:40+00:00",
+            "n_crops": 3,
+            "n_tracks": 3,
+        }
+    ]
+    assert written["rule"]["same_box_iou"] == 0.9
+
+
+def test_settle_changes_nothing_once_the_cache_is_full(tmp_path: Path) -> None:
+    sess = _street(tmp_path)
+    _warm_cache(sess, _van_and_mover())
+    loc = SnapVehicleLocator(sess, "fullframe")
+    for track in range(1, 6):
+        loc.locate(_snap_path(sess, track), track, 1, _IMG)
+    assert loc.settle() == []
+    # What the guard did is still counted and written.
+    assert (loc.n_refused, loc.n_left_without) == (3, 0)
+    written = json.loads((sess / "session_s_stationary_vehicles.json").read_text())
+    assert [v["n_tracks"] for v in written["vehicles"]] == [3]
+
+
+def test_settle_counts_the_snaps_left_with_no_crop(tmp_path: Path) -> None:
+    sess = _street(tmp_path)
+    per_snap = _van_and_mover()
+    per_snap[2] = [_VAN]
+    _warm_cache(sess, per_snap)
+    loc = SnapVehicleLocator(sess, "fullframe")
+    for track in range(1, 6):
+        loc.locate(_snap_path(sess, track), track, 1, _IMG)
+    loc.settle()
+    assert (loc.n_refused, loc.n_left_without) == (3, 1)
+
+
+def test_hint_mode_has_no_guard(tmp_path: Path) -> None:
+    sess = _street(tmp_path)
+    loc = SnapVehicleLocator(sess, "hint")
+    loc.locate(_snap_path(sess, 3), 3, 1, None)
+    assert loc.settle() == []
+    assert not (sess / "session_s_stationary_vehicles.json").exists()
+
+
+def test_a_session_without_snap_times_uses_each_tracks_start(tmp_path: Path) -> None:
+    # Recorded before 2026-10-04: no main_snap_fire_unix.
+    old = {
+        t: {"main_snap_fire_unix": None, "time_start_unix": 1000.0 + 60.0 * t} for t in range(1, 6)
+    }
+    sess = _street(tmp_path, records=old)
+    _warm_cache(sess, _van_and_mover())
+    loc = SnapVehicleLocator(sess, "fullframe")
+    assert loc.locate(_snap_path(sess, 3), 3, 1, _IMG) == (_mover_box(3), "trajectory")
