@@ -11,6 +11,7 @@ from streettracker.control import progress
 from streettracker.control.progress import (
     BatchParser,
     BuildParser,
+    ClassifyParser,
     DvsaLabelParser,
     GenericParser,
     PullParser,
@@ -58,7 +59,7 @@ def test_frac_derivation_and_json() -> None:
 
 
 # ----------------------------------------------------------------------
-# BatchParser (alpr-run + makemodel inference)
+# BatchParser (alpr-run, alpr-rescore, makemodel-compare)
 # ----------------------------------------------------------------------
 
 
@@ -75,14 +76,103 @@ def test_batch_parser_counts_and_phase() -> None:
     assert abs((p.frac or 0) - 0.2) < 1e-9
 
 
-def test_batch_parser_makemodel_batch_tag_and_wrote_summary() -> None:
+def test_batch_parser_batch_tag_and_wrote_summary() -> None:
     p = _feed(
         BatchParser(),
         "  [batch] 50/100 done",
-        "[makemodel] wrote /out/session_x_makemodel.json",
+        "[alpr-rescore] wrote session_x_alpr.json + session_x_alpr_by_track.json",
     )
     assert p.current == 50 and p.total == 100
     assert "wrote" in p.summary
+
+
+# ----------------------------------------------------------------------
+# ClassifyParser (makemodel, bodytype, colour)
+#
+# The transcripts are what the commands print (SessionInference.main in
+# analysis/makemodel/session_infer.py), taken from a real run with the paths
+# shortened. tests/test_analysis/test_makemodel/test_session_infer.py feeds
+# this parser each command's live output too, in the job that has torch.
+# ----------------------------------------------------------------------
+
+_MAKEMODEL_RUN = (
+    "[makemodel] 115 snaps; 271 per-snap bboxes; device=cuda; 62 makes (make-only); "
+    "input=528px; crop=fullframe pad=0.1",
+    "  100/115 classified",
+    "  115/115 classified",
+    "[makemodel] wrote /out/session_x/session_x_makemodel.json",
+    "[makemodel] wrote /out/session_x/session_x_makemodel_by_track.json",
+    "[makemodel] 40 tracks classified, 37 above conf 0.4 (18 snaps had no vehicle box; "
+    "crop sources {'trajectory': 97, 'none': 18})",
+)
+_BODYTYPE_RUN = (
+    "[bodytype] 450 snaps; 900 per-snap bboxes; device=cuda; 7 classes; input=384px; "
+    "crop=fullframe pad=0.1",
+    "  200/450 classified",
+    "  400/450 classified",
+    "  450/450 classified",
+    "[bodytype] wrote /out/session_x/session_x_bodytype.json",
+    "[bodytype] wrote /out/session_x/session_x_bodytype_by_track.json",
+    "[bodytype] 40 tracks, 39 confident (>= 0.5); suv=18 hatchback=15 saloon=5 mpv=1",
+)
+
+
+def test_classify_parser_follows_the_count() -> None:
+    parser = ClassifyParser()
+    seen = []
+    for line in _BODYTYPE_RUN:
+        parser.feed(line)
+        seen.append((parser.progress.current, parser.progress.total, parser.progress.phase))
+    assert seen[0] == (None, None, "")  # the header is not progress
+    assert seen[1] == (200, 450, "classified 200/450")
+    assert seen[2] == (400, 450, "classified 400/450")
+    assert seen[3:] == [(450, 450, "classified 450/450")] * 4
+    assert abs((_feed(ClassifyParser(), *_BODYTYPE_RUN[:2]).frac or 0) - 200 / 450) < 1e-9
+
+
+def test_classify_parser_summary_is_the_closing_line() -> None:
+    assert _feed(ClassifyParser(), *_BODYTYPE_RUN).summary == _BODYTYPE_RUN[-1]
+    assert _feed(ClassifyParser(), *_MAKEMODEL_RUN).summary == _MAKEMODEL_RUN[-1]
+
+
+def test_classify_parser_does_not_take_the_closing_line_for_progress() -> None:
+    """makemodel's closing line reads "40 tracks classified, ...". It must
+    not move the count."""
+    p = _feed(ClassifyParser(), *_MAKEMODEL_RUN)
+    assert (p.current, p.total, p.frac) == (115, 115, 1.0)
+    assert p.phase == "classified 115/115"
+
+
+def test_classify_parser_ignores_lookalike_lines() -> None:
+    p = _feed(
+        ClassifyParser(),
+        "  12/40 classified so far",
+        "classified 12/40",
+        "[colour] 12/40 classified",
+        "  x/40 classified",
+    )
+    assert (p.current, p.total) == (None, None)
+
+
+def test_classifier_commands_drive_a_progress_bar() -> None:
+    """The three commands as the panel runs them: each gets a parser that
+    reads its count. Before 2026-11 none did, so these jobs showed no bar."""
+    for kind, run in (
+        ("makemodel", _MAKEMODEL_RUN),
+        ("bodytype", _BODYTYPE_RUN),
+        ("colour", tuple(line.replace("bodytype", "colour") for line in _BODYTYPE_RUN)),
+    ):
+        parser = make_parser(kind)
+        assert isinstance(parser, ClassifyParser), kind
+        for line in run[:2]:
+            parser.feed(line)
+        assert parser.progress.frac is not None and 0 < parser.progress.frac < 1, kind
+        assert estimate_eta(parser.progress.current, parser.progress.total, 60.0) is not None
+        for line in run[2:]:
+            parser.feed(line)
+        assert parser.progress.frac == 1.0, kind
+        parser.finish(0)
+        assert parser.progress.ok is True and parser.progress.summary == run[-1]
 
 
 # ----------------------------------------------------------------------
@@ -316,7 +406,9 @@ def test_finish_sets_done_and_ok() -> None:
 def test_make_parser_dispatch() -> None:
     assert isinstance(make_parser("pull"), PullParser)
     assert isinstance(make_parser("alpr-run"), BatchParser)
-    assert isinstance(make_parser("makemodel"), BatchParser)
+    assert isinstance(make_parser("makemodel"), ClassifyParser)
+    assert isinstance(make_parser("bodytype"), ClassifyParser)
+    assert isinstance(make_parser("colour"), ClassifyParser)
     assert isinstance(make_parser("makemodel-train-uk"), TrainParser)
     assert isinstance(make_parser("dvsa-label"), DvsaLabelParser)
     assert isinstance(make_parser("makemodel-build-uk"), BuildParser)

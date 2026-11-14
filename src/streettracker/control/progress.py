@@ -17,9 +17,9 @@ Design choices that keep this layer trustworthy and easy to test:
   line — so a newly-wrapped command degrades gracefully rather than erroring.
 
 The exact line formats parsed here are emitted (with ``flush=True``) by the
-respective CLIs: ``cli/alpr_run.py``, ``analysis/makemodel/infer.py``,
-``analysis/makemodel/uk_dataset.py`` (build + train), ``cli/pull.py`` and
-``cli/dvsa_label.py``.
+respective CLIs: ``cli/alpr_run.py``, ``analysis/makemodel/session_infer.py``
+(makemodel, bodytype and colour), ``analysis/makemodel/uk_dataset.py`` (build +
+train), ``cli/pull.py`` and ``cli/dvsa_label.py``.
 """
 
 from __future__ import annotations
@@ -118,7 +118,7 @@ class GenericParser(ProgressParser):
 
 
 # ----------------------------------------------------------------------
-# Counted batch commands: alpr-run + makemodel inference
+# Counted batch commands: alpr-run, alpr-rescore, makemodel-compare
 # ----------------------------------------------------------------------
 
 # "  [preferred] 120/1200 done" / "[bespoke] …" / "[batch] 120/1200 done"
@@ -128,7 +128,8 @@ _WROTE_RE = re.compile(r"\bwrote\b\s+(.+)$")
 
 
 class BatchParser(ProgressParser):
-    """``alpr-run`` and ``makemodel`` both print ``[tag] N/total done``."""
+    """``alpr-run``, ``alpr-rescore`` and ``makemodel-compare`` print
+    ``[tag] N/total done``."""
 
     kind = "batch"
 
@@ -148,6 +149,40 @@ class BatchParser(ProgressParser):
         mw = _WROTE_RE.search(text)
         if mw:
             self.progress.summary = text
+
+
+# ----------------------------------------------------------------------
+# Classifier inference: makemodel, bodytype, colour
+# ----------------------------------------------------------------------
+
+# "  100/2000 classified", printed by SessionInference.main in
+# analysis/makemodel/session_infer.py for all three commands. Anchored at
+# both ends: the commands' closing line also holds the word ("[makemodel] 40
+# tracks classified, 37 above conf 0.4 ...") and is not a progress line.
+_CLASSIFIED_RE = re.compile(r"^(\d+)\s*/\s*(\d+)\s+classified$")
+
+
+class ClassifyParser(ProgressParser):
+    """``makemodel``, ``bodytype`` and ``colour`` print ``N/total classified``
+    as they go, then a closing line that sums the run up.
+
+    Until 2026-11 nothing here matched that line (``makemodel`` was given the
+    batch parser, which wants ``[batch] N/total done``; the other two had no
+    parser), so these jobs ran with no progress bar and no ETA. The closing
+    line, the last bracketed one, is kept as the summary.
+    """
+
+    kind = "classify"
+
+    def feed(self, line: str) -> None:
+        m = _CLASSIFIED_RE.match(line.strip())
+        if m:
+            cur, tot = int(m.group(1)), int(m.group(2))
+            self.progress.current = cur
+            self.progress.total = tot
+            self.progress.phase = f"classified {cur}/{tot}"
+            return
+        super().feed(line)
 
 
 # ----------------------------------------------------------------------
@@ -409,7 +444,9 @@ _PARSERS: dict[str, type[ProgressParser]] = {
     "alpr-run": BatchParser,
     # alpr-rescore prints "[batch] N/total done" -- the batch format.
     "alpr-rescore": BatchParser,
-    "makemodel": BatchParser,
+    "makemodel": ClassifyParser,
+    "bodytype": ClassifyParser,
+    "colour": ClassifyParser,
     "makemodel-train-uk": TrainParser,
     "pull": PullParser,
     "dvsa-label": DvsaLabelParser,
