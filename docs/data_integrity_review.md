@@ -969,6 +969,13 @@ head-to-heads shrink to ~67 cars once corpora share most of their cars.
   thresholds for a stated precision.
 - (e) **Age skew:** plate-age distribution of the training cars vs all read
   plates.
+- (f) **Stopped vehicles** (found 2026-11-14, not in the original plan). A
+  vehicle stopped in the road at the far end captures the trajectory rule's
+  crop for the cars that pass it, so all three heads return that vehicle's
+  make, colour and body type for them. Seven clear episodes since 2026-10-01;
+  the account is in [`history/makemodel.md`](history/makemodel.md). Measure
+  how many tracks' crop boxes recur at one place across tracks, and score the
+  heads with those tracks left out and left in.
 - *Decision:* `/stats` shows CNN-derived mixes only for slices whose measured
   accuracy clears a bar, labelled as estimates. Everything else shows as
   "unknown".

@@ -335,3 +335,62 @@ Step 5 of the 2026-09-28 handoff (the other steps are in [plate_gate.md](plate_g
    session re-run with both heads via the panel (2026-10-03, 96 jobs, then
    a showcase refresh). **Step 5 is complete** — all three heads now train
    on the label-clean corpus.
+
+## A stopped vehicle captures the crops of passing cars (found 2026-11-14)
+
+Found by chance, checking the first enrich after the inference commands were
+merged into one: `session_20261113_080245` came back with red as its most
+common colour, 28.1 % of 663 confident tracks, where the eight full sessions
+since 9 October sit between 9.2 % and 11.5 %.
+
+The red is confined to one stretch of 13 November. By the hour, the red
+share is 7-10 % at 08:00 and 09:00, 92 % at 10:00 (100 of 109 tracks), 50 %
+at 11:00 and back to 9 % at 12:00. Inside that stretch all three heads agree
+with each other at confidence 1.0: the make is Citroën for 44 of 48 tracks
+in the ten minutes from 10:10, the body type hatchback, the colour red, and
+the crop source `trajectory`. For the 100 tracks called red in the 10:00
+hour, the Orin's own sub-stream colour vote says black (84), blue (8) or
+nothing (8).
+
+The 4K snaps show why. A red Citroën was stopped in the road at the far end
+of the street. Most tracks get their first snap while the car is at the far
+end (the first snap's box centre is above y = 110 of 512 for 65-70 % of
+tracks all day), and with a stopped vehicle sitting there on the road
+polygon, the trajectory rule's "on-road vehicle nearest the track's box" is
+that vehicle. The heads classified the crop they were given correctly. It
+was the wrong car.
+
+It is not a tracking fault and not extra traffic: the window holds 186 car
+tracks, inside the 44-215 range of the same 90 minutes on 17 other days,
+with normal net displacement (median 584 px against 579 px for the rest of
+the day).
+
+The plate side coped. Of 488 reads of the stopped car's plate on those
+tracks, the static-plate filter marked 465 and the colour check 117; the
+plate ended up as the best read of 2 tracks.
+
+It predates the 2026-11 code changes. A scan of every session since
+2026-10-01 for ten-minute windows of 8 or more classified cars in which one
+make + colour + body type takes at least 70 % found seven episodes, all in
+files written before those changes except the last:
+
+| Date | Window | Cars | Returned as |
+| --- | --- | --- | --- |
+| 2026-10-02 | 11:00-11:10 | 9 of 11 | grey Ford SUV |
+| 2026-10-14 | 14:10-14:20 | 8 of 11 | white Peugeot van |
+| 2026-10-27 | 09:20-09:30 | 11 of 14 | white DAF van |
+| 2026-10-27 | 10:00-10:20, 10:30-10:50 | 48 of 60 | red Kia hatchback |
+| 2026-11-03 | 10:10-11:10 | 106 of 113 | silver Renault hatchback |
+| 2026-11-13 | 10:00-10:40 | 84 of 92 | red Citroën hatchback |
+
+That is 266 of 26,688 classified cars (1.0 %), and a lower bound: the scan
+only sees episodes long and busy enough to fill a ten-minute window, and on
+13 November it caught 84 of roughly 130 affected cars.
+
+What it touches: the `/stats` colour and body-type mixes and the
+fastest-by-colour board, which use the CNN values for unplated cars. The
+make chart uses the register and is not affected. Nothing has been changed;
+the open question (review E2.6 (f)) is a guard for the heads like the one
+the plates have, for example refusing a vehicle box that recurs at one place
+across many tracks, or choosing the candidate that moved between a track's
+fire-time and completion-time boxes.

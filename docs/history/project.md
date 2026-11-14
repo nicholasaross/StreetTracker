@@ -233,6 +233,20 @@ had fired (65 trigger crossings, 2,170 pipeline fires, 531 door fires), the
 summary page was current, no temp file was left behind, and the journal had
 no traceback, failed frame or failed page write.
 
+**First shutdown on the new code, 2026-11-14 08:09 GMT** (a panel roll of
+`session_20261113_080245`, 24 h 6 min, 802,235 frames). From SIGTERM to
+"session ended" took 0.84 s. The files landed in the designed order: the
+summary page and `vehicles.json` at 08:09:06.254, `_hourly.json` at .494,
+`_meta.json` at .502 and `_data.json` last at .874. `_events.jsonl` and
+`_data.json` both hold 1,276 records (of 8,935 raw tracks), so the drain lost
+none; the meta carries no `recovered` block; no temp file was left; and the
+journal for the whole session has no traceback, failed frame, failed page
+write, slow render or drain warning. The snapshotter dropped 795 of 5,447
+submits at the concurrency cap (14.6 %), inside the 10.7-17.7 % range of the
+eleven sessions before it, with latency p50 568 ms / p90 802 ms and no failed
+snap, which is what unchanged drop behaviour would look like. The service was
+restarted 2 s later and opened `session_20261114_080909`.
+
 - **One sharpness measurement per track per frame.** `process_frame` walked
   the active tracks three times (trigger, pipeline, door) and measured the
   Laplacian sharpness of the same box on the same frame in both the trigger
@@ -456,3 +470,9 @@ The commands' output is not changed. A test in the torch job now runs each
 command and feeds what it prints to the parser the panel picks for it; run
 against the old parser, it fails for all three. The running panel loads the
 change at its next restart.
+
+Seen working on 2026-11-14, on the enrich of `session_20261113_080245`
+after the panel was restarted: `makemodel` counted `classified 100/2456`
+up to 2,456 with an ETA from the first line, and `bodytype` and `colour`
+did the same in steps of 200. Each finished job's summary was its closing
+tally line.
