@@ -388,11 +388,48 @@ def test_make_command_output(tmp_path: Path, capsys: pytest.CaptureFixture[str])
         "crop sources {"
     )
 
-    # The panel shows the last file written as the job's summary.
-    parser = make_parser("makemodel")
+
+@pytest.mark.parametrize(
+    ("kind", "main", "checkpoint"),
+    [
+        ("makemodel", infer.main, _make_checkpoint),
+        ("bodytype", bodytype_infer.main, _body_checkpoint),
+        ("colour", colour_infer.main, _colour_checkpoint),
+    ],
+    ids=["makemodel", "bodytype", "colour"],
+)
+def test_the_panel_reads_progress_from_each_commands_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    kind: str,
+    main: Main,
+    checkpoint: Callable[[Path], Path],
+) -> None:
+    """What the command prints, fed to the parser the control panel picks for
+    it, must move the progress bar to the end. Until 2026-11 the panel matched
+    none of these commands' progress lines, and no test joined the two."""
+    command = {
+        "makemodel": infer._MakeInference,
+        "bodytype": bodytype_infer._BodyTypeInference,
+        "colour": colour_infer._ColourInference,
+    }[kind]
+    monkeypatch.setattr(command, "progress_every", 2)  # several lines from five snaps
+    sess = _session(tmp_path)
+    assert main([str(sess), "--model", str(checkpoint(tmp_path)), "--cpu"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+
+    parser = make_parser(kind)
+    counts = []
     for line in lines:
         parser.feed(line)
-    assert parser.progress.summary == lines[3]
+        counts.append((parser.progress.current, parser.progress.total))
+    assert (2, 5) in counts and (4, 5) in counts
+    assert counts[-1] == (5, 5)
+    assert parser.progress.frac == 1.0
+    # The job's summary in the panel is the command's closing line.
+    assert parser.progress.summary == lines[-1].strip()
+    assert parser.progress.summary.startswith(f"[{kind}] 2 tracks")
 
 
 @pytest.mark.parametrize(

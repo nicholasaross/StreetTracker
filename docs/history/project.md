@@ -436,3 +436,23 @@ Found on the way, not changed: the control panel shows no progress for
 these three commands. They print `N/M classified`, and the panel's batch
 parser looks for `[batch] N/M done`. The line is now printed in one place
 (`SessionInference.main`).
+
+## Panel progress for the classifier commands (2026-11-14)
+
+The gap noted above is closed. `makemodel`, `bodytype` and `colour` print
+`N/total classified`; the control panel gave `makemodel` the batch parser,
+which wants `[batch] N/total done`, and gave the other two no parser at all,
+so all three ran with no progress bar and no ETA. The mismatch dated from the
+first inference command: the parser's test fed it a hand-written
+`[batch] 50/100 done` line that the command never printed.
+
+`control/progress.py` now has a `ClassifyParser` for the three commands. It
+reads the count from the progress line and keeps the command's closing line
+as the job's summary. For `bodytype` and `colour` that is the summary they
+already had; for `makemodel` it replaces the path of the last file written
+with the run's tally (`40 tracks classified, 37 above conf 0.4 ...`).
+
+The commands' output is not changed. A test in the torch job now runs each
+command and feeds what it prints to the parser the panel picks for it; run
+against the old parser, it fails for all three. The running panel loads the
+change at its next restart.

@@ -466,6 +466,9 @@ reference: [`docs/sites.md`](docs/sites.md).
   (`pull`, `dvsa-label`, `vehicles`, `people`). Two GPU jobs never overlap.
 - **Progress comes from stdout.** `control/progress.py` parses each command's printed lines, so
   rewording a progress message breaks its progress bar. Change the parser and its test with it.
+  `alpr-run` and the three classifier commands have tests that feed their real output to their
+  parser; a parser tested only on a hand-written transcript can match nothing the command prints
+  (the classifier commands had no progress bar until 2026-11-14 for that reason).
 - **Playbooks** (`control/playbooks.py`): enrich, build-train, roll, promote, reinfer, rescore,
   relabel and platecheck. **roll** (restarts the Orin service, then pulls the closed session) and
   **promote** (replaces the production model, then publishes the release) are destructive and
