@@ -39,8 +39,9 @@ and append the dated account (numbers, method, what it replaced) to the matching
   on it (2026-11-13): tracks ending at a rebuild are at chance level, 29 against 21 expected.
 - **`session_20261113_080245`** is the first session recorded with the 2026-11-13 runtime changes
   (one sharpness measurement per track, the shutdown drain on the event loop, atomic
-  end-of-session JSON). Its roll will be the first shutdown to use the new drain and write order:
-  check then that `_hourly.json`, `_meta.json` and `_data.json` all land, in that order.
+  end-of-session JSON). Its roll on 2026-11-14 was the first shutdown on that code and went as
+  designed: `_hourly.json`, `_meta.json` and `_data.json` landed in that order, with every one of
+  its 1,276 finalised tracks in `_data.json`. The live session is `session_20261114_080909`.
 - **Config.** `vehicle_classes = [0,1,2,3,5,7,16]` (person, bicycle, car, motorcycle, bus, truck,
   dog). The snap gate is the road polygon with six triggers, plus pipeline mode (400 ms, 15 per
   track) with per-direction bands. The live block is under
@@ -117,6 +118,12 @@ publishes `makemodel-<run>`.
 
 - **These scores are on plated cars.** `/stats` mostly uses the heads on unplated cars, where the
   crop comes from the trajectory rule and accuracy is untested (review E2.6).
+- **A stopped vehicle captures the crops of the cars passing it.** When a vehicle sits in the
+  road at the far end, the trajectory rule picks it for most passing tracks, and all three heads
+  then report its make, colour and body type for them (2026-11-13, 10:00-11:30: about 130 cars
+  came back as one red Citroën hatchback; seven such episodes since 2026-10-01). Plates are
+  protected by the static-plate filter; the heads have no equivalent yet. Distrust a colour or
+  body-type spike confined to an hour or two.
 - **Sources.** `make_model_source` and `colour_source` say where a value came from: `"dvsa"` is
   the register (truth for a correctly read plate), `"cnn"` a prediction. `/stats` prefers DVSA,
   then the CNN, then "unknown". The HSV `color` field is not a colour source (about 40 % grouped
