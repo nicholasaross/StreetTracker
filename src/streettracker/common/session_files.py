@@ -117,6 +117,12 @@ class SessionFiles:
         return self._file("_vehicle_boxes.json")
 
     @property
+    def stationary_vehicles(self) -> Path:
+        """Vehicles found stopped in the road, which the CNN commands
+        refuse as a passing car's crop."""
+        return self._file("_stationary_vehicles.json")
+
+    @property
     def makemodel(self) -> Path:
         """Per-image make predictions (makemodel)."""
         return self._file("_makemodel.json")

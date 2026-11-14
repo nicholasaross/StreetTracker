@@ -141,6 +141,39 @@ def load_done_bbox_index(
     return out
 
 
+def load_snap_times(session_dir: Path) -> dict[tuple[int, int], float]:
+    """``(track_id, snap_index) -> unix time the snap fired`` from
+    ``main_snap_fire_unix``. A session recorded before that field
+    (2026-10-04) gives each snap its track's start time instead, which is
+    within the few seconds a track lasts. Snaps of tracks with no record
+    are left out."""
+    session_label = session_dir.name
+    data_path = session_dir / f"{session_label}_data.json"
+    out: dict[tuple[int, int], float] = {}
+    if not data_path.exists():
+        return out
+    try:
+        records = json.loads(data_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return out
+    for r in records:
+        tid = r.get("track_id")
+        snaps = r.get("main_snaps") or []
+        if tid is None or not snaps:
+            continue
+        fired = r.get("main_snap_fire_unix") or []
+        if len(fired) != len(snaps):
+            fired = [None] * len(snaps)
+        start = r.get("time_start_unix")
+        for n, t in zip(snaps, fired, strict=True):
+            when = t if t is not None else start
+            try:
+                out[(int(tid), int(n))] = float(when)
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
 def image_size(image_path: Path) -> tuple[int, int] | None:
     """``(width, height)`` from the image header (no pixel decode), or
     ``None`` when the file can't be read as an image.

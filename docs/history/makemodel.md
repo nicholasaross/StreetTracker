@@ -394,3 +394,110 @@ the open question (review E2.6 (f)) is a guard for the heads like the one
 the plates have, for example refusing a vehicle box that recurs at one place
 across many tracks, or choosing the candidate that moved between a track's
 fire-time and completion-time boxes.
+
+## The stationary-vehicle guard (2026-11-14)
+
+The locator the three heads share (`analysis/vehicle_locator.py`) now leaves
+stationary vehicles out of a passing track's candidates. The rule is in
+`analysis/stationary.py`; every figure here comes from
+`.claude/stationary_vehicle_check.py` over the eleven sessions recorded from
+2026-10-01 to 2026-11-14, which reads only saved files (the cached vehicle
+boxes, the records, the plate reads and the per-image predictions).
+
+**The rule.**
+
+- A vehicle is standing still around a snap when at least three of the
+  tracks nearest in time show the same box (IoU ≥ 0.9), one or more before
+  the snap and one or more after. The snap's own track counts if it shows
+  the box. Only the three nearest other tracks on each side are looked at,
+  and only their snaps at least 10 s away.
+- A track is on that vehicle, and keeps it, when the track's own sub-stream
+  box (at fire time or at completion) overlaps it by IoU ≥ 0.5.
+- Otherwise a candidate box is refused when it is that vehicle (IoU ≥ 0.7)
+  or, for a crop chosen without a plate read, when the vehicle stands in
+  front of it and covers a quarter or more of it.
+- The snap then takes the next candidate, or has no crop.
+
+**What it changes.**
+
+| | |
+| --- | --- |
+| Trajectory crops changed | 2,566 of 59,747 (4.3 %); 2,026 of them left with no crop |
+| ...because the box is the vehicle | 2,099 |
+| ...because the box is hidden behind it | 467 |
+| Plate-anchored crops changed | 120 of 18,929 (0.6 %) |
+| Tracks with a changed crop | 1,147 of 28,466 (4.0 %); 668 with every crop changed |
+
+By session the share of trajectory crops changed runs from 1.4 % to 8.2 %,
+and is 30.2 % on `session_20261113_080245`. That is four times the 1.0 %
+lower bound of the ten-minute-window scan above. Both directions are hit
+alike (7.4 % of L→R crops and 6.7 % of R→L, in the four worst sessions).
+
+**The heads on those crops.** On DVSA-labelled tracks, the saved per-image
+predictions on trajectory crops, against the register:
+
+| Trajectory crops | Colour right | Make right |
+| --- | --- | --- |
+| the guard changes | 24 of 145 (16.6 %) | 19 of 145 (13.1 %) |
+| ...the box is the vehicle | 20 of 127 | 16 of 127 |
+| ...the box is hidden behind it | 4 of 18 | 3 of 18 |
+| all others | 2,828 of 3,506 (80.7 %) | 2,787 of 3,506 (79.5 %) |
+
+**The choice itself.** On the 10,971 snaps where a track's own gated plate
+was read, the vehicle holding the plate is known. Ignoring the plate, the
+trajectory rule picks it in 86.5 % of them without the guard and 87.3 % with
+it. In the 176 snaps where the guard acted, the pick was right in 12 before
+and 98 after, with no crop in 76. Of the 12, 7 are boxes partly behind a
+stopped vehicle and keep their crop in a real run, where the plate anchors
+it. The other 5 are lost: the rule takes the plated vehicle itself for a
+stationary one that the track is not on (5 of 10,971, 0.05 %).
+
+**A colour run on 13 November** (a copy of the session, so the files in
+`output/` are as they were): 439 crops refused, 355 snaps left with no crop.
+Red falls from 28.1 % of 663 confident tracks to 12.0 % of 584. In the 10:00
+hour it was 100 of 109 tracks and is 12 of 54; at 11:00, 32 of 64 and now
+4 of 43. The session's `_stationary_vehicles.json` names the Citroën's box
+from 10:03:36 to 11:23:42 UTC, 420 crops over 132 tracks. Sixteen red
+tracks are left in those two hours, among them the Citroën's own track (897)
+and the last car to pass it (1826). The 10:00 hour is still above the usual
+tenth, so a few wrong crops remain there.
+
+**What the measurements ruled out**, in the order tried:
+
+1. *Counting matches* (the box in 2 of the 6 nearest snaps). It also flags
+   a car that drives in and stops, or one pulling away, whose box in its own
+   track's snap is the tracked car. Asking for a sighting on each side leaves
+   those alone and lost no right crop.
+2. *Refusing only the vehicle's box.* The first colour re-run still had 40
+   red tracks of 91 in the 10:00 hour. With the Citroën refused, the next
+   candidate was often the passing car's own box with the Citroën in front
+   of it, and where a pedestrian or a car behind stretched the Citroën's box
+   it was no longer recognised (IoU 0.87).
+3. *Two sightings, one before and one after, without the snap's own.* Snaps
+   fire at fixed places along the road, so two moving cars often leave
+   matching boxes. Of 16 labelled crops refused for matching such a
+   "vehicle" at IoU 0.7-0.9, 8 were right. With three tracks required, 4
+   labelled crops are left in that band and 1 is right.
+4. *Hidden by a half.* Accuracy by the share of the box a stationary
+   vehicle in front covers: under a quarter, 47 of 59 colour and 49 of 59
+   make, as on a clear crop (76 %); a quarter to a half, 2 and 3 of 12; a
+   half to three quarters, 2 and 0 of 6. A box *in front of* a stationary
+   vehicle is unaffected (89 % and 84 % of 1,159).
+5. *Hidden boxes with a plate read in them.* Right in 12 (colour) and 15
+   (make) of 19, so they are kept.
+
+**Not covered.** The first and the last car to pass a stopped vehicle
+(nothing shows the vehicle on one side of them). A stop that fewer than
+three tracks see. A box less than a quarter hidden. And the corpus builder,
+which anchors its crops with `plate_anchored_box` directly: on labelled
+tracks 39 plate-anchored crops (0.4 %) moved off a stationary vehicle, most
+of them a parked car whose box was the tightest round a passing car's plate.
+
+**Cost.** Working out the stationary vehicles takes 2.2 s on the largest
+session (15,000 snaps). The first command on a session classifies the
+changed snaps a second time, about 3 % of them.
+
+**Applying it.** Nothing in `output/` has been re-inferred. The panel's
+reinfer playbook over the sessions since 2026-10-01 (earlier ones if the
+`/stats` history matters) rewrites the per-track files, and a showcase
+refresh picks them up. Tracks that lose every crop show as "unknown".

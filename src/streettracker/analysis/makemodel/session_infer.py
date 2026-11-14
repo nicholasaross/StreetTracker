@@ -328,26 +328,26 @@ class SessionInference(abc.ABC, Generic[C]):
         )
 
         per_image: list[dict[str, Any]] = []
-        n_no_box = 0
         for i, (path, tid, snap_index, _cls) in enumerate(snaps, 1):
-            image = read_image(path)
-            box, source = locator.locate(path, tid, snap_index, image)
-            if box is None:
-                n_no_box += 1
-            per_image.append(
-                {
-                    "track_id": tid,
-                    "snap_index": snap_index,
-                    "image": path.name,
-                    "has_bbox": box is not None,
-                    "crop_source": source,
-                    **self.predict(clf, image, box),
-                }
-            )
+            per_image.append(self._row(clf, locator, path, tid, snap_index))
             if i % self.progress_every == 0 or i == len(snaps):
                 print(f"  {i}/{len(snaps)} classified")
 
+        # Which vehicles are stopped in the road is only known once every
+        # snap's boxes are in. Classify again the few snaps whose crop that
+        # changes (none, when an earlier command already filled the cache).
+        again = set(locator.settle())
+        for i, (path, tid, snap_index, _cls) in enumerate(snaps):
+            if (tid, snap_index) in again:
+                per_image[i] = self._row(clf, locator, path, tid, snap_index)
+        if locator.n_refused:
+            print(
+                f"{tag} stationary vehicles: {locator.n_refused} crops refused "
+                f"({locator.n_left_without} snaps left with no crop)"
+            )
+
         locator.close()
+        n_no_box = sum(1 for row in per_image if not row["has_bbox"])
         by_track = self.aggregate(per_image, args.conf_threshold)
 
         label = args.session_dir.name
@@ -360,6 +360,21 @@ class SessionInference(abc.ABC, Generic[C]):
         print(f"{tag} wrote {track_path}")
         print(f"{tag} {self.summary(by_track, args.conf_threshold, n_no_box, locator)}")
         return 0
+
+    def _row(
+        self, clf: C, locator: SnapVehicleLocator, path: Path, track_id: int, snap_index: int
+    ) -> dict[str, Any]:
+        """One snap's row of the per-image file."""
+        image = read_image(path)
+        box, source = locator.locate(path, track_id, snap_index, image)
+        return {
+            "track_id": track_id,
+            "snap_index": snap_index,
+            "image": path.name,
+            "has_bbox": box is not None,
+            "crop_source": source,
+            **self.predict(clf, image, box),
+        }
 
 
 T = TypeVar("T", bound=TopOneClassifier)

@@ -117,6 +117,21 @@ Session files:
   `colour` commands in fullframe crop mode, so one YOLO pass per session
   is shared by all of them. Disposable — rebuilt if deleted or if the
   detector params change (see `analysis/vehicle_locator.py`).
+- `{session}_stationary_vehicles.json` — written by `makemodel`,
+  `bodytype` and `colour` in fullframe crop mode (each rewrites it; the
+  content is the same). The vehicles stopped in the road that the commands
+  refused as a passing car's crop (`analysis/stationary.py`, 2026-11-14):
+  - `vehicles`: one entry per vehicle and stretch of time, with `box` (4K
+    px), `first` / `last` (UTC, the first and last snap whose crop it would
+    have taken), `n_crops` and `n_tracks`.
+  - `n_crops_refused`, and `n_left_without_crop` for the snaps where no
+    other candidate was left.
+  - `rule`: the thresholds in force.
+
+  A session with no such file was last inferred before the guard, and its
+  per-track make, colour and body type can still hold a stopped vehicle's
+  values. An entry starts one track late and ends one early: the first and
+  last cars to pass a stopped vehicle are not covered.
 - `{session}_people.json` — per-person-track activity enrichment
   (after `people`): kind walker/jogger/cyclist + `dog_walker` flag via
   temporal+direction pairing with dog/bicycle tracks. Jogger split

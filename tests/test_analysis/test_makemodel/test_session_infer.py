@@ -23,6 +23,7 @@ from PIL import Image
 torch = pytest.importorskip("torch")
 pytest.importorskip("torchvision")
 
+from streettracker.analysis import vehicle_locator  # noqa: E402
 from streettracker.analysis.makemodel import (  # noqa: E402
     bodytype_infer,
     colour_infer,
@@ -485,6 +486,111 @@ def test_refusals(
         f"{' ' * (len(tag) + 3)}train one (`{train_command}`) and copy its best.pt here, "
         f"or pass --model <path>.\n"
     )
+
+
+# ----------------------------------------------------------------------
+# A vehicle stopped in the road. Five tracks pass a van, a minute apart, and
+# in each snap the van is the only vehicle the detector finds on the road.
+
+_VAN = (300.0, 60.0, 380.0, 130.0, 0.9)
+
+
+def _street(tmp_path: Path) -> Path:
+    sess = tmp_path / "session_x"
+    sess.mkdir()
+    records = []
+    for track in range(1, 6):
+        Image.new("RGB", (400, 300), (120, 60, 30)).save(sess / f"vehicle_{track}_main_1.jpg")
+        records.append(
+            {
+                "track_id": track,
+                "main_snaps": [1],
+                "main_snap_bboxes": [[320, 60, 448, 156]],  # beside the van, not on it
+                "main_snap_fire_unix": [1000.0 + 60.0 * track],
+            }
+        )
+    (sess / "session_x_data.json").write_text(json.dumps(records))
+    (sess / "session_x_meta.json").write_text(json.dumps({"frame_size": [640, 360]}))
+    return sess
+
+
+def _stub_vehicle_detector(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Stand in for YOLO: every snap shows the van. Returns the call log."""
+    calls: list[int] = []
+
+    def factory(*_args: object, **_kwargs: object) -> Callable[[np.ndarray], list]:
+        def detect(_image: np.ndarray) -> list:
+            calls.append(1)
+            return [_VAN]
+
+        return detect
+
+    monkeypatch.setattr(vehicle_locator, "yolo_vehicle_detector", factory)
+    return calls
+
+
+def _fullframe_args(tmp_path: Path, sess: Path) -> list[str]:
+    ckpt = _colour_checkpoint(tmp_path, crop_mode="plate", crop_pad_frac=0.1)
+    no_polygon = str(tmp_path / "no_road_polygon.json")
+    return [str(sess), "--model", str(ckpt), "--cpu", "--road-polygon", no_polygon]
+
+
+def test_a_stationary_vehicle_is_not_classified_as_the_cars_passing_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = _stub_vehicle_detector(monkeypatch)
+    sess = _street(tmp_path)
+    assert colour_infer.main([*_fullframe_args(tmp_path, sess), "--conf-threshold", "0"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+
+    # First and last tracks: nothing shows the van before the one or after
+    # the other, so they keep it. The three between were only passing.
+    rows = _load(sess, "colour")
+    assert [(r["track_id"], r["has_bbox"], r["crop_source"]) for r in rows] == [
+        (1, True, "trajectory"),
+        (2, False, None),
+        (3, False, None),
+        (4, False, None),
+        (5, True, "trajectory"),
+    ]
+    assert all(r["colour"] is None and r["conf"] is None for r in rows[1:4])
+    assert [t["track_id"] for t in _load(sess, "colour_by_track")["tracks"]] == [1, 5]
+
+    assert lines[1] == "  5/5 classified"
+    assert lines[2] == "[colour] stationary vehicles: 3 crops refused (3 snaps left with no crop)"
+    assert lines[3] == f"[colour] wrote {sess / 'session_x_colour.json'}"
+    assert lines[-1].startswith("[colour] 2 tracks, 2 confident")
+    assert len(calls) == 5  # the second look needs no detection
+
+    vehicles = _load(sess, "stationary_vehicles")["vehicles"]
+    assert [(v["box"], v["n_crops"], v["n_tracks"]) for v in vehicles] == [
+        ([300, 60, 380, 130], 3, 3)
+    ]
+
+    # The panel still ends on the closing line as the job's summary.
+    parser = make_parser("colour")
+    for line in lines:
+        parser.feed(line)
+    assert (parser.progress.current, parser.progress.total) == (5, 5)
+    assert parser.progress.summary == lines[-1].strip()
+
+
+def test_a_later_command_knows_the_stationary_vehicles_from_the_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = _stub_vehicle_detector(monkeypatch)
+    sess = _street(tmp_path)
+    args = _fullframe_args(tmp_path, sess)
+    assert colour_infer.main(args) == 0
+    first = _load(sess, "colour")
+    capsys.readouterr()
+
+    # The boxes are cached now: the same rows, with no second look needed.
+    assert colour_infer.main(args) == 0
+    out = capsys.readouterr().out
+    assert "[colour] stationary vehicles: 3 crops refused (3 snaps left with no crop)" in out
+    assert _load(sess, "colour") == first
+    assert len(calls) == 5
 
 
 @pytest.mark.parametrize(
