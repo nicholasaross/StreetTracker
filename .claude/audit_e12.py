@@ -7,18 +7,20 @@ stratified sample of reads (streettracker.analysis.alpr.audit), serves a
 page to check each against the 4K snap, and turns the answers into rates for
 every read (streettracker.analysis.alpr.audit_score).
 
-Run from the repo root:
+Run from the repo root, with --no-sync: a plain `uv run` that needs to
+reinstall the project fails while the showcase and the control panel hold
+.venv/Scripts/streettracker.exe open (os error 32).
 
-  uv run python .claude/audit_e12.py select --lat 51.5 --lon -0.1
+  uv run --no-sync python .claude/audit_e12.py select --lat 51.5 --lon -0.1
       Draw the set (once) and render each item's pictures. --lat/--lon place
       the camera to the nearest 0.1 degree, for the sun's height (day / dusk /
       dark); they are kept only in the gitignored manifest.
-  uv run python .claude/audit_e12.py serve
+  uv run --no-sync python .claude/audit_e12.py serve
       Label on http://127.0.0.1:8093/. Every answer is saved as it is given;
       reloading resumes at the first unlabelled item.
-  uv run python .claude/audit_e12.py report
+  uv run --no-sync python .claude/audit_e12.py report
       The rates the labels so far support, with 95 % intervals -> report.json.
-  uv run python .claude/audit_e12.py rescore
+  uv run --no-sync python .claude/audit_e12.py rescore
       After re-running enrich (or changing the pipeline): how the audited
       tracks' best reads moved against the labelled truth.
 
@@ -253,7 +255,8 @@ def select(args: argparse.Namespace) -> None:  # noqa: C901 - one linear procedu
     atomic_write_json(MANIFEST_PATH, manifest, indent=1)
     _print_strata(manifest)
     print(
-        f"\n{len(items)} items -> {MANIFEST_PATH}\nnext: uv run python .claude/audit_e12.py serve"
+        f"\n{len(items)} items -> {MANIFEST_PATH}\n"
+        "next: uv run --no-sync python .claude/audit_e12.py serve"
     )
 
 
