@@ -244,3 +244,39 @@ Item 5 of the 2026-07-07 next-steps list (the rest of the list is in
    at night" no longer holds for R→L. At 07-08/18-19 h front-plate detection
    drops to 17-41 % (day 91 %, headlight glare), and the low-light window now
    covers both rush hours. See step 6.3a above and review R16 "Results".
+
+## Read rate by the sun's height (2026-11-15)
+
+Measured while building the E1.2 audit set, whose light strata follow the
+sun's elevation at each track's start rather than the clock. Every car track
+in all 60 sessions (not `class_suspect`, a known direction; about 126,600 tracks),
+with a camera position good to about a degree, which moves a bin edge by a few
+minutes. "Best read" is the rollup's best read being UK-shaped, the shape rate
+the audit set is there to verify; "any read" is any snap of the track giving a
+UK-shaped read, suspects included.
+
+| Sun height | Car tracks | Any read | Best read |
+| --- | --- | --- | --- |
+| above 30° | 55,825 | 82.9 % | 67.2 % |
+| 15-30° | 37,440 | 68.0 % | 49.7 % |
+| 10-15° | 8,770 | 42.0 % | 26.7 % |
+| 6-10° | 5,444 | 23.5 % | 12.3 % |
+| 3-6° | 3,770 | 11.5 % | 4.0 % |
+| 0-3° | 3,056 | 7.1 % | 1.5 % |
+| -3-0° | 2,361 | 7.7 % | 1.9 % |
+| -6 to -3° | 1,875 | 5.7 % | 1.3 % |
+| -12 to -6° | 2,305 | 4.3 % | 0.7 % |
+| below -12° | 5,748 | 3.2 % | 0.6 % |
+
+The fall is smooth, with no step at any band edge, and every month from May to
+November shows the same few per cent once the sun is below 6°. The earlier
+"dusk and dark about 45 %" (2026-07-28) used clock hours (18-06 h), most of
+which were sunlit in July. A smooth fall fits the 2026-10-04 blur finding
+(the exposure lengthens as the light goes, and plates smear) better than any
+single threshold. A fifth of car tracks (19 %) pass with the sun below 10°,
+which is the volume a faster low-light shutter (review E2.8) could win back.
+
+Consequence for the audit set: with the sun below 6° there are only ~315 best
+reads in the whole history (0.5 %), so the draw gives each low-light domain a
+floor of ten items and the daytime domains the rest
+(`audit.allocate_by_domain`).

@@ -68,8 +68,11 @@ and append the dated account (numbers, method, what it replaced) to the matching
 - **Read rate.** Per car, on canonical UK plates with fullframe crops (2026-07-28): R→L 69.7 %,
   L→R 66.8 %, net 68.3 %. Direction is not the limit and no second camera is needed. Every
   earlier "R→L is capped by camera geometry" claim was a crop artefact.
-- **Low light is the limit.** Day (06-18 h) reads about 75 % per car; dusk and dark about 45 %.
-  The cause is motion blur (plates are found but smeared), plus R→L front-plate detection falling
+- **Low light is the limit.** By the sun's height (all 60 sessions, 2026-11-15), a car track's
+  best read is UK-shaped 67 % of the time with the sun above 30°, 50 % at 15-30°, 27 % at
+  10-15°, 12 % at 6-10°, 4 % at 3-6° and under 2 % below 3°: almost nothing is read in true dusk
+  or dark. (The older "dusk and dark about 45 %" used clock hours, 18-06 h, mostly sunlit in
+  July.) The cause is motion blur (plates are found but smeared), plus R→L front-plate detection falling
   to 17-41 % at 07-08 h and 18-19 h under headlight glare. As the days shorten this covers both
   rush hours: gated reads at 17:00 were 54.5 % in July and 5.2 % on 1 October. The lever is a
   faster shutter scheduled for 07-09 h and 17-19 h. It is the operator's decision (`SetIsp` needs
@@ -91,9 +94,15 @@ and append the dated account (numbers, method, what it replaced) to the matching
   playbook; plates that newly pass cost DVSA lookups. 41.8 % of car journeys carry a DVSA label
   (2026-10-04).
 - **Unverified.** Only the plate-colour rule checks that a plate belongs to the tracked car; the
-  DVSA register can't see that. Until the E1.2 audit set exists
+  DVSA register can't see that. Until the E1.2 audit set is labelled
   ([`docs/data_integrity_review.md`](docs/data_integrity_review.md)), read rates are
   canonical-shape rates, not verified reads.
+- **The audit set (E1.2).** `.claude/audit_e12.py` draws about 400 reads (best reads by
+  direction, light and crop path; reads the colour and static filters rejected; DVSA-labelled
+  cars), serves a blind labelling page on `:8093` and reports rates weighted back to every read,
+  with 95 % intervals (`analysis/alpr/audit.py`, `audit_score.py`). Its labels in
+  `.claude/audit_e12/` are frozen ground truth: back them up, never redraw over them, and run
+  `rescore` after any change to the plate pipeline.
 - **Tried and rejected** (don't repeat without new evidence): multi-frame character voting
   (−43 pp against best-of-N; `alpr/consensus.py` is kept as infrastructure), a daytime shutter
   cap (Anti-Smearing, 2026-05-31), and a fuzzy plate ratio below 85 (it merges different cars
@@ -194,9 +203,10 @@ publishes `makemodel-<run>`.
 
 ### Open work, in order
 
-1. **Data-integrity plan** (review §4, revised 2026-10-04; its first four steps are done). Next
-   is the E1.2 audit set, stratified toward flagged reads, then calibrating the plate-colour
-   check and the combined gate against it. After that: E2.6 (plate-blind test first; its part
+1. **Data-integrity plan** (review §4, revised 2026-10-04; its first four steps are done). The
+   E1.2 audit tool is built (2026-11-15); next the operator draws the set and labels it (about
+   three hours), then the plate-colour check and the combined gate are calibrated against the
+   labels. After that: E2.6 (plate-blind test first; its part
    (f), the stationary-vehicle guard, is done), E2.1, E2.3
    and E2.7; the E3.1 hand count, then the night A/B (E2.8); and the retrain (E2.5) last.
 2. **Low-light shutter schedule.** Waiting on the operator's decision (see Plate reading).
@@ -442,7 +452,7 @@ sees them. Either run from PowerShell / cmd, or prefix with
 
 ## Tests and CI
 
-Tests at HEAD (2026-11-15): **about 1,860 passing on the dev box, on Python 3.10.**
+Tests at HEAD (2026-11-15): **about 1,930 passing on the dev box, on Python 3.10.**
 CI runs them in two jobs: `test` (no torch; the 9 torch-gated classifier modules
 skip there) and `test-torch` (the `test_makemodel` directory, which holds those 9
 modules among its 203 tests, on CPU wheels). CI also

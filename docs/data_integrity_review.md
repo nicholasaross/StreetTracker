@@ -781,6 +781,58 @@ highest-confidence read (now meaningful), not "most-supported string".
   DVSA-label error rate by support (feeds E2.5).
 - Keep it as a **frozen regression set**: every future ALPR or DVSA change
   reports against it.
+- **Built 2026-11-15; waiting on labels.** The sampler is
+  `analysis/alpr/audit.py`, the scoring `analysis/alpr/audit_score.py` and the
+  labelling page `.claude/audit_e12.py` (`select`, `serve` on `:8093`,
+  `report`, `rescore`). A new script rather than an extension of
+  `triage_rl.py`, whose failure buckets and labels stay as they were. What
+  differs from the plan above:
+  - *Four samples, ~400 items.* 220 track best reads (the read every consumer
+    uses); 50 reads the plate-colour check set aside and 30 the static-plate
+    filter set aside, each the read that would otherwise have been the track's
+    best (these calibrate the two filters: a rejected plate that is on the
+    tracked car is a lost read); and 100 DVSA-labelled cars, one read per
+    distinct plate, stratified by how many tracks read the plate (1, 2-4, 5+).
+  - *Strata for best reads:* direction × light × read group. Light comes from
+    the sun's elevation at the track's start (day ≥ 6°, dusk -6° to 6°, dark
+    below), so it follows the season; `select` needs the camera's latitude and
+    longitude for it, and keeps them only in the gitignored manifest. Read
+    groups are rank 0 that passes the plate gate, rank 0 that fails it, rank 1
+    won, and every fallback (hint crop, bottom retry, unmatched). `alpr-run`
+    doesn't record the crop path, so it is worked out again from the cached
+    vehicle boxes with the `TrajectoryCropDetector` ranking; close, not exact
+    (the cache includes motorcycles and has no ghost mask).
+  - *Allocation:* square-root shares per direction-and-light domain with a
+    floor of ten, then square-root allocation inside each domain with a floor
+    of three, so every rate the report quotes has items behind it. Each
+    stratum's population is recorded, and every estimate is weighted back to
+    all reads. Equal domain shares were tried first and dropped: with the sun
+    below 6° only ~315 best reads exist in the whole history (0.5 %; a UK-shaped
+    best read on under 5 % of low-sun car tracks, against 67 % with the sun
+    above 30°, `docs/history/anpr_tuning.md`), so equal shares spent a third of
+    the sample on them.
+  - *Blind entry.* The page hides the pipeline's read until the labeller has
+    typed their own; a disagreement is then settled ("keep mine" or "the
+    pipeline is right") and both answers are kept, so anchoring can be
+    measured. Which sample an item came from, and any filter flag, show only
+    after it is saved. The register's make, colour and body type appear only
+    for DVSA items, after the plate.
+  - *Answers:* whose plate is in the box (the tracked car, another moving car,
+    a parked or stopped car, not a plate, can't tell), the plate as read
+    (`.` for an unreadable character), and for DVSA items whether make, colour
+    and body type fit the tracked car.
+  - *Report:* verified, on-tracked-car and text-right rates by direction,
+    light, read group, gate and corroboration; precision and recall against a
+    confidence floor (E1.1); the verified per-car read rate (the exact shape
+    rate times the audited precision, per domain); what each filter rightly
+    rejects and what it loses; DVSA label error by support. 95 % intervals by
+    a stratified bootstrap, or the exact one-sided bound when every item
+    agrees. The labelling order is random, so a part-labelled set is already
+    usable and the report says which strata have no label yet.
+  - *Regression:* `rescore` compares the audited tracks' best reads now with
+    when the set was drawn, after a pipeline change and re-enrich.
+  - The set lives in `.claude/audit_e12/` (gitignored, it holds plates). Back
+    it up with `output/`.
 
 **E1.3 — Plate-colour/direction consistency, automatic, every read (R2).**
 
