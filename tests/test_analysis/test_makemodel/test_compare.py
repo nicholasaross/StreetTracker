@@ -30,6 +30,7 @@ from streettracker.analysis.makemodel.compare import (  # noqa: E402
 )
 from streettracker.analysis.makemodel.model import MakeModelNet, save_checkpoint  # noqa: E402
 from streettracker.analysis.makemodel.uk_dataset import split_val_cars  # noqa: E402
+from streettracker.control.progress import make_parser  # noqa: E402
 
 SESS = "session_20260901_120000"
 # 4 FORD + 4 AUDI cars, one track each (track id = index + 1).
@@ -201,6 +202,40 @@ def test_main_requires_leakage_guard_then_writes_report(
     assert report["n_cars"] == 4
     assert report["excluded_corpora"] == [str(other)]
     assert report["eval_sessions"] == []
+
+
+def test_main_output_drives_the_panels_progress_bar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The control panel reads the command's own lines: the snap count for
+    the bar, the "wrote" line for the job's summary."""
+    import streettracker.analysis.vehicle_locator as vl
+
+    monkeypatch.setattr(vl, "yolo_vehicle_detector", lambda *a, **k: _stub_detector)
+    corpus = _corpus(tmp_path)
+    out = tmp_path / "output"
+    _session(out)
+    prod = _ckpt(tmp_path / "prod.pt", ["AUDI", "FORD"])
+    (tmp_path / "run").mkdir()
+    cand = _ckpt(tmp_path / "run" / "best.pt", ["AUDI", "FORD"], crop_mode="plate")
+    other = tmp_path / "uk_crops_prod"
+    other.mkdir()
+    (other / "manifest.json").write_text(json.dumps({"samples": [{"car": "ZZ1"}]}))
+    args = [str(corpus), "--candidate", str(cand), "--production", str(prod), "--cpu"]
+    args += ["--output-root", str(out), "--val-frac", "0.5", "--exclude-corpus", str(other)]
+    args += ["--road-polygon", str(tmp_path / "none.json")]
+    assert main(args) == 0
+    lines = capsys.readouterr().out.splitlines()
+
+    parser = make_parser("makemodel-compare")
+    for line in lines:
+        parser.feed(line)
+    parser.finish(0)
+    done = parser.progress
+    assert (done.current, done.total, done.frac) == (8, 8, 1.0)  # 4 cars x 2 snaps
+    assert done.phase == "batch 8/8"
+    assert done.summary == f"[makemodel-compare] wrote {tmp_path / 'run' / 'compare.json'}"
+    assert done.summary == lines[-1]
 
 
 def test_main_eval_session_scores_only_fresh_cars(

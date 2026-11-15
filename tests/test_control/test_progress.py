@@ -317,10 +317,22 @@ def test_pull_parser_no_watch_until_complete() -> None:
 
 
 def test_dvsa_label_parser_total_and_tally() -> None:
+    # The lines as cli/dvsa_label.py prints them; tests/test_cli/test_dvsa_label.py
+    # feeds this parser the command's live output too.
     p = _feed(
         DvsaLabelParser(),
-        "[dvsa-label] 42 distinct high-conf plates (>= 0.9) across 150 tracks",
-        "[dvsa-label] wrote /out/session_x_dvsa_labels.json: 35 labelled, 7 unknown, 0 skipped",
+        "[dvsa-label] parked-plate suppression: 3 beacon(s); 41 reads across 17 passing "
+        "tracks re-anchored or dropped",
+        "[dvsa-label] 42 distinct plates passing the gate (combined: conf >= 0.8 and (a snap "
+        "agrees or >= 2 tracks read the plate); configs/alpr.json) across 150 tracks; "
+        "skipping 4 non-canonical (use --include-non-canonical to query them)",
+    )
+    assert (p.total, p.current, p.phase) == (42, None, "looking up")
+    p = _feed(
+        DvsaLabelParser(),
+        "[dvsa-label] 42 distinct plates passing the gate (conf >= 0.9; default) across 150 tracks",
+        "[dvsa-label] wrote /out/session_x_dvsa_labels.json: 35 labelled, 7 unknown, "
+        "4 skipped (non-canonical), 0 api errors (35 new labels + 7 new unknown this run)",
     )
     assert p.total == 42
     assert p.metrics["labelled"] == 35

@@ -20,6 +20,7 @@ from unittest.mock import patch
 import pytest
 
 from streettracker.cli import pull
+from streettracker.control.progress import make_parser
 
 # A minimal well-formed JPEG: SOI ... EOI. The integrity gate in
 # sftp_get_missing only checks the first/last two bytes.
@@ -659,6 +660,112 @@ def test_main_only_main_size_counts_vehicle_crops(
 def test_crops_only_and_only_main_are_exclusive(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         pull.main(["--key", str(tmp_path), "--only-main", "--crops-only"])
+
+
+# ----------------------------------------------------------------------
+# What it prints. The control panel reads these lines.
+
+
+def _device_stub(local_session: Path, snaps: dict[str, dict[str, float]], inventory: str) -> Any:
+    """Stand-in for the device behind ``ssh``, ``sftp`` and ``scp``. It answers
+    the inventory and each pattern's listing (``snaps``: pattern -> name ->
+    mtime), lands an intact JPEG for every file ``sftp`` asks for, and copies
+    a summary page when ``scp`` fetches the metadata."""
+
+    def _run(args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        tool = args[0]
+        if tool == "ssh":
+            cmd = args[-1]
+            if "du -sb" in cmd:
+                return _fake_completed(inventory)
+            for pattern, entries in snaps.items():
+                if f"-name '{pattern}' -printf '%T@ %f" in cmd:
+                    listing = "".join(f"{mtime} {name}\n" for name, mtime in entries.items())
+                    return _fake_completed(listing)
+            raise AssertionError(f"unexpected ssh command: {cmd}")
+        if tool == "sftp":
+            for name in _GET_RE.findall(kwargs["input"]):
+                (local_session / name).write_bytes(_JPEG)
+            return _fake_completed()
+        if tool == "scp":
+            if args[-2].endswith("/*_summary.html"):
+                (local_session / f"{local_session.name}_summary.html").write_text("<html></html>")
+            return _fake_completed()
+        raise AssertionError(f"unexpected command: {args}")
+
+    return _run
+
+
+def test_main_output_drives_the_panels_progress(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A pull as the panel runs it (``--only-main --skip-existing``) against a
+    stand-in device. The panel takes the session, the target and the byte
+    total from the opening lines, so it can watch the local directory fill;
+    then each pattern's counts and the closing lines."""
+    fake_key = tmp_path / "id"
+    fake_key.write_text("not-a-real-key")
+    session = "session_20261101_080000"
+    local_session = (tmp_path / "out" / session).resolve()
+    local_session.mkdir(parents=True)
+    (local_session / "vehicle_1_main_1.jpg").write_bytes(_JPEG)  # pulled earlier
+    snaps = {
+        "*_main_*.jpg": {
+            "vehicle_1_main_1.jpg": 100.0,
+            "vehicle_1_main_2.jpg": 101.0,
+            "vehicle_2_main_1.jpg": 102.0,
+            "person_3_main_1.jpg": 103.0,
+        },
+        "vehicle_*_hq.jpg": {"vehicle_1_hq.jpg": 100.0, "vehicle_2_hq.jpg": 102.0},
+    }
+    inventory = (
+        "BYTES 9000\nFILES 12\nMAIN 4\nVEHMAIN 3\nMAINBYTES 600\nVHQBYTES 25\nHQ 3\nJSONL 2\n"
+    )
+    stub = _device_stub(local_session, snaps, inventory)
+    with patch("streettracker.cli.pull.subprocess.run", side_effect=stub):
+        rc = pull.main(
+            [
+                "--key",
+                str(fake_key),
+                "--session",
+                session,
+                "--target",
+                str(tmp_path / "out"),
+                "--only-main",
+                "--skip-existing",
+            ]
+        )
+    assert rc == 0
+    lines = capsys.readouterr().out.splitlines()
+    sized = lines.index("[pull] size_bytes: 625")
+    assert not any("new" in line for line in lines[: sized + 1])  # nothing fetched yet
+
+    # The watch directive is complete before the first file is fetched.
+    parser = make_parser("pull")
+    for line in lines[: sized + 1]:
+        parser.feed(line)
+    watch = parser.progress.metrics["watch"]
+    assert Path(watch["path"]) == local_session
+    assert watch["total_bytes"] == 625
+    assert parser.progress.phase == "sizing"
+
+    for line in lines[sized + 1 :]:
+        parser.feed(line)
+    parser.finish(0)
+    done = parser.progress
+    metrics = done.metrics
+    assert metrics["session"] == session
+    assert Path(metrics["target"]) == local_session.parent
+    assert (metrics["remote_size_h"], metrics["remote_files"]) == ("8.8 KB", 12)
+    assert metrics["patterns"] == {
+        "*_main_*.jpg": {"remote": 4, "local": 1, "new": 3},
+        "vehicle_*_hq.jpg": {"remote": 2, "local": 0, "new": 2},
+    }
+    assert metrics["new_total"] == 5 and metrics["new_fetched"] == 5
+    assert done.phase == "done" and done.ok is True
+    # "open:" is printed after "done"; it does not replace the summary.
+    assert lines[-1].startswith("[pull] open:")
+    assert done.summary == f"[pull] done -> {local_session}"
 
 
 def test_sftp_batch_drops_the_per_file_echo() -> None:

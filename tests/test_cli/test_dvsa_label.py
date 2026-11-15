@@ -17,6 +17,7 @@ import pytest
 
 from streettracker.analysis.dvsa import MotLookupResult
 from streettracker.cli import dvsa_label
+from streettracker.control.progress import make_parser
 
 # ----------------------------------------------------------------------
 # Top-level dispatcher routes the subcommand.
@@ -440,6 +441,56 @@ def test_main_records_unknown_plates_when_dvsa_returns_none(tmp_path: Path) -> N
     # The 404 plate (AE13SJX in this scenario) lands in unknown.
     assert payload["unknown"] == ["AE13SJX"]
     assert "AE13SJX" not in payload["labels"]
+
+
+# ----------------------------------------------------------------------
+# What it prints. The control panel reads these lines.
+
+
+@pytest.mark.parametrize("combined", [False, True], ids=["confidence-gate", "combined-gate"])
+def test_main_output_drives_the_panels_progress(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    _isolated_plate_conf_config: Path,
+    combined: bool,
+) -> None:
+    """The header line tells the panel how many plates will be looked up and
+    the closing line gives the tally. The header was reworded on 2026-10-04
+    (the combined plate gate) and the panel's pattern was not, so until
+    2026-11-15 these jobs ran with no total. Both gates are run because the
+    header describes the gate in use."""
+    session = _write_minimal_session(tmp_path)
+    if combined:  # the live setting, with another snap agreeing on each read
+        _isolated_plate_conf_config.parent.mkdir(parents=True)
+        _isolated_plate_conf_config.write_text(json.dumps({"plate_gate": "combined"}))
+        by_track_path = session / "session_demo_alpr_by_track.json"
+        by_track = json.loads(by_track_path.read_text())
+        for track in by_track["tracks"]:
+            track["best_preferred"]["n_agree"] = 1
+        by_track_path.write_text(json.dumps(by_track))
+    with patch("streettracker.cli.dvsa_label.DvsaClient") as cls:
+        cls.return_value.lookup_plate.side_effect = [None, _porsche_result("LD22BMG")]
+        assert dvsa_label.main([str(session), "--config", str(tmp_path / "dvsa.json")]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("[dvsa-label] 2 distinct plates passing the gate (")
+    assert ("(combined: " in lines[0]) is combined
+    assert lines[0].endswith(" across 2 tracks")
+
+    parser = make_parser("dvsa-label")
+    parser.feed(lines[0])
+    assert (parser.progress.total, parser.progress.phase) == (2, "looking up")
+    assert parser.progress.current is None  # lookups are not printed one by one
+    for line in lines[1:]:
+        parser.feed(line)
+    parser.finish(0)
+    done = parser.progress
+    assert (done.current, done.total, done.frac) == (2, 2, 1.0)
+    assert done.metrics == {"labelled": 1, "unknown": 1}
+    assert done.phase == "done" and done.ok is True
+    assert done.summary == lines[-1]
+    assert done.summary.startswith(
+        f"[dvsa-label] wrote {session / 'session_demo_dvsa_labels.json'}"
+    )
 
 
 def test_main_is_incremental_by_default(tmp_path: Path) -> None:

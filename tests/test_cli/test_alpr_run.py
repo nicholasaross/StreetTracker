@@ -437,8 +437,17 @@ def test_run_progress_lines_drive_the_panels_progress_bar(
     ]
 
     parser = make_parser("alpr-run")
+    phases: list[str] = []
     for line in lines:
         parser.feed(line)
+        if parser.progress.phase not in phases:
+            phases.append(parser.progress.phase)
+    assert phases == [
+        "",
+        "pipeline preferred",
+        f"preferred 10/{_N_SNAPS}",
+        f"preferred {_N_SNAPS}/{_N_SNAPS}",
+    ]
     assert (parser.progress.current, parser.progress.total) == (_N_SNAPS, _N_SNAPS)
     assert parser.progress.frac == 1.0
     assert parser.progress.summary.startswith("[alpr] wrote ")

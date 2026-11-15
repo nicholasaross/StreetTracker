@@ -72,7 +72,7 @@ jobs:
 
   test-torch:
     # The make/colour/body-type classifier tests need torch, so the fast job
-    # above skips all eight modules (pytest.importorskip). Run them here on
+    # above skips those modules (pytest.importorskip). Run them here on
     # CPU wheels: without this job they only ever ran on the dev box.
     runs-on: ubuntu-latest
     timeout-minutes: 20

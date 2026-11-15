@@ -199,8 +199,8 @@ publishes `makemodel-<run>`.
 3. **Code-quality roadmap** (2026-11-10 review). Done: showcase rebuild speed, CI checks, the
    shared file helpers, the stall fix, this file's split, the CLI command table, end-to-end
    tests for `alpr-run` and the preferred pipeline, per-session memoised `/stats`, the CI check
-   of the `.claude` scripts, one shared CNN inference command, and the rest of the Orin runtime
-   work
+   of the `.claude` scripts, one shared CNN inference command, a real-output test for every
+   panel progress parser (2026-11-15), and the rest of the Orin runtime work
    (2026-11-13: one sharpness measurement per track, the shutdown drain on the event loop, atomic
    end-of-session JSON; deployed the same day). The rest are unapproved proposals; ask before
    starting one.
@@ -431,9 +431,10 @@ sees them. Either run from PowerShell / cmd, or prefix with
 
 ## Tests and CI
 
-Tests at HEAD (2026-11-14): **about 1,800 passing on the dev box, on Python 3.10.**
-CI runs them in two jobs: `test` (no torch; the 8 torch-gated classifier modules
-skip there) and `test-torch` (those 8 modules, 94 tests, on CPU wheels). CI also
+Tests at HEAD (2026-11-15): **about 1,830 passing on the dev box, on Python 3.10.**
+CI runs them in two jobs: `test` (no torch; the 9 torch-gated classifier modules
+skip there) and `test-torch` (the `test_makemodel` directory, which holds those 9
+modules and their 131 tests, on CPU wheels). CI also
 enforces `ruff check`, `ruff format --check`, `mypy` (`[tool.mypy]` in
 `pyproject.toml`) and a complexity limit of 15: the functions already over it
 carry `# noqa: C901` on their definition, so drop the marker when you split one.
@@ -490,10 +491,13 @@ reference: [`docs/sites.md`](docs/sites.md).
   `alpr-colour`, the CNN commands, corpus build, training, `export-engine`) and a net lane
   (`pull`, `dvsa-label`, `vehicles`, `people`). Two GPU jobs never overlap.
 - **Progress comes from stdout.** `control/progress.py` parses each command's printed lines, so
-  rewording a progress message breaks its progress bar. Change the parser and its test with it.
-  `alpr-run` and the three classifier commands have tests that feed their real output to their
-  parser; a parser tested only on a hand-written transcript can match nothing the command prints
-  (the classifier commands had no progress bar until 2026-11-14 for that reason).
+  rewording a progress message breaks its progress bar. Every command with a parser has a test,
+  among the command's own tests, that runs it and feeds what it prints to the parser the panel
+  picks for it, so a rewording fails that test: change the parser with the message. A parser
+  tested only on a hand-written transcript can match nothing the command prints (the classifier
+  commands had no progress bar until 2026-11-14 for that reason, and `dvsa-label` no total from
+  2026-10-04 to 2026-11-15). `dvsa-label` prints nothing per lookup, so it shows a total but no
+  moving bar.
 - **Playbooks** (`control/playbooks.py`): enrich, build-train, roll, promote, reinfer, rescore,
   relabel and platecheck. **roll** (restarts the Orin service, then pulls the closed session) and
   **promote** (replaces the production model, then publishes the release) are destructive and

@@ -26,6 +26,7 @@ from streettracker.analysis.makemodel.uk_dataset import (  # noqa: E402
     normalize_make,
     train_main,
 )
+from streettracker.control.progress import make_parser  # noqa: E402
 
 
 def test_normalize_make() -> None:
@@ -568,6 +569,92 @@ def test_build_main_defaults_to_plate_mode(tmp_path: Path, monkeypatch: pytest.M
     rc = build_main([str(tmp_path / "crops"), "--sessions", str(sess), "--min-cars-per-make", "1"])
     assert rc == 0
     assert seen["crop_mode"] == "plate"
+
+
+# ----------------------------------------------------------------------
+# What the two commands print. The control panel reads these lines.
+
+
+def test_build_output_drives_the_panels_progress_bar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A plate-mode build (the default) with only the vehicle detector
+    stubbed. The panel takes the session count, the ``N/total cropped`` count
+    for its bar, and the corpus totals the retrain decision turns on."""
+    import streettracker.analysis.makemodel.uk_dataset as uk
+
+    real = uk.extract_crops
+
+    def _with_stub_detector(*args: object, **kwargs: object) -> dict:
+        kwargs["vehicle_detector"] = _StubDetector([(200.0, 100.0, 320.0, 200.0, 0.9)])
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(uk, "extract_crops", _with_stub_detector)
+    sess = _plate_session(tmp_path)
+    out = tmp_path / "crops"
+    assert build_main([str(out), "--sessions", str(sess), "--min-cars-per-make", "1"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == f"[makemodel-build-uk] 1 session(s) -> {out} (crop mode plate)"
+    assert "[makemodel-build-uk] 1/1 cropped" in lines
+
+    parser = make_parser("makemodel-build-uk")
+    phases = []
+    for line in lines:
+        parser.feed(line)
+        if parser.progress.phase not in phases:
+            phases.append(parser.progress.phase)
+    parser.finish(0)
+    done = parser.progress
+    assert phases == ["extracting", "cropping", "done"]
+    assert (done.current, done.total, done.frac) == (1, 1, 1.0)
+    assert done.metrics == {"sessions": 1, "makes": 1, "cars": 1, "crops": 1}
+    # The per-make, body-type and colour lines that follow leave the totals
+    # as the job's summary.
+    assert lines[-1].startswith("[makemodel-build-uk] colours: ")
+    assert done.summary == "[makemodel-build-uk] 1 makes, 1 cars, 1 crops"
+
+
+def test_train_output_drives_the_panels_training_view(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A real run on CPU that stops early. The panel takes the run's facts
+    from the first line, one row per epoch for the loss curve, the early stop,
+    and the best score and checkpoint from the last line.
+
+    The run is sure to stop early: with patience 1 it ends at the first epoch
+    that does not beat the best score, and a score over at most five
+    validation crops can rise at most six times."""
+    _write_dataset(tmp_path / "crops")
+    out = tmp_path / "run"
+    argv = [str(tmp_path / "crops"), "--out", str(out), "--epochs", "12", "--patience", "1"]
+    argv += ["--batch-size", "2", "--num-workers", "0", "--no-pretrained", "--cpu"]
+    assert train_main(argv) == 0
+    lines = capsys.readouterr().out.splitlines()
+
+    parser = make_parser("makemodel-train-uk")
+    parser.feed(lines[0])
+    facts = dict(parser.progress.metrics)
+    assert (facts["target"], facts["device"], facts["amp"]) == ("make", "cpu", False)
+    assert (facts["makes"], facts["crop_mode"]) == (2, "hint")
+    assert facts["train_crops"] + facts["val_crops"] == 6
+    assert parser.progress.phase == "starting"
+
+    for line in lines[1:]:
+        parser.feed(line)
+    parser.finish(0)
+    done = parser.progress
+    rows = done.metrics["epochs"]
+    stopped = done.metrics["early_stopped_at"]
+    assert 2 <= stopped < 12
+    assert [row["epoch"] for row in rows] == list(range(1, stopped + 1))
+    assert all(set(row) == {"epoch", "loss", "make1", "make5", "sec"} for row in rows)
+    assert (done.current, done.total) == (stopped, 12)  # the bar ends where the run did
+    best = max(rows, key=lambda row: row["make1"])
+    assert done.metrics["best_make1"] == best["make1"]
+    assert rows[done.metrics["best_epoch"] - 1]["make1"] == best["make1"]
+    assert done.metrics["checkpoint"] == str(out / "best.pt")
+    assert done.phase == "done"
+    assert done.summary == lines[-1]
 
 
 def test_trainer_records_corpus_crop_settings_in_checkpoint(tmp_path: Path) -> None:
