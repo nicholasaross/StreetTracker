@@ -57,17 +57,10 @@ from streettracker.analysis.snap_assets import (
     resolve_bbox_hint,
 )
 from streettracker.analysis.stationary import (
-    HIDDEN_FRAC,
-    MAX_GAP_S,
-    MIN_GAP_S,
-    MIN_TRACKS,
-    NEIGHBOUR_TRACKS,
-    OWN_BOX_IOU,
-    SAME_BOX_IOU,
-    SAME_VEHICLE_IOU,
     SnapSighting,
     find_stationary_vehicles,
     group_refused,
+    guard_rule,
     same_vehicle,
     sits_on,
     taken_by,
@@ -249,6 +242,11 @@ class VehicleBoxCache:
                 self.save()
         return [(b[0], b[1], b[2], b[3]) for b in cached]
 
+    def cached(self, image_name: str) -> list[Box] | None:
+        """A snap's boxes if they are held, else ``None``. Never detects."""
+        held = self._boxes.get(image_name)
+        return None if held is None else [(b[0], b[1], b[2], b[3]) for b in held]
+
     def known(self) -> dict[str, list[Box]]:
         """Every snap's boxes held so far, by snap filename."""
         return {
@@ -272,6 +270,7 @@ class _Located:
     hint: IntBox | None
     plate: str | None
     box: IntBox | None
+    source: str | None
 
 
 class SnapVehicleLocator:
@@ -287,6 +286,11 @@ class SnapVehicleLocator:
     already holds; :meth:`settle` works them out again from every snap
     located and says which crops change. ``stationary_guard=False`` turns
     this off.
+
+    :meth:`locate_cached` does what ``locate`` does for a snap whose boxes
+    are cached, without the pixels, and :meth:`unguarded` gives the crop the
+    snap had before the guard: together they say which saved predictions
+    the guard leaves as they are.
     """
 
     def __init__(
@@ -357,8 +361,45 @@ class SnapVehicleLocator:
         h, w = image.shape[:2]
         boxes = self._cache.boxes(path.name, image)
         box, source = self._choose(key, boxes, (w, h), hint, plate)
-        self._located[key] = _Located(path.name, (w, h), hint, plate, box)
+        self._located[key] = _Located(path.name, (w, h), hint, plate, box, source)
         return self._count(key, box, source)
+
+    def locate_cached(
+        self, path: Path, track_id: int, snap_index: int, size: tuple[int, int]
+    ) -> tuple[IntBox | None, str | None] | None:
+        """:meth:`locate` without the pixels, for a snap whose vehicle boxes
+        are already cached: ``size`` is the snap's ``(width, height)``.
+        ``None`` when the boxes are not cached; locate the snap with its
+        image instead."""
+        if self.mode == "plate":
+            raise ValueError("plate mode needs the pixels: use locate")
+        key = (track_id, snap_index)
+        hint = resolve_bbox_hint(path, track_id, snap_index, self._bbox_index, self._sub_size)
+        if self.mode == "hint":
+            self._located[key] = _Located(path.name, size, hint, None, hint, "hint")
+            return self._count(key, hint, "hint")
+        boxes = self._cache.cached(path.name) if self._cache is not None else None
+        if boxes is None:
+            return None
+        box, source = self._choose(key, boxes, size, hint, None)
+        self._located[key] = _Located(path.name, size, hint, None, box, source)
+        return self._count(key, box, source)
+
+    def unguarded(self, track_id: int, snap_index: int) -> tuple[IntBox | None, str | None]:
+        """The crop a located snap gets with stationary vehicles left in:
+        what every command chose before the guard (2026-11-14)."""
+        key = (track_id, snap_index)
+        was = self._located[key]
+        if not self._guard or self._cache is None:
+            return was.box, was.source
+        boxes = self._cache.cached(was.name) or []
+        return self._choose(key, boxes, was.size, was.hint, was.plate, guard=False)
+
+    @property
+    def rule(self) -> dict[str, float] | None:
+        """The guard's thresholds, or ``None`` when it is off (``hint``
+        mode, or ``stationary_guard=False``)."""
+        return guard_rule() if self._guard else None
 
     def _choose(
         self,
@@ -485,16 +526,7 @@ class SnapVehicleLocator:
         atomic_write_json(
             SessionFiles(self._session_dir).stationary_vehicles,
             {
-                "rule": {
-                    "same_box_iou": SAME_BOX_IOU,
-                    "min_gap_s": MIN_GAP_S,
-                    "neighbour_tracks": NEIGHBOUR_TRACKS,
-                    "max_gap_s": MAX_GAP_S,
-                    "min_tracks": MIN_TRACKS,
-                    "same_vehicle_iou": SAME_VEHICLE_IOU,
-                    "hidden_frac": HIDDEN_FRAC,
-                    "own_box_iou": OWN_BOX_IOU,
-                },
+                "rule": guard_rule(),
                 "n_snaps": len(self._located),
                 "n_crops_refused": self.n_refused,
                 "n_left_without_crop": self.n_left_without,

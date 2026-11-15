@@ -25,11 +25,13 @@ from streettracker.control.playbooks import (
     StepResult,
     build_playbook,
     enrich_steps,
+    guard_steps,
     promote_model,
     refresh_showcase,
     reinfer_steps,
     relabel_steps,
     rescore_steps,
+    sessions_needing_guard,
     sessions_needing_rescore,
     sessions_rescored,
 )
@@ -461,6 +463,62 @@ def test_reinfer_steps_one_job_per_session_plus_refresh(tmp_path: Path) -> None:
     steps = reinfer_steps(ctx)
     assert sum(1 for s in steps if s.job and s.job.kind == "makemodel") == 2
     assert steps[-1].action is not None  # the showcase refresh
+
+
+def _classified(out: Path, label: str, **stamps: object) -> Path:
+    """A session with a per-track file for each command named, stamped as given."""
+    d = out / label
+    d.mkdir(parents=True)
+    for tag, stamp in stamps.items():
+        payload = {"tracks": []} if stamp is None else {"stationary_guard": stamp, "tracks": []}
+        (d / f"{label}_{tag}_by_track.json").write_text(json.dumps(payload, indent=2))
+    return d
+
+
+def test_the_guard_playbook_patches_only_what_predates_the_guard(tmp_path: Path) -> None:
+    from streettracker.analysis.stationary import guard_rule
+
+    rule = guard_rule()
+    ctx = _ctx(tmp_path)
+    out = ctx.output_root
+    _classified(out, "session_20261101_000000", makemodel=rule, bodytype=rule, colour=rule)
+    older = _classified(out, "session_20261001_000000", makemodel=None, bodytype=None, colour=None)
+    part = _classified(out, "session_20261102_000000", makemodel=rule, bodytype=rule, colour=None)
+    other = _classified(
+        out, "session_20261103_000000", makemodel={**rule, "min_tracks": 2}, bodytype=rule
+    )
+    (out / "session_20261104_000000").mkdir()  # not enriched yet: enrich applies the guard
+
+    assert sessions_needing_guard(out) == [
+        (other, ["makemodel"]),  # made under another rule
+        (part, ["colour"]),  # a stopped run: only what is left
+        (older, ["makemodel", "bodytype", "colour"]),
+    ]
+    steps = guard_steps(ctx)
+    jobs = [s.job for s in steps if s.job is not None]
+    assert [(j.kind, j.args) for j in jobs] == [
+        ("makemodel", [str(other), "--only-changed"]),
+        ("colour", [str(part), "--only-changed"]),
+        ("makemodel", [str(older), "--only-changed"]),
+        ("bodytype", [str(older), "--only-changed"]),
+        ("colour", [str(older), "--only-changed"]),
+    ]
+    assert steps[2].label == "Make/model, changed crops: session_20261001_000000"
+    assert steps[-1].action is not None  # the showcase refresh
+
+    label, built = build_playbook("guard", ctx)
+    assert label == "Stationary-vehicle guard on 3 sessions (changed crops only)"
+    assert len(built) == len(steps)
+
+
+def test_the_guard_playbook_refuses_when_nothing_needs_it(tmp_path: Path) -> None:
+    from streettracker.analysis.stationary import guard_rule
+
+    ctx = _ctx(tmp_path)
+    rule = guard_rule()
+    _classified(ctx.output_root, "session_20261101_000000", makemodel=rule, colour=rule)
+    with pytest.raises(ValueError, match="nothing to patch"):
+        build_playbook("guard", ctx)
 
 
 async def test_refresh_showcase_unreachable_is_graceful() -> None:

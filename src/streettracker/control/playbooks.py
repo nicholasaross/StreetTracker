@@ -25,6 +25,9 @@ Shipped playbooks are pure job-chains:
 * **relabel** — ``dvsa-label`` → ``dvsa-apply`` → ``vehicles`` on every
   re-scored session, then a showcase refresh: re-applies the plate gate after
   ``configs/alpr.json`` changes (rescore skips sessions it has already done).
+* **guard** — ``makemodel`` → ``bodytype`` → ``colour``, each with
+  ``--only-changed``, on every session whose classifier results predate the
+  stationary-vehicle guard, then a showcase refresh.
 
 The action-based playbooks (roll-session+pull, promote, re-infer+refresh) build
 on the same engine and land next, behind confirmation gates.
@@ -604,6 +607,71 @@ def reinfer_steps(ctx: PlaybookContext) -> list[Step]:
     return steps
 
 
+#: The classifier commands the stationary-vehicle guard shapes, in the
+#: order the enrich playbook runs them, with the step labels' names.
+GUARDED_COMMANDS = {"makemodel": "Make/model", "bodytype": "Body type", "colour": "Colour"}
+
+
+def sessions_needing_guard(output_root: Path) -> list[tuple[Path, list[str]]]:
+    """Each session with classifier results made without the current
+    stationary-vehicle guard, and the commands whose results they are: a
+    ``_by_track.json`` not stamped with the guard's rule. A session with no
+    such files has not been enriched, and enrich applies the guard."""
+    from streettracker.analysis.stationary import guard_rule
+    from streettracker.common.session_files import SessionFiles
+
+    rule = guard_rule()
+    out: list[tuple[Path, list[str]]] = []
+    for d in introspect.discover_session_dirs(output_root):
+        files = SessionFiles(d)
+        paths = {
+            "makemodel": files.makemodel_by_track,
+            "bodytype": files.bodytype_by_track,
+            "colour": files.colour_by_track,
+        }
+        commands = [
+            tag
+            for tag in GUARDED_COMMANDS
+            if paths[tag].is_file() and introspect.guard_stamp(paths[tag]) != rule
+        ]
+        if commands:
+            out.append((d, commands))
+    return out
+
+
+def guard_steps(ctx: PlaybookContext) -> list[Step]:
+    """Apply the stationary-vehicle guard (review E2.6 f) to every session
+    whose classifier results predate it, then refresh the showcase.
+
+    Each command runs with ``--only-changed``: it keeps the saved rows whose
+    crop the guard leaves alone and classifies only the rest, about 2 % of a
+    session's snaps, so the whole output root takes minutes where a full
+    re-inference of the three heads would take a day. A session drops out
+    once its three per-track files carry the guard's stamp, so a stopped run
+    picks up where it left off. Raises ``ValueError`` when nothing needs it.
+    """
+    sessions = sessions_needing_guard(ctx.output_root)
+    if not sessions:
+        raise ValueError(
+            "nothing to patch: every session's classifier results already have the "
+            "stationary-vehicle guard"
+        )
+    steps = [
+        Step(
+            f"{GUARDED_COMMANDS[tag]}, changed crops: {d.name}",
+            job=JobSpec(tag, [str(d), "--only-changed"]),
+        )
+        for d, commands in sessions
+        for tag in commands
+    ]
+
+    async def refresh() -> StepResult:
+        return await refresh_showcase(ctx.showcase_url)
+
+    steps.append(Step("Refresh showcase", action=refresh))
+    return steps
+
+
 def sessions_needing_rescore(output_root: Path) -> list[Path]:
     """Sessions with ALPR output whose read confidences predate the
     2026-09-28 fix (no ``ocr_conf`` stamp -- the old value was ~1.0 for
@@ -740,6 +808,11 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
         "needs_session": False,
         "destructive": False,
     },
+    "guard": {
+        "label": "Stationary-vehicle guard, changed crops only (all sessions)",
+        "needs_session": False,
+        "destructive": False,
+    },
     "rescore": {
         "label": "Re-score plate confidence (all sessions)",
         "needs_session": False,
@@ -800,6 +873,10 @@ def build_playbook(
         return label, promote_steps(ctx, run_name)
     if name == "reinfer":
         return "Re-infer all sessions + refresh showcase", reinfer_steps(ctx)
+    if name == "guard":
+        steps = guard_steps(ctx)
+        n = len({s.job.args[0] for s in steps if s.job is not None})
+        return f"Stationary-vehicle guard on {n} sessions (changed crops only)", steps
     if name == "rescore":
         return "Re-score plate confidence + DVSA", rescore_steps(ctx)
     if name in ("relabel", "platecheck"):

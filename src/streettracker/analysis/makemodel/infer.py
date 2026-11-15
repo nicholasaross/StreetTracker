@@ -250,6 +250,12 @@ class _MakeInference(SessionInference[MakeModelClassifier]):
     def aggregate(self, rows: list[dict[str, Any]], conf_threshold: float) -> list[dict[str, Any]]:
         return aggregate_by_track(rows, conf_threshold)
 
+    def top_one(self, row: dict[str, Any]) -> tuple[object, float] | None:
+        if not row.get("top_k"):
+            return None
+        top = row["top_k"][0]
+        return (top["make"], top["model"], top["year"]), float(top["conf"])
+
     def summary(
         self,
         by_track: list[dict[str, Any]],

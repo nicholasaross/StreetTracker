@@ -162,6 +162,13 @@ ctx, …)` dispatches, `PlaybookContext` carries paths + device config):
   - **reinfer** (one `makemodel` job per local session → an action that POSTs
     the showcase's `/api/refresh`) — re-runs the classifier everywhere + updates
     the showcase.
+  - **guard** (`makemodel` → `bodytype` → `colour`, each with `--only-changed`, on
+    every session whose `_by_track.json` files lack the current
+    `stationary_guard` stamp → showcase refresh) — applies the 2026-11-14
+    stationary-vehicle guard to sessions inferred before it, classifying only the
+    snaps whose crop the guard changes. A session drops out once all three of its
+    files carry the stamp, so a stopped run resumes where it stopped; with nothing
+    left to patch the submit is refused. Since 2026-11-15.
   - **rescore** (`alpr-rescore` → `dvsa-label` → `dvsa-apply` → `vehicles` on
     every session whose ALPR stamp lacks `"ocr_conf": "min_char"` → showcase
     refresh) — applies the 2026-09-28 OCR-confidence fix to already-enriched

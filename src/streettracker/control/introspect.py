@@ -314,6 +314,41 @@ def alpr_stamp(session_dir: Path, key: str) -> str | None:
     return _by_mtime(path, f"stamp_{key}", _do)
 
 
+# The classifier commands write the stamp first, so it sits in the file's
+# first few hundred bytes.
+_GUARD_STAMP_HEAD = 4096
+
+
+def guard_stamp(by_track_path: Path) -> dict[str, Any] | None:
+    """The ``stationary_guard`` stamp of a classifier's per-track file
+    (``makemodel`` / ``bodytype`` / ``colour``): the stationary-vehicle
+    guard's thresholds when its results were made, or ``None`` for a file
+    made before the guard (2026-11-14) or without it.
+
+    Only the head of the file is read: parsing every session's three files
+    whole took 2 s, and the panel asks while it builds a playbook.
+    """
+
+    def _do() -> dict[str, Any] | None:
+        try:
+            with by_track_path.open(encoding="utf-8") as f:
+                head = f.read(_GUARD_STAMP_HEAD)
+        except (OSError, ValueError):
+            return None
+        at = head.find('"stationary_guard"')
+        colon = head.find(":", at) if at >= 0 else -1
+        if colon < 0:
+            return None
+        try:
+            value, _end = json.JSONDecoder().raw_decode(head[colon + 1 :].lstrip())
+        except ValueError:
+            return None
+        return value if isinstance(value, dict) else None
+
+    stamp: dict[str, Any] | None = _by_mtime(by_track_path, "guard_stamp", _do)
+    return stamp
+
+
 def session_info(session_dir: Path) -> SessionInfo:
     """Build a :class:`SessionInfo` for one ``session_*`` directory."""
     label = session_dir.name

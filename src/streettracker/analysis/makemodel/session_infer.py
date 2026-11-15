@@ -19,7 +19,19 @@ This module holds the common parts:
 
 What each command prints is read by the control panel, and what it writes is
 read by ``/stats`` and the showcase, so the three commands' output is kept
-exactly as it was.
+exactly as it was. Two fields were added on 2026-11-15: each per-image row's
+``box`` (the crop, in snap pixels) and the per-track file's
+``stationary_guard`` (the guard's thresholds, when the guard was on).
+
+**Only the changed crops** (``--only-changed``). The stationary-vehicle guard
+of 2026-11-14 changes the crop of about 2 % of a session's snaps. Classifying
+every snap again to fix those takes hours per session, so this keeps each
+saved row whose crop is the same and classifies only the others. A saved row
+names its crop (``box``); one written before 2026-11-15 does not, and was made
+without the guard, so its crop is the guard-free choice from the cached
+vehicle boxes, checked against the row's own ``crop_source``. A few kept rows
+are classified again to check the file came from the same checkpoint
+(:data:`SPOT_CHECKS`); if any differ, every snap is classified.
 """
 
 from __future__ import annotations
@@ -37,9 +49,9 @@ from streettracker.analysis.alpr.fullframe import load_road_polygon
 from streettracker.analysis.makemodel.cropper import VehicleCropper
 from streettracker.analysis.makemodel.dataset import IMAGENET_MEAN, IMAGENET_STD
 from streettracker.analysis.makemodel.model import load_checkpoint
-from streettracker.analysis.snap_assets import discover_vehicle_snaps, read_image
+from streettracker.analysis.snap_assets import discover_vehicle_snaps, image_size, read_image
 from streettracker.analysis.vehicle_locator import SnapVehicleLocator, resolve_crop_settings
-from streettracker.common.fileio import atomic_write_text
+from streettracker.common.fileio import atomic_write_text, read_json
 
 if TYPE_CHECKING:
     import numpy as np
@@ -48,6 +60,18 @@ _MEAN = torch.tensor(IMAGENET_MEAN).view(3, 1, 1)
 _STD = torch.tensor(IMAGENET_STD).view(3, 1, 1)
 
 Box = tuple[int, int, int, int]
+Snap = tuple[Path, int, int, str]
+
+# The keys every per-image row starts with; the head's own fields follow.
+_ROW_HEAD = ("track_id", "snap_index", "image", "has_bbox", "crop_source", "box")
+
+#: ``--only-changed`` classifies this many kept rows again, spread over the
+#: session, to check the saved file came from this checkpoint...
+SPOT_CHECKS = 8
+#: ...and a row counts as the same when its top class is, and its
+#: confidence is within this. A rerun on the same GPU agrees to about 1e-4;
+#: another checkpoint is out by far more than this on some of eight rows.
+SPOT_CHECK_CONF_TOL = 0.02
 
 
 class SnapClassifier:
@@ -246,6 +270,11 @@ class SessionInference(abc.ABC, Generic[C]):
         """Per-track rows from the per-image ones."""
 
     @abc.abstractmethod
+    def top_one(self, row: dict[str, Any]) -> tuple[object, float] | None:
+        """A per-image row's top prediction and its confidence, or ``None``
+        for a row with no prediction. Used to check saved rows."""
+
+    @abc.abstractmethod
     def summary(
         self,
         by_track: list[dict[str, Any]],
@@ -286,6 +315,14 @@ class SessionInference(abc.ABC, Generic[C]):
         parser.add_argument("--input-size", type=int, default=None, help=self.input_size_help)
         parser.add_argument("--limit", type=int, default=0, help="first N snaps only (0=all)")
         parser.add_argument("--cpu", action="store_true", help="force CPU even if CUDA present")
+        parser.add_argument(
+            "--only-changed",
+            action="store_true",
+            help="keep the saved per-image rows whose crop is unchanged and classify only the "
+            "other snaps (how the stationary-vehicle guard is applied to a session inferred "
+            "before it); every snap is classified when there are no saved rows or a spot "
+            "check finds they came from another checkpoint",
+        )
         return parser
 
     def main(self, argv: list[str] | None = None) -> int:
@@ -327,11 +364,19 @@ class SessionInference(abc.ABC, Generic[C]):
             f"crop={clf.crop_mode} pad={clf.pad_frac}"
         )
 
-        per_image: list[dict[str, Any]] = []
-        for i, (path, tid, snap_index, _cls) in enumerate(snaps, 1):
-            per_image.append(self._row(clf, locator, path, tid, snap_index))
-            if i % self.progress_every == 0 or i == len(snaps):
-                print(f"  {i}/{len(snaps)} classified")
+        label = args.session_dir.name
+        img_path = args.session_dir / f"{label}_{self.tag}.json"
+        track_path = args.session_dir / f"{label}_{self.tag}_by_track.json"
+
+        saved = _saved_rows(img_path) if args.only_changed else None
+        rows: list[dict[str, Any] | None]
+        if saved is not None:
+            rows, todo = self._keep_unchanged(clf, locator, snaps, saved)
+        else:
+            if args.only_changed:
+                print(f"{tag} no saved rows in {img_path.name}; classifying every snap")
+            rows, todo = [None] * len(snaps), list(range(len(snaps)))
+        self._classify(clf, locator, snaps, rows, todo)
 
         # Which vehicles are stopped in the road is only known once every
         # snap's boxes are in. Classify again the few snaps whose crop that
@@ -339,7 +384,7 @@ class SessionInference(abc.ABC, Generic[C]):
         again = set(locator.settle())
         for i, (path, tid, snap_index, _cls) in enumerate(snaps):
             if (tid, snap_index) in again:
-                per_image[i] = self._row(clf, locator, path, tid, snap_index)
+                rows[i] = self._row(clf, locator, path, tid, snap_index)
         if locator.n_refused:
             print(
                 f"{tag} stationary vehicles: {locator.n_refused} crops refused "
@@ -347,19 +392,34 @@ class SessionInference(abc.ABC, Generic[C]):
             )
 
         locator.close()
+        per_image = [row for row in rows if row is not None]
         n_no_box = sum(1 for row in per_image if not row["has_bbox"])
         by_track = self.aggregate(per_image, args.conf_threshold)
 
-        label = args.session_dir.name
-        img_path = args.session_dir / f"{label}_{self.tag}.json"
-        track_path = args.session_dir / f"{label}_{self.tag}_by_track.json"
+        stamp = {} if locator.rule is None else {"stationary_guard": locator.rule}
         atomic_write_text(img_path, json.dumps(per_image, indent=2))
-        atomic_write_text(track_path, json.dumps({"tracks": by_track}, indent=2))
+        atomic_write_text(track_path, json.dumps({**stamp, "tracks": by_track}, indent=2))
 
         print(f"{tag} wrote {img_path}")
         print(f"{tag} wrote {track_path}")
         print(f"{tag} {self.summary(by_track, args.conf_threshold, n_no_box, locator)}")
         return 0
+
+    def _classify(
+        self,
+        clf: C,
+        locator: SnapVehicleLocator,
+        snaps: list[Snap],
+        rows: list[dict[str, Any] | None],
+        todo: list[int],
+    ) -> None:
+        """Classify the snaps at the positions in ``todo`` into ``rows``,
+        printing progress as it goes."""
+        for n, i in enumerate(todo, 1):
+            path, tid, snap_index, _cls = snaps[i]
+            rows[i] = self._row(clf, locator, path, tid, snap_index)
+            if n % self.progress_every == 0 or n == len(todo):
+                print(f"  {n}/{len(todo)} classified")
 
     def _row(
         self, clf: C, locator: SnapVehicleLocator, path: Path, track_id: int, snap_index: int
@@ -368,13 +428,132 @@ class SessionInference(abc.ABC, Generic[C]):
         image = read_image(path)
         box, source = locator.locate(path, track_id, snap_index, image)
         return {
-            "track_id": track_id,
-            "snap_index": snap_index,
-            "image": path.name,
-            "has_bbox": box is not None,
-            "crop_source": source,
+            **_row_head(path, track_id, snap_index, box, source),
             **self.predict(clf, image, box),
         }
+
+    # ---- --only-changed -----------------------------------------------
+
+    def _keep_unchanged(
+        self,
+        clf: C,
+        locator: SnapVehicleLocator,
+        snaps: list[Snap],
+        saved: dict[tuple[int, int], dict[str, Any]],
+    ) -> tuple[list[dict[str, Any] | None], list[int]]:
+        """The saved rows whose crop is unchanged (``None`` for the others),
+        and the positions of the snaps to classify."""
+        rows: list[dict[str, Any] | None] = []
+        todo: list[int] = []
+        for i, (path, tid, snap_index, _cls) in enumerate(snaps):
+            row = self._unchanged(locator, saved.get((tid, snap_index)), path, tid, snap_index)
+            rows.append(row)
+            if row is None:
+                todo.append(i)
+
+        tag = f"[{self.tag}]"
+        differ, checked = self._spot_check(clf, locator, snaps, rows)
+        if differ:
+            print(
+                f"{tag} {differ} of {checked} saved rows checked differ from this "
+                f"checkpoint's; classifying every snap"
+            )
+            return rows, list(range(len(snaps)))
+        print(
+            f"{tag} kept {len(snaps) - len(todo)} saved rows whose crop is unchanged; "
+            f"{len(todo)} snaps to classify"
+        )
+        return rows, todo
+
+    def _unchanged(
+        self,
+        locator: SnapVehicleLocator,
+        saved: dict[str, Any] | None,
+        path: Path,
+        track_id: int,
+        snap_index: int,
+    ) -> dict[str, Any] | None:
+        """A snap's saved row, if the crop it was made from is the snap's
+        crop now (read from the cached vehicle boxes), else ``None``."""
+        if saved is None:
+            return None
+        size = image_size(path)
+        now = locator.locate_cached(path, track_id, snap_index, size) if size else None
+        if now is None:
+            return None
+        if "box" in saved:
+            was = (_as_box(saved["box"]), saved.get("crop_source"))
+        else:
+            # Written before rows named their crop, so without the guard.
+            # The row's own crop source says whether that choice is still
+            # the one it was made from.
+            was = locator.unguarded(track_id, snap_index)
+            if (saved.get("crop_source"), saved.get("has_bbox")) != (was[1], was[0] is not None):
+                return None
+        if was != now:
+            return None
+        prediction = {k: v for k, v in saved.items() if k not in _ROW_HEAD}
+        return {**_row_head(path, track_id, snap_index, *now), **prediction}
+
+    def _spot_check(
+        self,
+        clf: C,
+        locator: SnapVehicleLocator,
+        snaps: list[Snap],
+        rows: list[dict[str, Any] | None],
+    ) -> tuple[int, int]:
+        """Classify up to :data:`SPOT_CHECKS` kept rows again, spread over
+        the session, and replace them. Returns how many differed, of how
+        many checked."""
+        kept = [i for i, row in enumerate(rows) if row is not None and self.top_one(row)]
+        n = min(SPOT_CHECKS, len(kept))
+        differ = 0
+        for i in (kept[k * len(kept) // n] for k in range(n)):
+            path, tid, snap_index, _cls = snaps[i]
+            fresh = self._row(clf, locator, path, tid, snap_index)
+            old = rows[i]
+            if old is None or not _same_prediction(self.top_one(old), self.top_one(fresh)):
+                differ += 1
+            rows[i] = fresh
+        return differ, n
+
+
+def _row_head(
+    path: Path, track_id: int, snap_index: int, box: Box | None, source: str | None
+) -> dict[str, Any]:
+    return {
+        "track_id": track_id,
+        "snap_index": snap_index,
+        "image": path.name,
+        "has_bbox": box is not None,
+        "crop_source": source,
+        "box": list(box) if box is not None else None,
+    }
+
+
+def _as_box(value: Any) -> Box | None:
+    if value is None:
+        return None
+    return (int(value[0]), int(value[1]), int(value[2]), int(value[3]))
+
+
+def _saved_rows(path: Path) -> dict[tuple[int, int], dict[str, Any]] | None:
+    """A per-image file's rows by ``(track_id, snap_index)``, or ``None``
+    when there is no readable file."""
+    data = read_json(path)
+    if not isinstance(data, list):
+        return None
+    return {
+        (int(row["track_id"]), int(row["snap_index"])): row
+        for row in data
+        if isinstance(row, dict) and "track_id" in row and "snap_index" in row
+    }
+
+
+def _same_prediction(a: tuple[object, float] | None, b: tuple[object, float] | None) -> bool:
+    if a is None or b is None:
+        return a is b
+    return a[0] == b[0] and abs(a[1] - b[1]) <= SPOT_CHECK_CONF_TOL
 
 
 T = TypeVar("T", bound=TopOneClassifier)
@@ -417,6 +596,11 @@ class TopOneInference(SessionInference[T]):
         return aggregate_top_one(
             rows, conf_threshold, field=self.field, source_field=self.source_field
         )
+
+    def top_one(self, row: dict[str, Any]) -> tuple[object, float] | None:
+        if row.get(self.field) is None or row.get("conf") is None:
+            return None
+        return row[self.field], float(row["conf"])
 
     def summary(
         self,

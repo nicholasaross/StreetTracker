@@ -581,3 +581,35 @@ def test_snapshot_names_production_run_and_its_corpus(tmp_path: Path) -> None:
     assert snap["model"]["source_run"] == "uk_make_0929_b6"
     assert snap["model_corpus"]["name"] == "uk_crops_0929_576"
     assert snap["corpus"]["name"] == "uk_crops_1002_576"  # newest, for the retrain check
+
+
+# ---- the stationary-vehicle guard's stamp ----
+
+
+def test_guard_stamp_is_read_from_the_head_of_a_track_file(tmp_path: Path) -> None:
+    rule = {"same_box_iou": 0.9, "min_tracks": 3}
+    tracks = [{"track_id": i, "colour": "red", "conf": 0.9} for i in range(2000)]
+    path = tmp_path / "s_colour_by_track.json"
+    # Written as the classifier commands write it: the stamp first.
+    path.write_text(json.dumps({"stationary_guard": rule, "tracks": tracks}, indent=2))
+    assert path.stat().st_size > 4096 * 10
+    assert introspect.guard_stamp(path) == rule
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        json.dumps({"tracks": [{"track_id": 1}]}, indent=2),  # made before the guard
+        "{",  # torn
+        "",
+    ],
+    ids=["no stamp", "torn", "empty"],
+)
+def test_a_track_file_without_a_stamp_has_none(tmp_path: Path, content: str) -> None:
+    path = tmp_path / "s_colour_by_track.json"
+    path.write_text(content)
+    assert introspect.guard_stamp(path) is None
+
+
+def test_a_missing_track_file_has_no_stamp(tmp_path: Path) -> None:
+    assert introspect.guard_stamp(tmp_path / "nope.json") is None

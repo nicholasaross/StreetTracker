@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from streettracker.analysis import stationary
 from streettracker.analysis.vehicle_locator import (
     SnapVehicleLocator,
     VehicleBoxCache,
@@ -454,6 +455,48 @@ def test_hint_mode_has_no_guard(tmp_path: Path) -> None:
     loc.locate(_snap_path(sess, 3), 3, 1, None)
     assert loc.settle() == []
     assert not (sess / "session_s_stationary_vehicles.json").exists()
+    assert loc.rule is None
+
+
+def test_a_snap_with_cached_boxes_is_located_without_its_pixels(tmp_path: Path) -> None:
+    sess = _street(tmp_path)
+    _warm_cache(sess, _van_and_mover())
+    loc = SnapVehicleLocator(sess, "fullframe")
+    size = (_W, _H)
+    assert loc.locate_cached(_snap_path(sess, 3), 3, 1, size) == (_mover_box(3), "trajectory")
+    # Before the guard, the van was this track's crop.
+    assert loc.unguarded(3, 1) == (_VAN_BOX, "trajectory")
+    # Nothing shows track 1 passing the van, so the guard changes nothing.
+    assert loc.locate_cached(_snap_path(sess, 1), 1, 1, size) == loc.unguarded(1, 1)
+
+    # Snaps located this way are counted and settled like any other.
+    for track in (2, 4, 5):
+        loc.locate_cached(_snap_path(sess, track), track, 1, size)
+    assert loc.settle() == []
+    assert (loc.n_refused, loc.n_left_without) == (3, 0)
+    assert dict(loc.source_counts) == {"trajectory": 5}
+    assert loc.rule == stationary.guard_rule()
+
+
+def test_a_snap_with_no_cached_boxes_needs_its_pixels(tmp_path: Path) -> None:
+    sess = _street(tmp_path)
+    loc = SnapVehicleLocator(sess, "fullframe")
+    assert loc.locate_cached(_snap_path(sess, 3), 3, 1, (_W, _H)) is None
+    assert dict(loc.source_counts) == {}
+
+
+def test_hint_mode_locates_without_pixels(tmp_path: Path) -> None:
+    sess = _street(tmp_path)
+    loc = SnapVehicleLocator(sess, "hint")
+    got = loc.locate_cached(_snap_path(sess, 3), 3, 1, (_W, _H))
+    assert got == loc.locate(_snap_path(sess, 3), 3, 1, None)
+    assert loc.unguarded(3, 1) == got
+
+
+def test_plate_mode_cannot_locate_without_pixels(tmp_path: Path) -> None:
+    sess = _street(tmp_path)
+    with pytest.raises(ValueError, match="plate mode needs the pixels"):
+        SnapVehicleLocator(sess, "plate").locate_cached(_snap_path(sess, 3), 3, 1, (_W, _H))
 
 
 def test_a_session_without_snap_times_uses_each_tracks_start(tmp_path: Path) -> None:
