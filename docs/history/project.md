@@ -476,3 +476,45 @@ after the panel was restarted: `makemodel` counted `classified 100/2456`
 up to 2,456 with an ETA from the first line, and `bodytype` and `colour`
 did the same in steps of 200. Each finished job's summary was its closing
 tally line.
+
+## A real-output test for every panel progress parser (2026-11-15)
+
+The control panel reads each job's progress from what the command prints
+(`control/progress.py`). Until now only `alpr-run` and the three classifier
+commands had a test that fed the command's own output to its parser. The
+other parsers were tested on hand-written transcripts, which is how the
+classifier commands went without a progress bar until 2026-11-14.
+
+Each remaining job kind now has a test, among the command's own tests, that
+runs its `main()` and feeds what it prints to the parser `make_parser` picks:
+
+| Job kind | Test module | Replaced by a stand-in |
+| --- | --- | --- |
+| `pull` | `tests/test_cli/test_pull.py` | the device behind `ssh`, `sftp` and `scp`; run as the panel runs it (`--only-main --skip-existing`) |
+| `dvsa-label` | `tests/test_cli/test_dvsa_label.py` | the DVSA client; run under the confidence gate and the combined gate |
+| `alpr-rescore` | `tests/test_cli/test_alpr_rescore.py` | the OCR model |
+| `alpr-colour` | `tests/test_cli/test_alpr_colour.py` | nothing |
+| `makemodel-build-uk` | `tests/test_analysis/test_makemodel/test_uk_dataset.py` | the vehicle detector; plate mode |
+| `makemodel-train-uk` | `tests/test_analysis/test_makemodel/test_uk_dataset.py` | nothing: a real run on CPU that stops early |
+| `makemodel-compare` | `tests/test_analysis/test_makemodel/test_compare.py` | the vehicle detector |
+
+**One parser was dead.** The header line of `dvsa-label` was reworded on
+2026-10-04 with the combined plate gate (`4d0d7f6`): "N distinct high-conf
+plates" became "N distinct plates passing the gate". The panel's pattern
+kept the old wording, so for six weeks the job showed no total and no
+"looking up" phase. The pattern is fixed. The parser's docstring also said
+the runner watches the labels file grow. No such watcher exists and the
+command prints nothing per lookup, so the job shows a total but no moving
+bar; that is as it was before 2026-10-04 and is not changed here.
+
+The other six parsers match what their commands print.
+
+**Check that the tests hold.** Each of the 20 patterns in
+`control/progress.py` was replaced in turn by one that matches nothing, and
+the real-output tests run. 18 of the 20 failed a test. The two that did not
+were the `alpr-run` "running pipeline" phase, which the next count line
+overwrites, and the trainer's early-stop line, which a run that completes
+never prints. The `alpr-run` test now follows the phase line by line and the
+training test stops early (patience 1), and all 20 fail a test.
+
+The running panel loads the `dvsa-label` fix at its next restart.

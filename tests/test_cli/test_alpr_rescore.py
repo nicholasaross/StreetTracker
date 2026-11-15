@@ -16,6 +16,7 @@ import pytest
 from streettracker.analysis.alpr import preferred
 from streettracker.analysis.alpr.base import PlateRead
 from streettracker.cli import alpr_rescore
+from streettracker.control.progress import make_parser
 
 SESSION = "session_20260801_000000"
 
@@ -137,6 +138,27 @@ def test_rescores_fast_plate_ocr_reads_and_rewrites_rollup(tmp_path: Path, capsy
     assert "[batch] 2/2 done" in out  # the control panel's progress format
     # Both tracks passed the 0.9 gate on the old confidence; one does now.
     assert "(what dvsa-label looks up): 2 -> 1" in out
+
+
+def test_output_drives_the_panels_progress_bar(tmp_path: Path, capsys) -> None:  # noqa: ANN001
+    """The control panel reads the command's own lines: the count for the bar,
+    the "wrote" line for the job's summary."""
+    d = _session(tmp_path)
+    assert alpr_rescore.main([str(d)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+
+    parser = make_parser("alpr-rescore")
+    for line in lines:
+        parser.feed(line)
+    parser.finish(0)
+    done = parser.progress
+    assert (done.current, done.total, done.frac) == (2, 2, 1.0)
+    assert done.phase == "batch 2/2"
+    # The closing "next: ..." line does not replace the summary.
+    assert lines[-1].startswith("[alpr-rescore] next: ")
+    assert (
+        done.summary == f"[alpr-rescore] wrote {SESSION}_alpr.json + {SESSION}_alpr_by_track.json"
+    )
 
 
 def test_refuses_and_writes_nothing_when_crops_are_missing(tmp_path: Path) -> None:

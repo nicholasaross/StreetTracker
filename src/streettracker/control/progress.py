@@ -373,15 +373,20 @@ class PullParser(ProgressParser):
 # DVSA label harvest
 # ----------------------------------------------------------------------
 
-_DVSA_TOTAL_RE = re.compile(r"\[dvsa-label\]\s+(\d+)\s+distinct high-conf plates")
+# "[dvsa-label] 42 distinct plates passing the gate (...) across 150 tracks",
+# printed by cli/dvsa_label.py. Until 2026-10-04 the line read "distinct
+# high-conf plates"; this pattern kept the old wording until 2026-11-15, so
+# for six weeks it matched nothing and the job showed no total.
+_DVSA_TOTAL_RE = re.compile(r"\[dvsa-label\]\s+(\d+)\s+distinct plates passing the gate")
 _DVSA_DONE_RE = re.compile(r"(\d+)\s+labelled,\s+(\d+)\s+unknown")
 
 
 class DvsaLabelParser(ProgressParser):
     """``dvsa-label``: total distinct plates + final labelled/unknown tally.
 
-    Per-lookup progress isn't printed (the runner watches the labels JSON grow);
-    this fixes the ``total`` and the closing summary."""
+    The command prints nothing per lookup, so there is no moving bar: the
+    header sets ``total`` and the "looking up" phase, and the closing line
+    sets ``current`` and the summary."""
 
     kind = "dvsa-label"
 

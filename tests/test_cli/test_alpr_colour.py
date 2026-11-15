@@ -10,6 +10,7 @@ import numpy as np
 
 from streettracker.cli.alpr_colour import main
 from streettracker.cli.alpr_run import _rollup_by_track
+from streettracker.control.progress import make_parser
 
 YELLOW = (40, 200, 235)
 WHITE = (235, 215, 200)
@@ -81,6 +82,24 @@ def test_alpr_colour_rewrites_the_rollup_and_stamps(tmp_path: Path) -> None:
     assert [r["plate_colour"] for r in records] == ["white", "yellow", "yellow"]
     stamp = json.loads((d / f"{d.name}_static_plates.json").read_text())
     assert stamp["plate_colour"] == "hsv_v1"
+
+
+def test_alpr_colour_output_gives_the_panel_its_summary(tmp_path: Path, capsys) -> None:  # noqa: ANN001
+    """The command prints no count, so the panel shows no bar for it; the
+    job's summary is the closing "wrote" line."""
+    d = _session(tmp_path)
+    assert main([str(d)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+
+    parser = make_parser("alpr-colour")
+    for line in lines:
+        parser.feed(line)
+    parser.finish(0)
+    assert parser.progress.frac is None
+    assert parser.progress.ok is True
+    assert parser.progress.summary == (
+        f"[alpr-colour] wrote {d.name}_alpr.json + {d.name}_alpr_by_track.json"
+    )
 
 
 def test_alpr_colour_dry_run_writes_nothing(tmp_path: Path) -> None:
