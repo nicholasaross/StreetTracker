@@ -436,10 +436,10 @@ sees them. Either run from PowerShell / cmd, or prefix with
 
 ## Tests and CI
 
-Tests at HEAD (2026-11-15): **about 1,830 passing on the dev box, on Python 3.10.**
+Tests at HEAD (2026-11-15): **about 1,860 passing on the dev box, on Python 3.10.**
 CI runs them in two jobs: `test` (no torch; the 9 torch-gated classifier modules
 skip there) and `test-torch` (the `test_makemodel` directory, which holds those 9
-modules and their 131 tests, on CPU wheels). CI also
+modules among its 203 tests, on CPU wheels). CI also
 enforces `ruff check`, `ruff format --check`, `mypy` (`[tool.mypy]` in
 `pyproject.toml`) and a complexity limit of 15: the functions already over it
 carry `# noqa: C901` on their definition, so drop the marker when you split one.

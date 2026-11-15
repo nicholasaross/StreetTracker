@@ -24,8 +24,9 @@ exactly as it was. Two fields were added on 2026-11-15: each per-image row's
 ``stationary_guard`` (the guard's thresholds, when the guard was on).
 
 **Only the changed crops** (``--only-changed``). The stationary-vehicle guard
-of 2026-11-14 changes the crop of about 2 % of a session's snaps. Classifying
-every snap again to fix those takes hours per session, so this keeps each
+of 2026-11-14 changes the crop of 1.8 % of the median session's snaps (5 %
+over every session on 2026-11-15). Classifying every snap again to fix those
+would take about a day for the three heads over ``output/``, so this keeps each
 saved row whose crop is the same and classifies only the others. A saved row
 names its crop (``box``); one written before 2026-11-15 does not, and was made
 without the guard, so its crop is the guard-free choice from the cached

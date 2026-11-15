@@ -644,9 +644,10 @@ def guard_steps(ctx: PlaybookContext) -> list[Step]:
     whose classifier results predate it, then refresh the showcase.
 
     Each command runs with ``--only-changed``: it keeps the saved rows whose
-    crop the guard leaves alone and classifies only the rest, about 2 % of a
-    session's snaps, so the whole output root takes minutes where a full
-    re-inference of the three heads would take a day. A session drops out
+    crop the guard leaves alone and classifies only the rest (5 % of the
+    snaps in ``output/`` on 2026-11-15, 1.8 % in the median session), so the
+    whole output root takes a few hours where a full re-inference of the
+    three heads would take about a day. A session drops out
     once its three per-track files carry the guard's stamp, so a stopped run
     picks up where it left off. Raises ``ValueError`` when nothing needs it.
     """
