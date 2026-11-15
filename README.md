@@ -1,237 +1,240 @@
 # StreetTracker <img src="docs/assets/st26trk.svg" alt="ST26 TRK" height="40" align="right"/>
 
-Detect, track, and characterise vehicles and people from video files or a live
-RTSP camera — then enrich the results with number-plate reads, make/model/year,
-and a browsable web UI.
+Detect, track and describe the vehicles and people passing a street camera, then
+enrich each pass with a number-plate read, the car's registered make, model and
+colour, CNN predictions for the cars whose plates weren't read, and local web
+pages to browse it all.
 
-Successor to `VehicleTracker` (file-input, dev-box only) and `NanoTracker` (live
-RTSP on the original Jetson Nano / JetPack 4.6.1 / Python 3.6), unified onto one
-modern stack: **Python 3.10 · Ultralytics + BotSORT · TensorRT · uv-managed**.
+**Python 3.10 · Ultralytics YOLO + BotSORT · TensorRT · uv**
 
-**Status:** production. Running live on a Jetson Orin Nano 8GB Super watching a
-street through a Reolink camera since 2026-05-22. `ruff` clean, **870** unit
-tests green on the dev box. (Migration from the two legacy repos is
-code-complete; the only open tail is the JetPack 7.2 device upgrade — see
-[Roadmap](#roadmap).)
+**Status:** in production. It has run live on a Jetson Orin Nano 8GB Super,
+watching a residential street through a Reolink camera, since 2026-05-22. About
+1,860 tests pass (2026-11-15).
 
 ```
-RTSP (live, Orin)  ─┐
-                    ├─▶ FrameSource ─▶ YOLO + BotSORT (TensorRT) ─▶ per-track attributes
-MP4 (batch, dev) ───┘                                               (direction · speed · colour)
-                                                                          │
-                       4K snapshots (operator-traced snap gate) ◀────────┤
-                                   │                                      ▼
-                                   ▼                            EventLog (JSONL, fsync)
-                          ANPR ─▶ DVSA make/model/year                    │
-                                   │                                      ▼
-                                   └────▶ per-vehicle aggregation ─▶ summary HTML · showcase · stats
+Reolink RTSP sub-stream ─▶ YOLOv8m + BotSORT (TensorRT, Orin) ─▶ per-track attributes
+                                         │                      (direction · speed · lane)
+         4K stills on demand ◀── snap planner (traced road)       │
+                 │                                                ▼
+                 │                                     events log (JSONL, fsync)
+                 ▼                                                │
+   dev box: plate reading ─▶ DVSA make/model/year ─▶ per-vehicle records
+            make · colour · body-type CNNs ─────────▶ showcase · /stats · control panel
 ```
 
-## Hardware targets
+## Hardware
 
-| Role | Hardware | Status |
+| Role | Hardware | Software |
 |---|---|---|
-| Primary device | Jetson Orin Nano 8GB Super (67 TOPS, JetPack 6.x) | **live** — production since 2026-05-22 |
-| Dev box | Windows / Linux / macOS (CUDA optional; RTX 3080 here) | active — batch, ANPR, training |
-| Original Jetson Nano | JetPack 4.6.1 | decommissioned 2026-05-22 (superseded) |
+| Camera | Reolink RLC-1224A, 12 MP PoE turret | H.264 896×512 sub-stream for detection; 4512×2512 JPEG stills over HTTP |
+| Device | Jetson Orin Nano 8GB Super, 1 TB NVMe | JetPack 6.2.2 · CUDA 12.6 · TensorRT 10.3 · systemd service |
+| Dev box | Windows 11, RTX 3080 10 GB | plate reading, DVSA lookups, classifier training, the web apps |
 
-> JetPack 7.2 (CUDA 13.2 / Python 3.12) support for the Orin Nano has shipped;
-> the device upgrade is staged but gated on torch-wheel availability — see
-> [Roadmap](#roadmap).
+The device pipeline also runs on a dev box against video files (`streettracker batch`).
+TensorRT engines are tied to the GPU they were built on, so build them on the
+target device.
 
 ## Features
 
-- **Detection + tracking** — Ultralytics YOLO with integrated BotSORT, running the
-  built-in TensorRT path (`YOLO('best.engine')`) on the Orin. Tracks vehicles
-  *and* people; confidence-weighted class voting defends against single-frame
-  label flips.
-- **Per-track attributes** — direction, speed, colour (vote over the track),
-  lane, first/last-seen timestamps.
-- **4K snapshot capture** — an operator-traced road polygon + axis triggers +
-  continuous "pipeline" fires drive on-demand 4512×2512 Reolink HTTP snapshots,
-  tuned for plate-readability (≈98 % of cars get ≥1 snap).
-- **ANPR** — offline plate reading over a session's snaps, with a parked-car
-  "ghost mask", per-track bbox hints, and fuzzy clustering of OCR variants.
-- **Make / model / year** — two prongs: DVSA MOT lookup from the plate
-  (ground-truth, for the readable subset) and a UK-native EfficientNet make
-  classifier for the unreadable majority.
-- **Per-vehicle aggregation** — folds tracks + plate reads into one record per
-  physical car (`n_visits`, gap times, direction/colour histograms), including
-  repeat vehicles pooled across a cohort of sessions.
-- **Web** — a local **showcase** site of the identified/recurring cars (with a
-  per-car "this is my car" metadata editor) and a **traffic-statistics** page
-  (journeys by day/hour, day-of-week + weekday×hour heatmaps, speed distribution,
-  make/colour mix) — all dependency-free SVG/CSS.
-- **Dashboard** — auto-regenerated HTML summary per session + hourly rollup,
-  served live on the device at `http://<orin>:8080/`.
-- **Operator control panel** — a token-free web cockpit (`streettracker
-  control`) to drive the pull → enrich → train → promote loop with live
-  progress, ETAs, a live training curve, and a copy-paste help prompt when a
-  step fails. See [Web interfaces](#web-interfaces).
+- **Detection and tracking.** YOLOv8m with BotSORT through Ultralytics, from a
+  TensorRT engine on the Orin. It tracks cars, vans, buses, motorbikes, bicycles,
+  people and dogs. A track's class is a confidence-weighted vote, so one bad
+  frame can't relabel it.
+- **Per-track attributes.** Direction, speed, lane, where the track entered and
+  left the frame, and a flag for "people" whose box is car-shaped.
+- **4K capture.** An operator-traced road polygon, trigger lines and repeated
+  in-band fires request 4K stills from the camera while each car is in the best
+  stretch of road. About 98 % of cars get at least one still.
+- **Plate reading** (offline). Each still is searched for the vehicle that
+  matches the track's path, and its plate is read. Parked and background plates
+  are filtered out, and reads whose plate colour contradicts the direction of
+  travel (white front, yellow rear) are dropped. A shared plate gate decides
+  which reads are trusted.
+- **Make, model and colour.** Trusted plates are looked up in the DVSA MOT
+  History API. Three EfficientNet classifiers, trained on this street's own
+  DVSA-labelled cars, predict make, colour and body type for the rest. A
+  vehicle stopped in the road is kept out of the crops of the cars passing it.
+- **Per-vehicle records.** Tracks and plate reads fold into one record per car,
+  within a session and across sessions, with fuzzy matching of one-character
+  OCR variants.
+- **People.** Walkers, joggers and cyclists, dog walkers, and walks that the
+  tracker split into several tracks merged back together. Walks are never
+  matched across days.
+- **Web apps.** A live summary page on the device, a showcase of the identified
+  cars with traffic, people and schedule statistics, and an operator control
+  panel that runs the whole pull → enrich → train → promote loop.
 
-## Quick start — dev box
+## Quick start: dev box
 
 ```bash
-uv sync                                                  # Python 3.10 venv
-cp configs/camera.example.json configs/camera.json       # tune as needed
+uv sync --extra alpr --extra dev                         # extras aren't additive: name every one you need
+cp configs/camera.example.json configs/camera.json       # edit to suit
 uv run streettracker batch path/to/video.mp4 --config configs/camera.json
 ```
 
-## Quick start — Orin Nano
+## Quick start: Orin Nano
 
 ```bash
-scripts/setup_orin.sh                                    # idempotent: JetPack deps + uv + Python 3.10 + TensorRT symlinks
-uv run streettracker export-engine yolov8m.pt            # build the TRT engine ON this GPU (not portable)
-cp configs/camera.example.json configs/camera.json       # fill in Reolink IP + password + traced road polygon
+scripts/setup_orin.sh                                    # idempotent: apt deps, uv, venv, TensorRT symlinks
+uv run streettracker export-engine yolov8m.pt            # builds the engine for this GPU
+cp configs/camera.example.json configs/camera.json       # camera address and credentials, road polygon, snap gate
 uv run streettracker run --config configs/camera.json
 ```
 
-To run as a managed service, install the unit at
-`scripts/systemd/streettracker.service` — see the
-[Fresh deployment procedure](docs/deployment.md#fresh-deployment-procedure) in
-`docs/deployment.md`.
+The service unit, backups, recovery and the JetPack 7 plan are in
+[`docs/deployment.md`](docs/deployment.md#fresh-deployment-procedure). On a
+deployed Orin, check the Jetson wheel index before running a bare `uv sync`; the
+service runs with `--no-sync` for that reason.
 
 ## CLI
 
-Runtime + device:
+`streettracker --help` lists every command; `streettracker <command> --help`
+gives its options.
 
-| Command | Purpose |
+| Stage | Commands |
 |---|---|
-| `streettracker run --config <cfg>` | live RTSP capture (Orin) |
-| `streettracker batch <video>` | file input (dev box) |
-| `streettracker export-engine <model.pt>` | `.pt` → `.engine` via Ultralytics (run on the target GPU) |
-| `streettracker pull --session <S>` | scp a session off the device |
-| `streettracker recolor <session>` / `debug-color <session>` | rerun / inspect the colour heuristic |
-
-ANPR (needs `uv sync --extra alpr`):
-
-| Command | Purpose |
-|---|---|
-| `streettracker alpr-run <session>` | run the plate-reading pipeline over a session's snaps |
-| `streettracker alpr-score` / `alpr-label` / `alpr-report <session>` | score vs labels · label interactively · render comparison HTML |
-
-Enrichment + web:
-
-| Command | Purpose |
-|---|---|
-| `streettracker dvsa-label <session>` | harvest DVSA MOT make/model/year per plate (needs `configs/dvsa.json`) |
-| `streettracker dvsa-apply <session>` | fold DVSA fields onto each car's records |
-| `streettracker vehicles <session> [--across <dirs>]` | per-vehicle aggregation (+ cross-session repeats) |
-| `streettracker makemodel <session>` | CNN make/model inference → `_makemodel.json` |
-| `streettracker makemodel-build-uk` / `makemodel-train-uk` | build a DVSA-labelled UK crop corpus · train the make classifier |
-| `streettracker showcase --output-root output` | local website of enriched + recurring cars + stats (http://127.0.0.1:8090/) |
-| `streettracker control --output-root output` | operator control panel: live radiator + one-click procedures (http://localhost:8095/) |
+| Capture | `run` (live, Orin) · `batch` (video file) · `export-engine` · `pull` (copy a session off the Orin) · `recover-session` (rebuild a session the device never finalised) |
+| Plates (`--extra alpr`) | `alpr-run` · `alpr-rescore` · `alpr-colour` · `alpr-score` · `alpr-label` · `alpr-report` |
+| Labels and records | `dvsa-label` (needs `configs/dvsa.json`) · `dvsa-apply` · `vehicles` · `people` |
+| Classifiers | `makemodel` · `bodytype` · `colour` (each takes `--only-changed`) · `makemodel-build-uk` · `makemodel-train-uk` · `makemodel-compare` · `model-release` |
+| Web | `showcase` (http://127.0.0.1:8090/) · `control` (http://localhost:8095/) |
+| Legacy | `recolor` · `debug-color` (the HSV colour vote) · `makemodel-train` (CompCars) |
 
 ## Web interfaces
 
-Three browsable UIs, all dependency-free SVG/CSS:
-
 | UI | Host | Command | URL |
 |---|---|---|---|
-| **Live dashboard** | Orin (device) | served by `streettracker run` / the systemd service — no extra command | `http://<orin>:8080/` |
+| **Live summary** | Orin | served by `streettracker run` | `http://<orin>:8080/` |
 | **Showcase** | dev box | `uv run streettracker showcase --output-root output` | `http://127.0.0.1:8090/` |
 | **Control panel** | dev box | `uv run streettracker control --output-root output` | `http://localhost:8095/` |
 
-- **Live dashboard** — the running capture service auto-regenerates an HTML
-  summary of the current session (track tiles + hourly rollup) and serves it on
-  the device at port 8080. It comes up with `streettracker run`; nothing else to
-  start.
-- **Showcase** — a cross-session gallery of the identified + recurring cars
-  (ANPR + DVSA make/model/year/colour) with a per-car "this is my car" metadata
-  editor and a `/stats` traffic-analytics page. Local-only by default; add
-  `--host 0.0.0.0` for LAN. (Speed→mph calibration via `configs/showcase.json`.)
-- **Control panel** — an operator cockpit for running the day-to-day procedures
-  (pull → ALPR → DVSA → vehicles → make/model, corpus rebuild, training, model
-  promotion) **without an assistant attached, consuming zero tokens once
-  running**: a live radiator (Orin status, session inventory, corpus/model
-  retrain & promote recommendations) plus one-click playbooks with progress
-  bars, ETAs, a live training loss curve (`/training`), and a copy-paste Claude
-  prompt when a step fails. Dashboards bind `0.0.0.0` (LAN-viewable); every
-  control action is localhost-only. Detached launcher (opens a browser):
+- **Live summary.** The capture service regenerates a page for the current
+  session (track tiles, hourly rollup) whenever the street goes quiet.
+- **Showcase.** A gallery of the plate-identified cars across every session,
+  with DVSA details, every sighting, behavioural badges (resident, visitor and
+  so on), and a per-car editor for names and notes. `/stats` covers every car
+  track, read or not: journeys by day and hour, speeds, makes, colours and body
+  types. `/people` and `/schedule` cover pedestrians and recurring arrival
+  times. It binds `127.0.0.1` by default because its pages show plates; pass
+  `--host 0.0.0.0` for the LAN.
+- **Control panel.** Runs the day-to-day procedures without anyone at a
+  terminal: pulls, enrichment, corpus builds, training, head-to-head model
+  comparisons and promotion. It shows the device's status, the session
+  inventory and retrain/promote recommendations, and runs multi-step playbooks
+  (enrich, build-train, roll, promote, reinfer, guard, rescore, relabel,
+  platecheck) with progress bars and a live training curve. A failed step
+  offers a ready-made help prompt. The pages are viewable on the LAN; every
+  action is localhost-only. Detached launcher:
 
   ```powershell
   pwsh -NoProfile -File scripts/control_panel.ps1
   ```
 
+Full reference: [`docs/sites.md`](docs/sites.md).
+
 ### Screenshots
 
-| Showcase — identified & recurring cars | Control panel — operator dashboard | Control panel — live training |
+| Showcase: identified and recurring cars | Control panel: operator dashboard | Control panel: live training |
 |---|---|---|
 | [<img src="docs/assets/screenshot_showcase.png" alt="Showcase gallery"/>](docs/assets/screenshot_showcase.png) | [<img src="docs/assets/screenshot_control.png" alt="Control panel dashboard"/>](docs/assets/screenshot_control.png) | [<img src="docs/assets/screenshot_training.png" alt="Training page with live loss/accuracy curve"/>](docs/assets/screenshot_training.png) |
 
-| Showcase — `/stats` traffic analytics |
+| Showcase: `/stats` traffic analytics |
 |---|
 | [<img src="docs/assets/stats.png" alt="Stats page: daily journeys by direction, weekday/hour heatmaps, speed distribution, top makes, vehicle colours and body types, plus people analytics" width="480"/>](docs/assets/stats.png) |
 
-*Number plates and owner tags in the gallery are pixelated for publication.*
+*Number plates and owner tags are pixelated for publication.*
+
+## Results on this street
+
+One oblique camera over a residential street. The plate figures count reads of
+a valid UK plate shape. Only the plate-colour rule checks that a read plate
+belongs to the tracked car, so these are read rates, not verified reads.
+
+- **4K coverage.** About 98 % of cars and two thirds of people get at least one still.
+- **Plates.** 68.3 % of cars get a read (R→L 69.7 %, L→R 66.8 %; 2026-07-28).
+  Daylight reaches about 75 %; dusk and dark about 45 %, where motion blur
+  smears plates the detector still finds.
+- **DVSA labels.** 41.8 % of car journeys carry the register's make, model and
+  colour (2026-10-04).
+- **Classifiers**, per track on cars no model was trained on (2026-10):
+
+  | Head | Model | Accuracy |
+  |---|---|---|
+  | Make (62 makes) | EfficientNet-B6 @528 | 85.0 % (117 cars) |
+  | Colour (11) | EfficientNet-B0 @384 | 83.3 % (118 cars) |
+  | Body type (7) | EfficientNet-B0 @384 | 89.1 % (109 cars) |
+
+  They were trained on 76,033 plate-anchored crops of 4,347 DVSA-labelled cars.
+  These scores are on plated cars; accuracy on the unplated majority, where the
+  crop comes from the car's path instead of its plate, hasn't been measured.
 
 ## Output
 
-Per finalised track: a dashboard tile (`{prefix}_{id}.jpg`), an HQ crop
-(`_hq.jpg`), and up to N 4K snaps (`_main_{N}.jpg`); `{prefix}` is `vehicle` or
-`person`. Per session: `*_events.jsonl` (crash-safe, line-per-track),
-`*_data.json`, `*_meta.json`, `*_hourly.json`, `*_summary.html`, plus the
-analysis artifacts (`*_alpr*.json`, `*_dvsa_labels.json`, `*_vehicles.json`,
-`*_makemodel*.json`). Record fields are defined in `common/schema.py`.
+Each finalised track saves a dashboard tile (`{prefix}_{id}.jpg`), an HQ
+sub-stream crop (`_hq.jpg`) and its 4K stills (`_main_{N}.jpg`), where
+`{prefix}` is `vehicle` or `person`. Each session holds `_events.jsonl` (written
+as tracks end, so it survives a crash), `_trajectories.jsonl`, `_data.json`,
+`_meta.json`, `_hourly.json` and the summary page. The dev-box steps add their
+own files beside them: plate reads, DVSA labels, per-vehicle records,
+classifier predictions and people. Every file is described in
+[`docs/session_files.md`](docs/session_files.md); record fields are in
+`common/schema.py`.
 
 ## Project layout
 
 ```
 src/streettracker/
-├── common/      # schema, colour, config (strict JSON), summary, hourly, output — shared
+├── common/      # schema, strict JSON config, session file paths, atomic writes, summary page
 ├── inference/   # YOLO + BotSORT via Ultralytics / TensorRT
-├── sources/     # RTSP (FFmpeg, TCP) + file (NVDEC on Orin)
-├── device/      # Orin-only: live runtime, snapshotter, snap planner, dashboard, IR
-├── analysis/    # off-device: ALPR, recolour, vehicles, make/model
-├── web/         # showcase site + stats (aggregate · metadata · stats · server)
-└── cli/         # `streettracker` entry + subcommands
+├── sources/     # RTSP (FFmpeg over TCP) and file input (NVDEC on the Orin)
+├── device/      # Orin only: live runtime, snap planner, snapshotter, dashboard, IR detector
+├── analysis/    # dev box: plate reading, DVSA, vehicles, people, classifiers, vehicle locator
+├── web/         # showcase site: gallery, stats, people, schedule
+├── control/     # operator control panel: jobs, playbooks, progress parsing
+└── cli/         # `streettracker` entry point; every subcommand is one line in cli/commands.py
 ```
 
 ## Development
 
 ```bash
-uv run pytest                        # tests (device-marked tests need a Jetson)
+uv run pytest                        # tests (tests marked `device` need a Jetson)
 uv run ruff check src/ tests/        # lint
 uv run ruff format src/ tests/       # format
 uv run mypy src/                     # type-check
 ```
 
-The runtime is asyncio throughout; config is loaded by a strict frozen-dataclass
-JSON loader that rejects unknown keys. See **`CLAUDE.md`** for architecture
-decisions and the current state, [`docs/history/`](docs/history/README.md) for
-the ANPR/make-model tuning history, [`docs/deployment.md`](docs/deployment.md)
-for deployment + recovery procedures, and [`docs/snap_gate.md`](docs/snap_gate.md)
-for the snap-gate geometry.
+CI runs the tests in two jobs (one without torch, one with CPU torch for the
+classifier tests) and enforces `ruff check`, `ruff format --check`, `mypy` and a
+complexity limit. The runtime is asyncio throughout, and the config loader
+rejects unknown keys.
 
-## Performance on the deployment scene
-
-Scene-specific (oblique residential-street view), measured over multi-hour soaks:
-
-- **4K snap coverage:** ≈98 % of cars get ≥1 snapshot; ≈67 % of person tracks.
-- **Plate reads:** a clean canonical UK plate for ~58 % of cars net —
-  rear plates (L→R here) read ~92 % per car; front plates are
-  camera-geometry-capped ~23 % at every position, so the remaining lever
-  is a second approach camera, not tuning.
-- **DVSA make/model/year:** the readable, ≥3-year-old subset (~25–30 % of cars).
-- **CNN make classifier:** EfficientNet-B5 @456 px, **44 % make@1** over 42
-  makes for the unreadable majority — the corpus (43.8k crops) grows as a
-  by-product of operation, and data remains the lever.
+**Docs.** [`CLAUDE.md`](CLAUDE.md) holds the current state and the standing
+rules; [`docs/`](docs/) holds the rest:
+[deployment](docs/deployment.md), [the snap gate](docs/snap_gate.md),
+[session files](docs/session_files.md), [the web apps](docs/sites.md), the
+[data-integrity review](docs/data_integrity_review.md), the
+[architecture map](docs/architecture/) and the dated
+[history](docs/history/README.md) of every tuning result.
 
 ## Roadmap
 
-The one open item is the **JetPack 7.2 device upgrade** (Orin Nano now supported;
-brings CUDA 13.2 / TensorRT 10.16 / Python 3.12 / Ubuntu 24.04). It is **gated on
-torch-wheel availability**: the jetson-ai-lab index has no `jp7` shelf yet, so a
-flash today would leave the Orin with no `sm_87`-compatible PyTorch. Re-check the
-gate from the dev box at any time:
+1. **Data integrity.** A hand-checked audit set of plate reads, to calibrate
+   the plate gate and the plate-colour check against reads known to belong to
+   the tracked car. The plan is in
+   [`docs/data_integrity_review.md`](docs/data_integrity_review.md).
+2. **Low-light plates.** A faster shutter scheduled for the dusk and dawn rush
+   hours, where motion blur costs the most reads.
+3. **JetPack 7.2** (CUDA 13.2, TensorRT 10.16, Python 3.12, Ubuntu 24.04). It
+   waits for Orin (`sm_87`) PyTorch wheels on the jetson-ai-lab index. Check
+   from the dev box:
 
-```powershell
-pwsh -ExecutionPolicy Bypass -File scripts/check_jp7_wheel.ps1   # exit 0 = ready, 1 = not yet
-```
+   ```powershell
+   pwsh -ExecutionPolicy Bypass -File scripts/check_jp7_wheel.ps1   # exit 0 = ready, 1 = not yet
+   ```
 
-When it turns green, the upgrade follows the five repo edits + single-Orin flash
-plan in [`docs/deployment.md` → JetPack 7 upgrade plan](docs/deployment.md#jetpack-7-upgrade-plan).
+   The repo edits and the flash plan are in
+   [`docs/deployment.md`](docs/deployment.md#jetpack-7-upgrade-plan).
 
 ## License
 
-MIT.
+MIT; see [`LICENSE`](LICENSE).

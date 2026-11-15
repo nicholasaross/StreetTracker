@@ -8,7 +8,7 @@ record fields from `src/streettracker/common/schema.py`.
 Moved from `CLAUDE.md` on 2026-11-11 with the text unchanged, so it still carries dated notes
 on when each field arrived.
 
-## Output schema (preserved from NanoTracker)
+## Output schema
 
 Per finalized track:
 
