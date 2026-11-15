@@ -126,6 +126,21 @@ class SnapSighting:
         return (self.track_id, self.snap_index)
 
 
+def guard_rule() -> dict[str, float]:
+    """The guard's thresholds, as written into the files it shaped. A file
+    stamped with other values (or none) was made under another rule."""
+    return {
+        "same_box_iou": SAME_BOX_IOU,
+        "min_gap_s": MIN_GAP_S,
+        "neighbour_tracks": NEIGHBOUR_TRACKS,
+        "max_gap_s": MAX_GAP_S,
+        "min_tracks": MIN_TRACKS,
+        "same_vehicle_iou": SAME_VEHICLE_IOU,
+        "hidden_frac": HIDDEN_FRAC,
+        "own_box_iou": OWN_BOX_IOU,
+    }
+
+
 def iou(a: Sequence[float], b: Sequence[float]) -> float:
     ix = min(a[2], b[2]) - max(a[0], b[0])
     iy = min(a[3], b[3]) - max(a[1], b[1])

@@ -23,7 +23,7 @@ from PIL import Image
 torch = pytest.importorskip("torch")
 pytest.importorskip("torchvision")
 
-from streettracker.analysis import vehicle_locator  # noqa: E402
+from streettracker.analysis import stationary, vehicle_locator  # noqa: E402
 from streettracker.analysis.makemodel import (  # noqa: E402
     bodytype_infer,
     colour_infer,
@@ -265,19 +265,23 @@ def test_bodytype_command_writes_both_files(tmp_path: Path) -> None:
         "image",
         "has_bbox",
         "crop_source",
+        "box",
         "body_type",
         "conf",
     ]
     assert (first["track_id"], first["snap_index"]) == (1, 1)
     assert first["has_bbox"] is True and first["crop_source"] == "hint"
+    assert first["box"] == [40, 30, 125, 150]  # the sub-stream box, scaled to the snap
     assert first["body_type"] in _BODY_TYPES
     assert first["conf"] == round(first["conf"], 4)
 
     # No recorded box, and an unreadable file: a row each, with no prediction.
     for row in per_image[3:]:
         assert (row["body_type"], row["conf"]) == (None, None)
-    assert per_image[3]["has_bbox"] is False
+    assert per_image[3]["has_bbox"] is False and per_image[3]["box"] is None
 
+    # The legacy hint crop has no stationary-vehicle guard, so no stamp.
+    assert list(_load(sess, "bodytype_by_track")) == ["tracks"]
     tracks = _load(sess, "bodytype_by_track")["tracks"]
     assert [t["track_id"] for t in tracks] == [1, 2]
     assert list(tracks[0]) == ["track_id", "body_type", "conf", "n_high_conf_reads", "n_reads"]
@@ -309,6 +313,7 @@ def test_make_command_writes_ranked_candidates(tmp_path: Path) -> None:
         "image",
         "has_bbox",
         "crop_source",
+        "box",
         "top_k",
     ]
     assert [len(row["top_k"]) for row in per_image] == [2, 2, 2, 0, 0]
@@ -529,8 +534,11 @@ def _stub_vehicle_detector(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     return calls
 
 
-def _fullframe_args(tmp_path: Path, sess: Path) -> list[str]:
-    ckpt = _colour_checkpoint(tmp_path, crop_mode="plate", crop_pad_frac=0.1)
+def _fullframe_args(tmp_path: Path, sess: Path, head: str = "colour") -> list[str]:
+    """A checkpoint trained on plate-anchored crops, so it infers fullframe."""
+    names = {"colour": _COLOURS, "body_type": _BODY_TYPES, "make": _MAKES}[head]
+    extra = {"kind": "uk_make"} if head == "make" else {}
+    ckpt = _checkpoint(tmp_path, head, names, crop_mode="plate", crop_pad_frac=0.1, **extra)
     no_polygon = str(tmp_path / "no_road_polygon.json")
     return [str(sess), "--model", str(ckpt), "--cpu", "--road-polygon", no_polygon]
 
@@ -591,6 +599,152 @@ def test_a_later_command_knows_the_stationary_vehicles_from_the_start(
     assert "[colour] stationary vehicles: 3 crops refused (3 snaps left with no crop)" in out
     assert _load(sess, "colour") == first
     assert len(calls) == 5
+
+
+def test_the_track_file_is_stamped_with_the_guards_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_vehicle_detector(monkeypatch)
+    sess = _street(tmp_path)
+    assert colour_infer.main(_fullframe_args(tmp_path, sess)) == 0
+    payload = _load(sess, "colour_by_track")
+    assert list(payload) == ["stationary_guard", "tracks"]
+    assert payload["stationary_guard"] == stationary.guard_rule()
+    # Each row names its crop.
+    assert [r["box"] for r in _load(sess, "colour")] == [
+        [300, 60, 380, 130],
+        None,
+        None,
+        None,
+        [300, 60, 380, 130],
+    ]
+
+
+# ----------------------------------------------------------------------
+# --only-changed: the guard applied to a session inferred before it.
+
+_HEADS: list[tuple[str, str, Main]] = [
+    ("makemodel", "make", infer.main),
+    ("bodytype", "body_type", bodytype_infer.main),
+    ("colour", "colour", colour_infer.main),
+]
+
+
+def _infer_before_the_guard(sess: Path, tag: str, main: Main, args: list[str]) -> None:
+    """Leave the files a run from before 2026-11-14 left: no stationary
+    vehicles found, rows that don't name their crop, and no stamp."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(vehicle_locator, "find_stationary_vehicles", lambda _sightings: {})
+        assert main(args) == 0
+    rows = _load(sess, tag)
+    assert isinstance(rows, list)
+    for row in rows:
+        del row["box"]
+    (sess / f"session_x_{tag}.json").write_text(json.dumps(rows))
+    tracks = _load(sess, f"{tag}_by_track")
+    assert isinstance(tracks, dict)
+    del tracks["stationary_guard"]
+    (sess / f"session_x_{tag}_by_track.json").write_text(json.dumps(tracks))
+    (sess / "session_x_stationary_vehicles.json").unlink()
+
+
+@pytest.mark.parametrize(("tag", "head", "main"), _HEADS, ids=[h[0] for h in _HEADS])
+def test_only_changed_classifies_just_the_crops_the_guard_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tag: str,
+    head: str,
+    main: Main,
+) -> None:
+    calls = _stub_vehicle_detector(monkeypatch)
+    sess = _street(tmp_path)
+    args = _fullframe_args(tmp_path, sess, head)
+    _infer_before_the_guard(sess, tag, main, args)
+    before = _load(sess, tag)
+    # Before the guard, the van was every track's crop.
+    assert [r["has_bbox"] for r in before] == [True] * 5
+    capsys.readouterr()
+
+    assert main([*args, "--only-changed"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1] == f"[{tag}] kept 2 saved rows whose crop is unchanged; 3 snaps to classify"
+    assert lines[2] == "  3/3 classified"
+    assert lines[3] == f"[{tag}] stationary vehicles: 3 crops refused (3 snaps left with no crop)"
+    assert len(calls) == 5  # the boxes were cached: no detection
+
+    patched = _load(sess, tag)
+    patched_tracks = _load(sess, f"{tag}_by_track")
+    assert [r["has_bbox"] for r in patched] == [True, False, False, False, True]
+    # Tracks 1 and 5 keep their saved predictions, now naming their crop.
+    for i in (0, 4):
+        assert patched[i] == {**before[i], "box": [300, 60, 380, 130]}
+    assert patched_tracks["stationary_guard"] == stationary.guard_rule()
+    assert sorted(t["track_id"] for t in patched_tracks["tracks"]) == [1, 5]
+
+    # Exactly what classifying every snap gives.
+    assert main(args) == 0
+    assert _load(sess, tag) == patched
+    assert _load(sess, f"{tag}_by_track") == patched_tracks
+
+
+def test_only_changed_keeps_every_row_when_no_crop_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_vehicle_detector(monkeypatch)
+    sess = _street(tmp_path)
+    args = _fullframe_args(tmp_path, sess)
+    assert colour_infer.main(args) == 0
+    first = _load(sess, "colour")
+    capsys.readouterr()
+
+    assert colour_infer.main([*args, "--only-changed"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1] == "[colour] kept 5 saved rows whose crop is unchanged; 0 snaps to classify"
+    assert lines[2] == "[colour] stationary vehicles: 3 crops refused (3 snaps left with no crop)"
+    assert _load(sess, "colour") == first
+
+    # No progress lines, and the panel still ends on the closing line.
+    parser = make_parser("colour")
+    for line in lines:
+        parser.feed(line)
+    assert parser.progress.summary == lines[-1].strip()
+    assert lines[-1].startswith("[colour] 2 tracks, ")
+
+
+def test_only_changed_classifies_every_snap_when_the_rows_came_from_another_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_vehicle_detector(monkeypatch)
+    sess = _street(tmp_path)
+    args = _fullframe_args(tmp_path, sess)
+    assert colour_infer.main(args) == 0
+    fresh = _load(sess, "colour")
+    assert isinstance(fresh, list)
+    # What another checkpoint might have said about the same crops.
+    other = [{**r, "conf": 0.99} if r["colour"] else r for r in fresh]
+    (sess / "session_x_colour.json").write_text(json.dumps(other))
+    capsys.readouterr()
+
+    assert colour_infer.main([*args, "--only-changed"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1] == (
+        "[colour] 2 of 2 saved rows checked differ from this checkpoint's; classifying every snap"
+    )
+    assert lines[2] == "  5/5 classified"
+    assert _load(sess, "colour") == fresh
+
+
+def test_only_changed_with_no_saved_rows_classifies_every_snap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_vehicle_detector(monkeypatch)
+    sess = _street(tmp_path)
+    assert colour_infer.main([*_fullframe_args(tmp_path, sess), "--only-changed"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1] == "[colour] no saved rows in session_x_colour.json; classifying every snap"
+    assert lines[2] == "  5/5 classified"
+    assert len(_load(sess, "colour")) == 5
 
 
 @pytest.mark.parametrize(

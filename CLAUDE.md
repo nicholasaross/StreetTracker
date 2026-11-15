@@ -127,9 +127,13 @@ publishes `makemodel-<run>`.
   or goes without a crop, so a track can end up "unknown" where it used to be wrong. This changes
   4.3 % of the trajectory crops since 2026-10-01, crops on which the heads were right about 15 %
   of the time. Each session's `_stationary_vehicles.json` lists what was refused.
-  - **A session inferred before 2026-11-14 keeps the fault** until the panel's **reinfer**
+  - **A session inferred before 2026-11-14 keeps the fault** until the panel's **guard**
     playbook has run over it. Until then, distrust a colour or body-type spike confined to an
-    hour or two.
+    hour or two. The playbook runs all three commands with `--only-changed`, which keeps every
+    saved prediction whose crop the guard leaves alone and classifies only the rest. Checked on
+    a copy of `session_20261113_080245`, the result was identical to a full run, row for row.
+    Don't use reinfer for this: it reruns only `makemodel`, so colour and body type would keep
+    the fault.
   - It doesn't cover the first and the last car to pass a stopped vehicle, and it needs three
     tracks to have seen the vehicle, so a stop that only one or two cars pass goes unnoticed.
   - The rule's thresholds are in `stationary.py` with the measurement behind each. Re-measure
@@ -381,7 +385,7 @@ the tracked object) and `{prefix}_{id}_main_{N}.jpg` (4K snaps, `N` from 1; a sn
 | `_alpr.json`, `_alpr_by_track.json`, `_static_plates.json` | `alpr-run`; updated by `alpr-rescore` and `alpr-colour` | per-image reads; each track's best read (suspects left out, `n_agree`); the stamps that say which fixes the session has |
 | `_dvsa_labels.json` | `dvsa-label` | register make / model / year / colour per plate, and the gate it used. Lookups are paid for and cached here |
 | `_vehicles.json` | `vehicles` | per-vehicle aggregation. It can be stale: the showcase rebuilds it live |
-| `_makemodel*.json`, `_bodytype*.json`, `_colour*.json` | the CNN commands | per-image and `_by_track` predictions |
+| `_makemodel*.json`, `_bodytype*.json`, `_colour*.json` | the CNN commands | per-image predictions, each naming its crop (`box`, from 2026-11-15), and `_by_track` predictions, stamped `stationary_guard` when the guard shaped them |
 | `_vehicle_boxes.json` | any fullframe-crop command | cache of 4K vehicle boxes; disposable |
 | `_stationary_vehicles.json` | the CNN commands | the stopped vehicles whose crops were refused: where, when, how many crops and tracks |
 | `_people.json` | `people` | activity per person track |
@@ -414,6 +418,7 @@ uv run streettracker showcase --output-root output       # local website: enrich
 uv run streettracker makemodel output/<session>          # CNN make/model inference -> _makemodel.json
 uv run streettracker bodytype output/<session>           # CNN body-type inference -> _bodytype_by_track.json (pad_frac 0.1)
 uv run streettracker colour output/<session>             # CNN vehicle-colour inference -> _colour_by_track.json (pad_frac 0.1); replaces the HSV colour vote
+uv run streettracker colour output/<session> --only-changed  # any of the three: keep saved rows whose crop is unchanged, classify the rest (how the guard playbook applies the stationary-vehicle guard)
 # Mine the Orin -> grow the UK make-classifier corpus (run pull from PowerShell):
 uv run streettracker pull --session <S> --only-main      # pull a session's 4K snaps + vehicle HQ crops + JSON from the Orin
 uv run streettracker pull --session <S> --crops-only     # fetch just the missing vehicle HQ crops (never the JSON, so safe on an enriched session)
@@ -431,10 +436,10 @@ sees them. Either run from PowerShell / cmd, or prefix with
 
 ## Tests and CI
 
-Tests at HEAD (2026-11-15): **about 1,830 passing on the dev box, on Python 3.10.**
+Tests at HEAD (2026-11-15): **about 1,860 passing on the dev box, on Python 3.10.**
 CI runs them in two jobs: `test` (no torch; the 9 torch-gated classifier modules
 skip there) and `test-torch` (the `test_makemodel` directory, which holds those 9
-modules and their 131 tests, on CPU wheels). CI also
+modules among its 203 tests, on CPU wheels). CI also
 enforces `ruff check`, `ruff format --check`, `mypy` (`[tool.mypy]` in
 `pyproject.toml`) and a complexity limit of 15: the functions already over it
 carry `# noqa: C901` on their definition, so drop the marker when you split one.
@@ -498,8 +503,8 @@ reference: [`docs/sites.md`](docs/sites.md).
   commands had no progress bar until 2026-11-14 for that reason, and `dvsa-label` no total from
   2026-10-04 to 2026-11-15). The `dvsa-label` bar counts the lookups a run makes
   (`N/total looked up`), not its plates: a plate already in the labels file costs no lookup.
-- **Playbooks** (`control/playbooks.py`): enrich, build-train, roll, promote, reinfer, rescore,
-  relabel and platecheck. **roll** (restarts the Orin service, then pulls the closed session) and
+- **Playbooks** (`control/playbooks.py`): enrich, build-train, roll, promote, reinfer, guard,
+  rescore, relabel and platecheck. **roll** (restarts the Orin service, then pulls the closed session) and
   **promote** (replaces the production model, then publishes the release) are destructive and
   confirm-gated.
 - **Promote needs a head-to-head.** The recommendation reads the run's `compare.json`; a run with

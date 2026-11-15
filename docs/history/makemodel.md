@@ -497,7 +497,43 @@ of them a parked car whose box was the tightest round a passing car's plate.
 session (15,000 snaps). The first command on a session classifies the
 changed snaps a second time, about 3 % of them.
 
-**Applying it.** Nothing in `output/` has been re-inferred. The panel's
-reinfer playbook over the sessions since 2026-10-01 (earlier ones if the
-`/stats` history matters) rewrites the per-track files, and a showcase
-refresh picks them up. Tracks that lose every crop show as "unknown".
+**Applying it.** The code changes only what inference writes from now on.
+Tracks that lose every crop show as "unknown". For the sessions already in
+`output/`, see the next section (the reinfer playbook first suggested here
+reruns only `makemodel`, so colour and body type would have kept the fault).
+
+## Applying the guard to sessions already inferred (2026-11-15)
+
+A full re-inference of the three heads over `output/` (60 sessions,
+444,430 vehicle snaps) would take about a day: a full run of any head
+classifies about 17 snaps a second, and decoding the 4K JPEGs costs nearly
+as much as the network. The guard changes few crops, so `makemodel`,
+`bodytype` and `colour` gained `--only-changed`. It keeps each saved row
+whose crop is unchanged and classifies the rest. The panel's **guard**
+playbook runs it over every session whose per-track files lack the
+`stationary_guard` stamp.
+
+**How a saved row's crop is known.** Rows written from 2026-11-15 name it
+(`box`). Older rows were made without the guard, so their crop is the
+guard-free choice from the cached vehicle boxes. A read-only pass over all
+60 sessions (scratch script, not kept) rebuilt that choice for every snap
+and compared it with the saved make rows. Every row matched (crop source
+and whether there was a crop), and only 3 snaps had no cached boxes.
+Eight kept rows per run are classified again as a check on the checkpoint;
+any disagreement means every snap is classified.
+
+**How many crops change.** 22,072 of 444,430 snaps (5.0 %); 2,686 of
+108,811 (2.5 %) since 2026-10-01. The median session is 1.8 %. A few
+summer sessions are far worse: `session_20260628_073521` 28 % (4,938 of
+17,394), `session_20260616_121115` 18 %, and `session_20260720_215134`
+38 % of its 1,322. So the guard playbook classifies about a twentieth of
+the snaps a full run would. It costs a few hours, most of it reading
+image headers and loading the make model once per session.
+
+**Checked on a copy of `session_20261113_080245`** (the stopped Citroën):
+2,017 rows kept and 439 snaps classified per head, then a full run of each
+head on the same copy. The two outputs were identical for all three heads:
+the same crop, class and confidence on all 2,456 rows. Make took 39 s
+against 144 s, colour 27 s against 142 s, and body type 26 s against 140 s.
+On that session the guard changed the per-track make on 131 of 699 tracks,
+the colour on 122 and the body type on 99.

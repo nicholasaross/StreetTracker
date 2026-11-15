@@ -982,7 +982,8 @@ head-to-heads shrink to ~67 cars once corpora share most of their cars.
   of the rest. The locator now refuses those crops
   (`analysis/stationary.py`; method and numbers in
   [`history/makemodel.md`](history/makemodel.md#the-stationary-vehicle-guard-2026-11-14)).
-  Sessions on disk still need the reinfer playbook. One thing it turned up
+  Sessions on disk get it from the panel's guard playbook (2026-11-15), which
+  reclassifies only the crops that change. One thing it turned up
   is left open: the corpus builder doesn't use the guard, and up to 0.4 % of
   its plate-anchored crops are of a parked car behind the plated one (the
   tightest box round the plate is the parked car's). Both directions are

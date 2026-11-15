@@ -77,6 +77,17 @@ Session files:
 - `{session}_makemodel.json` + `{session}_makemodel_by_track.json` —
   per-image top-k + per-track confidence-weighted CNN make/model
   predictions (after `makemodel`; `make_model_source="cnn"`)
+- **All three classifier commands' files** (make, body type, colour): each
+  per-image row has `has_bbox`, `crop_source` (`plate` / `trajectory` /
+  `hint`, or `null` for no crop) and, from 2026-11-15, `box`: the crop in
+  snap pixels. The per-track file has `stationary_guard`, the
+  stationary-vehicle guard's thresholds (`stationary.guard_rule()`), written
+  first, whenever the guard shaped its crops (fullframe mode, from 2026-11-15).
+  A file without it was made before the guard; the panel's guard playbook
+  finds such files by that stamp and patches them with `--only-changed`,
+  which trusts `box` where a row has one and otherwise rebuilds the
+  pre-guard crop from `_vehicle_boxes.json` and checks it against the row's
+  `crop_source`.
 - `{session}_bodytype.json` + `{session}_bodytype_by_track.json` —
   per-image + per-track confidence-weighted coarse body type (after
   `bodytype`; classes hatchback/saloon/suv/mpv/van/pickup/coupe). The
