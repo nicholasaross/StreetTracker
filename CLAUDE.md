@@ -496,8 +496,8 @@ reference: [`docs/sites.md`](docs/sites.md).
   picks for it, so a rewording fails that test: change the parser with the message. A parser
   tested only on a hand-written transcript can match nothing the command prints (the classifier
   commands had no progress bar until 2026-11-14 for that reason, and `dvsa-label` no total from
-  2026-10-04 to 2026-11-15). `dvsa-label` prints nothing per lookup, so it shows a total but no
-  moving bar.
+  2026-10-04 to 2026-11-15). The `dvsa-label` bar counts the lookups a run makes
+  (`N/total looked up`), not its plates: a plate already in the labels file costs no lookup.
 - **Playbooks** (`control/playbooks.py`): enrich, build-train, roll, promote, reinfer, rescore,
   relabel and platecheck. **roll** (restarts the Orin service, then pulls the closed session) and
   **promote** (replaces the production model, then publishes the release) are destructive and

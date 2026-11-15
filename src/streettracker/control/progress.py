@@ -378,20 +378,40 @@ class PullParser(ProgressParser):
 # high-conf plates"; this pattern kept the old wording until 2026-11-15, so
 # for six weeks it matched nothing and the job showed no total.
 _DVSA_TOTAL_RE = re.compile(r"\[dvsa-label\]\s+(\d+)\s+distinct plates passing the gate")
+# "[dvsa-label] 25/310 looked up": printed before the first lookup, every 25
+# and after the last (cli/dvsa_label.py, _report_lookups). The total is the
+# lookups this run makes, which is fewer than the plates when some are
+# already in the labels file.
+_DVSA_LOOKUP_RE = re.compile(r"^\[dvsa-label\]\s+(\d+)\s*/\s*(\d+)\s+looked up$")
 _DVSA_DONE_RE = re.compile(r"(\d+)\s+labelled,\s+(\d+)\s+unknown")
 
 
 class DvsaLabelParser(ProgressParser):
-    """``dvsa-label``: total distinct plates + final labelled/unknown tally.
+    """``dvsa-label``: the lookup count for the bar + the final
+    labelled/unknown tally.
 
-    The command prints nothing per lookup, so there is no moving bar: the
-    header sets ``total`` and the "looking up" phase, and the closing line
-    sets ``current`` and the summary."""
+    The header gives the number of plates and the "looking up" phase. The
+    count lines then drive the bar and the ETA, over the lookups this run
+    makes. A run with nothing to look up (every plate already in the labels
+    file) prints no count; its bar is filled by the closing line, as it was
+    before the command printed a count (2026-11-15)."""
 
     kind = "dvsa-label"
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._counted = False
+
     def feed(self, line: str) -> None:
         text = line.strip()
+        m = _DVSA_LOOKUP_RE.match(text)
+        if m:
+            cur, tot = int(m.group(1)), int(m.group(2))
+            self.progress.current = cur
+            self.progress.total = tot
+            self.progress.phase = f"looked up {cur}/{tot}"
+            self._counted = True
+            return
         m = _DVSA_TOTAL_RE.search(text)
         if m:
             self.progress.total = int(m.group(1))
@@ -401,7 +421,8 @@ class DvsaLabelParser(ProgressParser):
         if m:
             self.progress.metrics["labelled"] = int(m.group(1))
             self.progress.metrics["unknown"] = int(m.group(2))
-            self.progress.current = int(m.group(1)) + int(m.group(2))
+            if not self._counted:
+                self.progress.current = int(m.group(1)) + int(m.group(2))
             self.progress.summary = text
             self.progress.phase = "done"
 

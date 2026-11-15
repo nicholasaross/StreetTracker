@@ -66,6 +66,24 @@ logger = logging.getLogger(__name__)
 # Default path matches the camera.json convention.
 _DEFAULT_CONFIG_PATH = Path("configs/dvsa.json")
 
+# The lookup count is printed every this many lookups. A lookup takes a few
+# tenths of a second, so the control panel's bar moves about every ten seconds
+# and a harvest of thousands of plates still prints only a few hundred lines.
+_PROGRESS_EVERY = 25
+
+
+def _report_lookups(done: int, total: int) -> None:
+    """Print how many of this run's DVSA lookups have been made: once before
+    the first, every :data:`_PROGRESS_EVERY`, and after the last. A run with
+    nothing to look up prints no count.
+
+    Keep the ``N/total looked up`` wording: the control panel's progress bar
+    and ETA for this command are read from it (``DvsaLabelParser`` in
+    ``control/progress.py``).
+    """
+    if total and (done == 0 or done % _PROGRESS_EVERY == 0 or done == total):
+        print(f"[dvsa-label] {done}/{total} looked up", flush=True)
+
 
 def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
@@ -400,6 +418,15 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
 
     client = DvsaClient(cfg)
 
+    # The plates this run will ask DVSA about. The rest are already in the
+    # file and cost nothing, so the count is of lookups, not of plates.
+    in_scope = requests_[: args.limit] if args.limit else requests_
+    n_lookups = sum(
+        1 for r in in_scope if r.plate not in existing_labels and r.plate not in existing_unknown
+    )
+    looked_up = 0
+    _report_lookups(looked_up, n_lookups)
+
     processed = 0
     new_labels = 0
     new_unknown = 0
@@ -419,9 +446,10 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
                 row = existing_labels[req.plate]
                 row["track_ids"] = sorted(set(req.track_ids))
             continue
+        looked_up += 1
         try:
             result = client.lookup_plate(req.plate)
-        except Exception as exc:  # pragma: no cover - hard-to-mock network
+        except Exception as exc:
             logger.error(
                 "[dvsa-label] %s lookup failed: %s: %s",
                 req.plate,
@@ -429,6 +457,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
                 exc,
             )
             api_errors += 1
+            _report_lookups(looked_up, n_lookups)  # a failed lookup is still one made
             continue
         if result is None:
             existing_unknown.add(req.plate)
@@ -449,6 +478,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
             conf_threshold=conf_threshold,
             gate=gate,
         )
+        _report_lookups(looked_up, n_lookups)
 
     # Final flush: ensures the output is updated even when the loop
     # ran zero iterations (e.g. every plate was already known but the

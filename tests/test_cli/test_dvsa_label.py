@@ -10,6 +10,7 @@ DvsaClient itself is exercised separately in
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,7 +18,7 @@ import pytest
 
 from streettracker.analysis.dvsa import MotLookupResult
 from streettracker.cli import dvsa_label
-from streettracker.control.progress import make_parser
+from streettracker.control.progress import estimate_eta, make_parser
 
 # ----------------------------------------------------------------------
 # Top-level dispatcher routes the subcommand.
@@ -454,11 +455,11 @@ def test_main_output_drives_the_panels_progress(
     _isolated_plate_conf_config: Path,
     combined: bool,
 ) -> None:
-    """The header line tells the panel how many plates will be looked up and
-    the closing line gives the tally. The header was reworded on 2026-10-04
-    (the combined plate gate) and the panel's pattern was not, so until
-    2026-11-15 these jobs ran with no total. Both gates are run because the
-    header describes the gate in use."""
+    """The header line tells the panel how many plates passed the gate, the
+    count lines how far the lookups have got, and the closing line the tally.
+    The header was reworded on 2026-10-04 (the combined plate gate) and the
+    panel's pattern was not, so until 2026-11-15 these jobs ran with no
+    total. Both gates are run because the header describes the gate in use."""
     session = _write_minimal_session(tmp_path)
     if combined:  # the live setting, with another snap agreeing on each read
         _isolated_plate_conf_config.parent.mkdir(parents=True)
@@ -476,11 +477,15 @@ def test_main_output_drives_the_panels_progress(
     assert ("(combined: " in lines[0]) is combined
     assert lines[0].endswith(" across 2 tracks")
 
+    assert lines[1:3] == ["[dvsa-label] 0/2 looked up", "[dvsa-label] 2/2 looked up"]
+
     parser = make_parser("dvsa-label")
     parser.feed(lines[0])
     assert (parser.progress.total, parser.progress.phase) == (2, "looking up")
-    assert parser.progress.current is None  # lookups are not printed one by one
-    for line in lines[1:]:
+    assert parser.progress.current is None
+    parser.feed(lines[1])
+    assert (parser.progress.current, parser.progress.frac) == (0, 0.0)
+    for line in lines[2:]:
         parser.feed(line)
     parser.finish(0)
     done = parser.progress
@@ -491,6 +496,140 @@ def test_main_output_drives_the_panels_progress(
     assert done.summary.startswith(
         f"[dvsa-label] wrote {session / 'session_demo_dvsa_labels.json'}"
     )
+
+
+def _write_session_with_plates(tmp_path: Path, n: int) -> Path:
+    """A session whose rollup holds ``n`` tracks, each with a plate of its own
+    (AB10CDE, AB11CDE, ...), and the credential file beside it."""
+    session = _write_minimal_session(tmp_path)
+    tracks = [
+        {
+            "track_id": i + 1,
+            "best_preferred": {
+                "track_id": i + 1,
+                "snap_index": 1,
+                "image": f"vehicle_{i + 1}_main_1.jpg",
+                "ocr_text": f"AB{10 + i}CDE",
+                "ocr_conf": 0.99,
+                "det_conf": 0.9,
+            },
+        }
+        for i in range(n)
+    ]
+    (session / "session_demo_alpr_by_track.json").write_text(json.dumps({"tracks": tracks}))
+    return session
+
+
+def _harvest(
+    session: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    lookup: Callable[[str], MotLookupResult | None],
+    *extra: str,
+) -> tuple[list[str], list[str]]:
+    """Run the command with ``lookup`` in place of the DVSA call. Returns the
+    lines it printed and the plates it looked up, in order."""
+    asked: list[str] = []
+
+    def _lookup(plate: str) -> MotLookupResult | None:
+        asked.append(plate)
+        return lookup(plate)
+
+    with patch("streettracker.cli.dvsa_label.DvsaClient") as cls:
+        cls.return_value.lookup_plate.side_effect = _lookup
+        argv = [str(session), "--config", str(tmp_path / "dvsa.json"), *extra]
+        assert dvsa_label.main(argv) == 0
+    return capsys.readouterr().out.splitlines(), asked
+
+
+def _bar_states(lines: list[str]) -> list[tuple[int | None, int | None, str]]:
+    """What the panel's bar shows as it reads ``lines``: each distinct
+    (current, total, phase), in order."""
+    parser = make_parser("dvsa-label")
+    states: list[tuple[int | None, int | None, str]] = []
+    for line in lines:
+        parser.feed(line)
+        state = (parser.progress.current, parser.progress.total, parser.progress.phase)
+        if not states or states[-1] != state:
+            states.append(state)
+    return states
+
+
+def _flaky_register(plate: str) -> MotLookupResult | None:
+    """DVSA for the 30-plate session: one lookup fails, three plates are not
+    on the register, the rest resolve."""
+    if plate == "AB17CDE":
+        raise ConnectionError("no route to host")
+    return None if plate.endswith("0CDE") else _porsche_result(plate)
+
+
+def test_lookup_count_moves_the_panels_bar(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The count is printed before the first lookup, every 25 and after the
+    last, and a lookup that fails is still counted, so the bar reaches the
+    end."""
+    session = _write_session_with_plates(tmp_path, 30)
+    lines, asked = _harvest(session, tmp_path, capsys, _flaky_register)
+    assert len(asked) == 30
+    assert [line for line in lines if line.endswith(" looked up")] == [
+        "[dvsa-label] 0/30 looked up",
+        "[dvsa-label] 25/30 looked up",
+        "[dvsa-label] 30/30 looked up",
+    ]
+    assert _bar_states(lines) == [
+        (None, 30, "looking up"),
+        (0, 30, "looked up 0/30"),
+        (25, 30, "looked up 25/30"),
+        (30, 30, "looked up 30/30"),
+        (30, 30, "done"),
+    ]
+    assert estimate_eta(25, 30, 50.0) == 10.0  # the panel can now give an ETA
+    assert lines[-1].endswith(
+        "26 labelled, 3 unknown, 0 skipped (non-canonical), 1 api errors "
+        "(26 new labels + 3 new unknown this run)"
+    )
+
+
+def test_lookup_count_is_of_lookups_not_of_plates(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A second run asks DVSA only about the plate whose lookup failed. The
+    bar covers that one lookup, not the 30 plates the header reports."""
+    session = _write_session_with_plates(tmp_path, 30)
+    _harvest(session, tmp_path, capsys, _flaky_register)
+    lines, asked = _harvest(session, tmp_path, capsys, _porsche_result)
+    assert asked == ["AB17CDE"]
+    assert lines[0].startswith("[dvsa-label] 30 distinct plates passing the gate (")
+    assert _bar_states(lines) == [
+        (None, 30, "looking up"),
+        (0, 1, "looked up 0/1"),
+        (1, 1, "looked up 1/1"),
+        (1, 1, "done"),
+    ]
+
+
+def test_a_run_with_nothing_to_look_up_prints_no_count(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Every plate is already in the labels file: no lookups, no count line,
+    and the closing tally fills the bar."""
+    session = _write_session_with_plates(tmp_path, 30)
+    _harvest(session, tmp_path, capsys, _porsche_result)
+    lines, asked = _harvest(session, tmp_path, capsys, _porsche_result)
+    assert asked == []
+    assert not [line for line in lines if "looked up" in line]
+    assert _bar_states(lines) == [(None, 30, "looking up"), (30, 30, "done")]
+
+
+def test_lookup_count_follows_the_limit(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    session = _write_session_with_plates(tmp_path, 30)
+    lines, asked = _harvest(session, tmp_path, capsys, _porsche_result, "--limit", "10")
+    assert len(asked) == 10
+    assert [line for line in lines if line.endswith(" looked up")] == [
+        "[dvsa-label] 0/10 looked up",
+        "[dvsa-label] 10/10 looked up",
+    ]
 
 
 def test_main_is_incremental_by_default(tmp_path: Path) -> None:
