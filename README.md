@@ -237,4 +237,4 @@ rules; [`docs/`](docs/) holds the rest:
 
 ## License
 
-MIT.
+MIT; see [`LICENSE`](LICENSE).

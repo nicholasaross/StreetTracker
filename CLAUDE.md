@@ -229,9 +229,15 @@ publishes `makemodel-<run>`.
 
 ## Project overview
 
-StreetTracker unifies VehicleTracker (dev-box, file input) and NanoTracker
-(original Jetson Nano, live RTSP) onto one Python 3.10 + Ultralytics +
-TensorRT stack, targeting Jetson Orin Nano 8GB Super as the primary device.
+StreetTracker tracks the vehicles and people passing one street camera. The live
+tracker runs on a Jetson Orin Nano 8GB Super (Python 3.10, Ultralytics YOLO +
+BotSORT on TensorRT) and writes one session at a time. The dev box pulls each
+session and enriches it offline: plate reads, DVSA labels, the make / colour /
+body-type classifiers and the people step. The showcase and the control panel
+serve the results. The same runtime processes video files on the dev box
+(`streettracker batch`).
+
+On the Orin:
 
 ```
 RTSP H.264/H.265   ┐
@@ -259,9 +265,8 @@ MP4 (NVDEC on Orin)┘                  (BotSORT integrated)
   torch on top of the Jetson wheel — but a manual `uv sync` after `git
 pull` _will_ rebuild at the new pin and is fatal if torch won't
   resolve. The 3.10 → 3.12 move bundles with the JP7 flash.
-- **No Python 3.6 hacks.** Use `@dataclass(slots=True)` and PEP-604
-  unions (`X | None`); the sys.path reorder / NamedTuple-for-dataclass /
-  `# type:` comments are gone.
+- **Modern typing.** Use `@dataclass(slots=True)` and PEP-604 unions
+  (`X | None`), not `NamedTuple` stand-ins or `# type:` comments.
 - **TRT engines are not portable** across GPU architectures. Always
   build engines ON the target device.
 
@@ -308,9 +313,10 @@ snaps, thumbnails) and the append-only logs write in place.
 
 - JP6 ships Ubuntu 22.04 + Py 3.10; JP7 ships Ubuntu 24.04 + Py 3.12
   natively. uv handles both via `.python-version`.
-- Ultralytics' built-in TRT path (`YOLO('best.engine')`) replaces
-  NanoTracker's hand-rolled YOLOv8 decode + numpy NMS + bespoke IoU
-  tracker.
+- Detection and tracking are one Ultralytics call on the TensorRT engine
+  (`YOLO('<engine>.engine').track(..., tracker="botsort.yaml")`,
+  `inference/ultralytics_runner.py`). Don't add a hand-written decode, NMS
+  or tracker beside it.
 - Live RTSP from Reolink: use FFmpeg backend (`cv2.CAP_FFMPEG` +
   `OPENCV_FFMPEG_CAPTURE_OPTIONS=rtsp_transport;tcp`). GStreamer stalls
   on Reolink keyframes.
