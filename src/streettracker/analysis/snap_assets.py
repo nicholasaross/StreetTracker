@@ -208,6 +208,19 @@ def _scale_bbox_to_image(
     size = image_size(image_path)
     if size is None:
         return None
+    return scale_bbox(bbox, sub_size, size)
+
+
+def scale_bbox(
+    bbox: tuple[float, float, float, float],
+    sub_size: tuple[int, int],
+    size: tuple[int, int],
+) -> tuple[int, int, int, int] | None:
+    """Scale a sub-stream-coord bbox into a snap of ``size`` (width, height).
+    Returns ``None`` for a sub-stream size that can't be scaled from."""
+    sub_w, sub_h = sub_size
+    if sub_w <= 0 or sub_h <= 0:
+        return None
     w, h = size
     # Sub-stream and main may have slightly different aspect ratios, so
     # scale x and y independently rather than picking a single ratio.
@@ -280,19 +293,40 @@ def resolve_bbox_hint_window(
     ``union(fire bbox, done bbox)`` -- the car's true position in the
     saved image, no lookahead or extrapolation needed.
     """
+    if sub_size is None:
+        return None
+    window = hint_window(
+        track_id, snap_index, bbox_index, lookahead=lookahead, done_index=done_index
+    )
+    if window is None:
+        return None
+    return _scale_bbox_to_image(image_path, window, sub_size)
+
+
+def hint_window(
+    track_id: int,
+    snap_index: int,
+    bbox_index: dict[tuple[int, int], tuple[int, int, int, int]],
+    *,
+    lookahead: int = 3,
+    done_index: dict[tuple[int, int], tuple[int, int, int, int]] | None = None,
+) -> tuple[float, float, float, float] | None:
+    """The crop window of :func:`resolve_bbox_hint_window` in sub-stream
+    coordinates, before it is scaled to the snap. ``None`` when the snap has
+    no recorded bbox. Reads no image, so a caller that already knows a
+    session's snap size can scale it with :func:`scale_bbox`."""
     base = bbox_index.get((track_id, snap_index))
-    if base is None or sub_size is None:
+    if base is None:
         return None
 
     done = (done_index or {}).get((track_id, snap_index))
     if done is not None:
-        window_exact = (
+        return (
             min(base[0], done[0]),
             min(base[1], done[1]),
             max(base[2], done[2]),
             max(base[3], done[3]),
         )
-        return _scale_bbox_to_image(image_path, window_exact, sub_size)
 
     boxes: list[tuple[float, float, float, float]] = [base]
     for k in range(1, max(0, lookahead) + 1):
@@ -316,10 +350,9 @@ def resolve_bbox_hint_window(
             )
             boxes.append((base[0] + sx, base[1] + sy, base[2] + sx, base[3] + sy))
 
-    window = (
+    return (
         min(b[0] for b in boxes),
         min(b[1] for b in boxes),
         max(b[2] for b in boxes),
         max(b[3] for b in boxes),
     )
-    return _scale_bbox_to_image(image_path, window, sub_size)

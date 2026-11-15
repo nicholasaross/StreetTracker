@@ -50,6 +50,9 @@ PII, or secret):
   can't be re-mined once the box dies.
 - **Per-session derived JSON** `output/*_{data,alpr,dvsa_labels,vehicles,makemodel,bodytype,people}.json`
   — all the ANPR/DVSA/people labels (plate PII); tar the non-image files.
+- **The E1.2 audit set** `.claude/audit_e12/` (`manifest.json`, `labels.json`, `img/`) —
+  hand-checked plate reads, about three operator-hours of labelling, kept frozen as the
+  regression set for every later plate-pipeline change (plate PII).
 - **Secrets**: `configs/dvsa.json` (DVSA API key), any `camera.json`
   (Reolink pw) — encrypted store / password manager, never the public repo.
 - **Camera-ISP helpers** `.claude/setexp*.py` — re-ignored (hardcode the

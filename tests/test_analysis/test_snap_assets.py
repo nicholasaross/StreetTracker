@@ -15,6 +15,7 @@ from PIL import Image
 
 from streettracker.analysis.snap_assets import (
     discover_vehicle_snaps,
+    hint_window,
     image_size,
     load_bbox_index,
     load_done_bbox_index,
@@ -22,6 +23,7 @@ from streettracker.analysis.snap_assets import (
     read_image,
     resolve_bbox_hint,
     resolve_bbox_hint_window,
+    scale_bbox,
 )
 
 
@@ -154,6 +156,25 @@ def test_window_extrapolation_shift_is_capped(tmp_path: Path) -> None:
 
     # bbox width 80 -> max shift 200: window x1 = 200-200 = 0 (not -9000).
     assert hint == (0, 100, 280, 140)
+
+
+def test_hint_window_is_the_window_before_scaling(tmp_path: Path) -> None:
+    """``hint_window`` + ``scale_bbox`` give the hint without opening the
+    snap, for a caller that already knows the session's snap size."""
+    bboxes = [[200 - 40 * i, 100, 280 - 40 * i, 140] for i in range(5)]
+    sess, idx, sub = _window_session(tmp_path, bboxes)
+    img = sess / "vehicle_7_main_2.jpg"
+    done = {(7, 3): (40, 110, 120, 150)}
+    size = image_size(img)
+    assert size is not None
+    for snap in (1, 2, 3, 5):
+        window = hint_window(7, snap, idx, done_index=done)
+        assert window is not None
+        assert scale_bbox(window, sub, size) == resolve_bbox_hint_window(
+            img, 7, snap, idx, sub, done_index=done
+        )
+    assert hint_window(7, 9, idx) is None
+    assert scale_bbox((0, 0, 10, 10), (0, 360), (400, 300)) is None
 
 
 def test_window_none_without_base_bbox_or_size(tmp_path: Path) -> None:
