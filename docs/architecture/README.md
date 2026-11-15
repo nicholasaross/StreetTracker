@@ -7,7 +7,9 @@ web apps. Every component has a plate-style discussion ID (`HW-1`, `RT-6`, `EN-5
 `#<id>` links (e.g. `#rt-snap`) open its pop-up.
 
 The architecture is as of **2026-10-26** (PRs up to #140); the figures are as of **2026-10-05**
-(data 2026-05-24 → 2026-10-04). Update them when a component changes.
+(data 2026-05-24 → 2026-10-04). Update them when a component changes. Since then only `EN-8` has
+been brought up to date (2026-11-14, the stationary-vehicle guard of PR #156; published as
+version 4).
 
 ## Files
 
@@ -23,6 +25,14 @@ The architecture is as of **2026-10-26** (PRs up to #140); the figures are as of
 From Claude Code, publish `docs/architecture/index.html` to the existing URL with every
 `assets/*` file in `files` (root `docs/architecture`). Read the artifact first if this session
 hasn't published it.
+
+- **A text-only change needs only the page.** Files left out of `files` stay as published, so
+  publish `index.html` alone and leave the images untouched.
+- **Run `.claude/arch_check.py` first, every time.** The component texts are single-quoted
+  JavaScript strings, so an apostrophe must be written `\'`. One bare apostrophe stops the whole
+  script, and the page then shows no cards, map chips or pop-ups. The check must end with
+  `errors: 0` and its three pop-ups open. (A bare apostrophe in `EN-8` was merged in PR #156 and
+  caught only by diffing against the published page.)
 
 ## Refresh the screenshots and samples
 
