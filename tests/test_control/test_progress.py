@@ -328,17 +328,49 @@ def test_dvsa_label_parser_total_and_tally() -> None:
         "skipping 4 non-canonical (use --include-non-canonical to query them)",
     )
     assert (p.total, p.current, p.phase) == (42, None, "looking up")
+    # Nothing to look up (every plate already in the labels file): no count
+    # line, and the closing tally fills the bar.
     p = _feed(
         DvsaLabelParser(),
         "[dvsa-label] 42 distinct plates passing the gate (conf >= 0.9; default) across 150 tracks",
         "[dvsa-label] wrote /out/session_x_dvsa_labels.json: 35 labelled, 7 unknown, "
-        "4 skipped (non-canonical), 0 api errors (35 new labels + 7 new unknown this run)",
+        "4 skipped (non-canonical), 0 api errors (0 new labels + 0 new unknown this run)",
     )
     assert p.total == 42
     assert p.metrics["labelled"] == 35
     assert p.metrics["unknown"] == 7
     assert p.current == 42
     assert p.phase == "done"
+
+
+def test_dvsa_label_parser_follows_the_lookup_count() -> None:
+    header = (
+        "[dvsa-label] 42 distinct plates passing the gate (conf >= 0.9; default) across 150 tracks"
+    )
+    p = _feed(DvsaLabelParser(), header, "[dvsa-label] 0/12 looked up")
+    assert (p.current, p.total, p.frac, p.phase) == (0, 12, 0.0, "looked up 0/12")
+    p = _feed(
+        DvsaLabelParser(),
+        header,
+        "[dvsa-label] 0/12 looked up",
+        "[dvsa-label] 12/12 looked up",
+        "[dvsa-label] wrote /out/session_x_dvsa_labels.json: 40 labelled, 9 unknown, "
+        "4 skipped (non-canonical), 0 api errors (10 new labels + 2 new unknown this run)",
+    )
+    # The bar is of this run's 12 lookups; the tally (49 plates in the file)
+    # does not replace it.
+    assert (p.current, p.total, p.frac, p.phase) == (12, 12, 1.0, "done")
+    assert p.metrics == {"labelled": 40, "unknown": 9}
+
+
+def test_dvsa_label_parser_ignores_lookalike_lines() -> None:
+    p = _feed(
+        DvsaLabelParser(),
+        "[dvsa-label] 3/12 looked up so far",
+        "3/12 looked up",
+        "[dvsa-label] cleared track_ids on 3 labelled plate(s) with no remaining anchored tracks",
+    )
+    assert (p.current, p.total, p.phase) == (None, None, "")
 
 
 def test_build_parser_sessions_and_totals() -> None:

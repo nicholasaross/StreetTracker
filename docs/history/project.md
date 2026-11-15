@@ -518,3 +518,31 @@ never prints. The `alpr-run` test now follows the phase line by line and the
 training test stops early (patience 1), and all 20 fail a test.
 
 The running panel loads the `dvsa-label` fix at its next restart.
+
+## A lookup count for `dvsa-label` (2026-11-15)
+
+`dvsa-label` printed nothing between its header and its closing tally, so
+the panel could show a total for the job but no moving bar and no ETA, on
+the one enrichment step that waits on the network.
+
+The command now prints `[dvsa-label] N/total looked up` before the first
+lookup, every 25 lookups and after the last. The count is of the lookups the
+run makes, not of the plates that passed the gate: a plate already in the
+labels file costs no lookup and is not counted, so a re-run after a gate
+change shows a bar over the handful of new plates. A lookup that fails is
+counted, so the bar reaches the end. A run with nothing to look up prints no
+count line and its bar is filled by the closing tally, as before.
+
+`DvsaLabelParser` reads the count (`_DVSA_LOOKUP_RE`). The header still sets
+the "looking up" phase and the number of plates until the first count line
+arrives.
+
+Tests run the command on a 30-plate session with the DVSA client replaced:
+a first harvest (one lookup failing, three plates not on the register), a
+second run that looks up only the failed plate, a run with nothing to look
+up, and `--limit`. Replacing any of the three `dvsa-label` patterns with one
+that matches nothing fails a test. Not run against the live DVSA API: a real
+run spends lookups and rewrites a session's labels file.
+
+The running panel reads the count after its next restart; until then the
+new lines only appear in the job's log.
